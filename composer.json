@@ -5,5 +5,21 @@
     },
     "require-dev": {
         "mfonte/coding-standard": "^1.3"
+    },
+    "autoload": {
+        "files": [
+            "helpers/functions.php"
+        ]
+    },
+    "scripts": {
+        "check-env": [
+            "@php scripts/check-env.php"
+        ],
+        "post-install-cmd": [
+            "@check-env"
+        ],
+        "post-update-cmd": [
+            "@check-env"
+        ]
     }
 }

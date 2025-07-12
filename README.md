@@ -59,9 +59,10 @@ You define it via the **.env** file
 2. Make sure `mod_rewrite`, `mod_headers` and `mod_expires` are enabled ( `sudo a2enmod rewrite headers expires` )
 3. Make sure you have `curl` support in your _PHP enabled modules_
 4. Make sure you're running at least **PHP 7.2.5**
-5. Run `composer install`
-6. Install my other project [https://github.com/mauriziofonte/php-image-to-webp-conversion-api](https://github.com/mauriziofonte/php-image-to-webp-conversion-api) into a VirtualHost of its own - _even better in another dev server with PHP's `exec()` enabled_ and configure it accordingly to the project's readme
-7. Clone the `.env.example` into `.env` and modify it accordingly to your needs
+5. Run `composer install` — this will automatically perform an environment check to ensure your system is properly configured
+6. Clone the `.env.example` into `.env` and modify it accordingly to your needs
+7. You must explicitly configure the `IMAGE_CONVERSION_MODE` setting in the `.env` file, based on how you want image conversion to behave (see below)
+8. (Optional) If you set `IMAGE_CONVERSION_MODE = "api"`, install my other project [php-image-to-webp-conversion-api](https://github.com/mauriziofonte/php-image-to-webp-conversion-api) into a separate VirtualHost (preferably with `exec()` enabled), and configure it according to its documentation
 
 Specifically, if you want to use the **Image to WEBP conversion API**, you need to set the `WEBP_API_SERVER` and `WEBP_API_KEY` variables in the `.env` file.
 
@@ -129,6 +130,9 @@ DEBUG = true|false
 SOURCE_ORIGIN = "https://main.origin.server.biz"
     Defines the main host where the "original" static assets are physically present and can be cloned from
 
+SOURCE_ORIGIN_SERVER = "1.2.3.4:443"
+    Defines the IP:PORT where to connect to, while fetching upstream. This is useful when behind a CDN like Cloudflare, that would otherwise respond with a 403 unauthorized
+
 CACHEABLE_EXTENSIONS = "css,js,jpg,jpeg,png,gif,bmp,webp,ttf,woff,woff2,otf,eot,svg,ico"
     Define the extensions that will be enabled on the transparent proxy. Potentially, you could use this to cache also HTML or ZIP files
 
@@ -139,9 +143,41 @@ CHARSET  = "UTF-8"        # Self-explanatory. Valid values are "UTF-8" or "ISO-8
 TIMEZONE = "Europe/Rome"  # Self-explanatory. Valid values are the ones defined in https://www.php.net/manual/en/timezones.php
 LOCALE   = "en_US"        # Self-explanatory. Valid values are the ones defined in https://www.php.net/manual/en/function.setlocale.php
 
+IMAGE_CONVERSION_MODE = "native"
+    Defines how the Proxy shall behave when it responds to Image requests.
+    - "native" : performs native WEBP conversion on the fly. Requires "cwebp" binary.
+    - "api" : delegates WEPB conversion to a third-party service. 
+    - "none" : no transformation applied when handling images.
+
 WEBP_API_SERVER = "https://my.webp.conversion.microservice.biz"
     Defines the Image to WEBP api url, that can be cloned from https://github.com/mauriziofonte/php-image-to-webp-conversion-api . Refer to the documentation of that project to know more.
 
 WEBP_API_KEY = "a-very-strong-api-key"
     Same as WEBP_API_SERVER. Refer to the documentation of "php-image-to-webp-conversion-api" to know more.
 ```
+
+## Image Conversion Modes
+
+The `.env` file supports a directive named `IMAGE_CONVERSION_MODE`, that controls the behaviour of this Proxy when it responds to _Image_ requests (jpg, jpeg, png, bmp, etc.).
+
+```ini
+IMAGE_CONVERSION_MODE = "native" | "api" | "none"
+```
+
+This setting controls how the proxy handles image-to-WEBP conversion:
+
+- `"native"`: images are converted on the fly using the `cwebp` CLI binary (requires `exec()` and `cwebp` installed and available in PATH)
+- `"api"`: images are converted using the external API server defined by `WEBP_API_SERVER` and `WEBP_API_KEY`
+- `"none"`: image conversion is disabled completely, and original image formats are used as-is
+
+### CWEBP binary installation
+
+In order for `IMAGE_CONVERSION_MODE` = `native`, your environment **must** have _Cwebp_ support.
+
+- **Ubuntu/Debian** : `sudo apt install webp`
+- **Alpine Linux** : `apk add libwebp-tools`
+- **Arch Linux / Manjaro** : `sudo pacman -S libwebp`
+- **Fedora / RHEL / CentOS** : `sudo dnf install libwebp-tools` or `sudo yum install libwebp-tools`
+- **macOS (Homebrew)** : `brew install webp`
+
+Test _Cwebp_ with: `cwebp input.jpg -o output.webp`

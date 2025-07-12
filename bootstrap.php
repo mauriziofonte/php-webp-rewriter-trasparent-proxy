@@ -12,7 +12,6 @@ if (! function_exists('curl_init')) {
 define('DS', DIRECTORY_SEPARATOR);
 define('ROOT_DIR', rtrim(__DIR__, DS).DS);
 define('CONF_FILE', ROOT_DIR.'.env');
-define('HELP_DIR', ROOT_DIR.'helpers'.DS);
 define('VENDOR_DIR', ROOT_DIR.'vendor'.DS);
 define('PUBLIC_DIR', ROOT_DIR.'public'.DS);
 define(
@@ -32,16 +31,47 @@ if (! is_file(CONF_FILE)) {
 if (! is_file(VENDOR_DIR.'autoload.php')) {
     die('Cannot find application vendor autoload. Please, read the attached README.md for instructions on how to install this application');
 }
-if (! is_file(HELP_DIR.'functions.php')) {
-    die('Cannot find application helpers/functions.php. Please, read the attached README.md for instructions on how to install this application');
-}
 
-// require autoload and helpers
+// require autoload
 require_once VENDOR_DIR.'autoload.php';
-require_once HELP_DIR.'functions.php';
 
 // load (and eventually cache) the .env config
 loadConfig(ROOT_DIR);
+
+// IDE helper
+if (!defined('DEBUG')) {
+    define('DEBUG', '');
+}
+if (!defined('SOURCE_ORIGIN')) {
+    define('SOURCE_ORIGIN', '');
+}
+if (!defined('SOURCE_ORIGIN_SERVER')) {
+    define('SOURCE_ORIGIN_SERVER', '');
+}
+if (!defined('CHARSET')) {
+    define('CHARSET', '');
+}
+if (!defined('TIMEZONE')) {
+    define('TIMEZONE', '');
+}
+if (!defined('LOCALE')) {
+    define('LOCALE', '');
+}
+if (!defined('CACHEABLE_EXTENSIONS')) {
+    define('CACHEABLE_EXTENSIONS', '');
+}
+if (!defined('CACHE_EXPIRY')) {
+    define('CACHE_EXPIRY', '');
+}
+if (!defined('IMAGE_CONVERSION_MODE')) {
+    define('IMAGE_CONVERSION_MODE', '');
+}
+if (!defined('WEBP_API_SERVER')) {
+    define('WEBP_API_SERVER', '');
+}
+if (!defined('WEBP_API_KEY')) {
+    define('WEBP_API_KEY', '');
+}
 
 // debug mode?
 if (DEBUG) {
@@ -57,49 +87,3 @@ if (DEBUG) {
 date_default_timezone_set(TIMEZONE);
 setlocale(LC_TIME, LOCALE);
 setlocale(LC_MONETARY, implode('.', [LOCALE, CHARSET]));
-
-/*
-
-$dotenv = Dotenv\Dotenv::createUnsafeImmutable(__DIR__);
-$dotenv->load();
-try {
-    $dotenv->required([
-        'SOURCE_HOST',
-        'CHARSET',
-        'TIMEZONE',
-        'LOCALE',
-        'CACHEABLE_EXTENSIONS',
-        'WEBP_API_SERVER',
-        'WEBP_API_KEY',
-    ]);
-} catch (Exception $ex) {
-    die('Error in .env variables: '.$ex->getMessage());
-}
-
-$APP_DEBUG = (in_array(getenv('DEBUG'), [true, 'true', 1])) ? true : false;
-if ($APP_DEBUG) {
-    @error_reporting(E_ALL);
-    @ini_set('display_errors', 1);
-} else {
-    error_reporting(0);
-    @ini_set('display_errors', 'Off');
-}
-
-@ini_set('default_charset', getenv('CHARSET'));
-date_default_timezone_set(getenv('TIMEZONE'));
-setlocale(LC_TIME, getenv('LOCALE'));
-setlocale(LC_MONETARY, getenv('LOCALE').'.'.getenv('CHARSET'));
-
-$SOURCE_HOST = rtrim(getenv('SOURCE_HOST'), '/');
-$CACHEABLE_EXTENSIONS = array_filter(array_map(function ($v) {
-    $v = trim(strtolower($v));
-    if ($v) {
-        return $v;
-    }
-
-    return null;
-}, explode(',', getenv('CACHEABLE_EXTENSIONS'))));
-$CACHE_EXPIRY = getenv('CACHE_EXPIRY');
-$WEBP_API_SERVER = getenv('WEBP_API_SERVER');
-$WEBP_API_KEY = getenv('WEBP_API_KEY');
-*/
