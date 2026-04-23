@@ -1,13 +1,22 @@
-# Ignore everything
+# Ignore everything, including sub-directories...
 *
+!*/
 
-# But not these files...
-!.gitignore
-!.env.example
-!.htaccess
-!bootstrap.php
-!composer.json
-!README.md
-!LICENSE
-!public/index.php
-!helpers/functions.php
+# ...but keep these specific files (rooted paths so the whitelist does not
+# match homonymous files under vendor/, e.g. vendor/*/composer.json).
+!/.gitignore
+!/.env.example
+!/LICENSE
+!/README.md
+!/bootstrap.php
+!/composer.json
+!/public/.htaccess
+!/public/index.php
+!/helpers/functions.php
+!/scripts/check-env.php
+
+# Re-ignore vendor (it gets re-created by composer install).
+/vendor/
+
+# Runtime artifact: the rendered config cache. Never commit it.
+/.cached.env.php

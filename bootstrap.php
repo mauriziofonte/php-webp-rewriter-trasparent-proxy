@@ -63,6 +63,24 @@ if (!defined('CACHEABLE_EXTENSIONS')) {
 if (!defined('CACHE_EXPIRY')) {
     define('CACHE_EXPIRY', '');
 }
+if (!defined('NEGATIVE_CACHE_TTL')) {
+    define('NEGATIVE_CACHE_TTL', 300);
+}
+if (!defined('NETWORK_ERROR_TTL')) {
+    define('NETWORK_ERROR_TTL', 30);
+}
+if (!defined('UPSTREAM_TIMEOUT')) {
+    define('UPSTREAM_TIMEOUT', 30);
+}
+if (!defined('UPSTREAM_CONNECT_TIMEOUT')) {
+    define('UPSTREAM_CONNECT_TIMEOUT', 5);
+}
+if (!defined('UPSTREAM_VERIFY_TLS')) {
+    define('UPSTREAM_VERIFY_TLS', false);
+}
+if (!defined('UPSTREAM_FOLLOW_REDIRECTS')) {
+    define('UPSTREAM_FOLLOW_REDIRECTS', false);
+}
 if (!defined('IMAGE_CONVERSION_MODE')) {
     define('IMAGE_CONVERSION_MODE', '');
 }

@@ -1,225 +1,185 @@
-Options -Indexes
+# =============================================================================
+# PHP Transparent Proxy CDN - Apache configuration
+#
+# Serves cached static assets from disk and forwards everything else to
+# index.php (the transparent proxy).
+#
+# Design note: requests that carry a non-empty query string (other than the
+# proxy's own purge= / purge_all=) ALWAYS go through index.php, because
+# Apache cannot derive the QS-keyed cache path on its own (it would need an
+# md5 RewriteMap). PHP reads the cache entry from disk and serves it; the
+# extra PHP hop is the price of correctness for cache-busted URLs.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. Basic hardening
+# -----------------------------------------------------------------------------
+Options -Indexes -MultiViews
+
+# If the VirtualHost lives on a filesystem where symlinks could exist under
+# DocumentRoot, uncomment the next line to refuse to follow symlinks that
+# are not owned by the Apache user.
+# Options +SymLinksIfOwnerMatch
+
 ErrorDocument 403 "Access Forbidden"
 
-<FilesMatch ^(\.(htaccess|gitignore|gitkeep)|(readme|README\.md)|(LICENSE|license)|(composer.json|composer.lock))$>
-	Require all denied
+# Deny direct HTTP access to project metadata, private cache files and the
+# scratch tmp files written by atomicWrite() in the microsecond window
+# between tempnam() and rename().
+<FilesMatch "^(\.(ht.*|git.*|env.*|cached\.env\.php|mftpcdn\..*)|composer\.(json|lock)|(README|readme)\.md|LICENSE|license)$">
+    Require all denied
 </FilesMatch>
 
+# Deny access to negative-cache markers.
+<FilesMatch "\.(404|netfail)$">
+    Require all denied
+</FilesMatch>
+
+# -----------------------------------------------------------------------------
+# 2. HTTPS redirect + routing
+# -----------------------------------------------------------------------------
 <IfModule mod_rewrite.c>
-	RewriteEngine On
+    RewriteEngine On
 
-	# To HTTPS
-	RewriteCond %{HTTPS} off
+    # Force HTTPS. Honor X-Forwarded-Proto so the proxy works behind a
+    # TLS-terminating load balancer.
+    RewriteCond %{HTTPS} off
+    RewriteCond %{HTTP:X-Forwarded-Proto} !=https
     RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,QSA,R=301]
-	
-	# Catch-all for all requests that DO NOT have a valid
-	# file in the cache. The file will be mirrored from the 
-	# origin server, and then served from index.php for the first time
-	RewriteRule ^index\.php$ - [L]
-	RewriteRule ^(.*/)?\.git+ - [R=403,L]
-	RewriteRule ^(.*/)?vendor+ - [R=403,L]
-	RewriteCond %{QUERY_STRING} purge=1 [or]
-	RewriteCond %{QUERY_STRING} purge=true [or]	
-	RewriteCond %{QUERY_STRING} purge_all=1 [or]
-	RewriteCond %{QUERY_STRING} purge_all=true [or]	
-	RewriteCond %{REQUEST_FILENAME} !-f
-	RewriteCond %{REQUEST_FILENAME} !-d
-	RewriteRule . index.php [E=REMOTE_USER:%{HTTP:Authorization},L]
 
-	# If this is a jpg, jpeg, png, gif or bmp image request (that exists in the filesystem)
-	# and we do have a "webp" counterpart in the filesystem
-	# then, permament redirect to the webp image
-	# https://stackoverflow.com/questions/8441456/using-htaccess-to-virtually-rename-the-file-extension-of-a-file
-	RewriteCond %{REQUEST_FILENAME} !-d
-	RewriteCond %{REQUEST_URI} ^/(.+)\.(jpg|jpeg|png|gif|bmp)$
-	RewriteCond %{DOCUMENT_ROOT}/%1.webp -f
-	RewriteRule ^(.+)\.(.+)$ /$1\.webp [R=301,L]
+    # Entry point must always reach PHP.
+    RewriteRule ^index\.php$ - [L]
+
+    # Defensive 403s: never expose project internals even if somebody
+    # mispoints the DocumentRoot at the project root instead of ./public.
+    RewriteRule ^(.*/)?\.git(/.*)?$     - [R=403,L]
+    RewriteRule ^(.*/)?vendor(/.*)?$    - [R=403,L]
+    RewriteRule ^(.*/)?helpers(/.*)?$   - [R=403,L]
+    RewriteRule ^(.*/)?scripts(/.*)?$   - [R=403,L]
+    RewriteRule ^(.*/)?logs(/.*)?$      - [R=403,L]
+
+    # Refuse direct reads of the QS-bucket cache. The bucketing layout
+    # (public/_qs/<sha256prefix>/) is an implementation detail; clients
+    # MUST go through index.php so content negotiation stays applied.
+    RewriteRule ^(.*/)?_qs(/.*)?$       - [R=403,L]
+
+    # ALWAYS route to index.php when the caller asks for a cache purge.
+    RewriteCond %{QUERY_STRING} (?:^|&)purge(?:_all)?=(?:1|true)(?:&|$)  [NC]
+    RewriteRule . index.php [L,QSA,E=REMOTE_USER:%{HTTP:Authorization}]
+
+    # ALWAYS route to index.php when the request has a non-empty query
+    # string. index.php will canonicalize the QS, compute the per-QS cache
+    # path and either serve the cached copy or fetch it from the origin.
+    RewriteCond %{QUERY_STRING} .
+    RewriteRule . index.php [L,QSA,E=REMOTE_USER:%{HTTP:Authorization}]
+
+    # Cache miss for QS-less requests: forward to index.php.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule . index.php [L,QSA,E=REMOTE_USER:%{HTTP:Authorization}]
+
+    # Transparent WEBP for QS-less requests: if the client asked for a
+    # raster image and a .webp sibling exists on disk, 301-redirect.
+    # (QS-carrying requests are handled inside index.php via Accept
+    #  negotiation, so they do not need this redirect.)
+    RewriteCond %{REQUEST_URI} ^/(.+)\.(jpe?g|png|gif|bmp)$  [NC]
+    RewriteCond %{DOCUMENT_ROOT}/%1.webp  -f
+    RewriteRule ^(.+)\.(.+)$ /$1.webp [R=301,L]
 </IfModule>
 
-# BEGIN W3TC Browser Cache
+# -----------------------------------------------------------------------------
+# 3. Response headers and cache policy
+# -----------------------------------------------------------------------------
 <IfModule mod_headers.c>
-	Header set Access-Control-Allow-Origin "*"
-	Header set Access-Control-Allow-Credentials true
-	Header unset X-Powered-By
-	Header unset Server
+    # CORS: static assets are fetched cross-origin from the main site.
+    Header set Access-Control-Allow-Origin  "*"
+    Header set Access-Control-Allow-Methods "GET, OPTIONS"
+    Header set Access-Control-Max-Age       "86400"
+
+    # Strip server fingerprinting headers where possible.
+    Header unset Server
+    Header unset X-Powered-By
+
+    # Light hardening applicable to a static-asset CDN.
+    Header set X-Content-Type-Options "nosniff"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+
+    # HSTS. Default: host-only (no includeSubDomains / no preload) because
+    # enabling them changes behavior of sibling hostnames. Uncomment the
+    # wider variants ONLY if you understand the blast radius on your
+    # eTLD+1 and its subdomains.
+    Header set Strict-Transport-Security "max-age=31536000" env=HTTPS
+    # Header set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=HTTPS
+    # Header set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" env=HTTPS
+
+    # Branding for cache-hit responses (files served directly by Apache).
+    Header set X-Powered-By  "MF Static Assets Cacher/2.0.0"
+    Header set X-Cache-Status "HIT"
 </IfModule>
+
 <IfModule mod_mime.c>
-	AddType text/css .css
-	AddType text/x-component .htc
-	AddType application/x-javascript .js
-	AddType application/javascript .js2
-	AddType text/javascript .js3
-	AddType text/x-js .js4
-	AddType text/html .html .htm
-	AddType text/richtext .rtf .rtx
-	AddType image/svg+xml .svg
-	AddType text/plain .txt
-	AddType text/xsd .xsd
-	AddType text/xsl .xsl
-	AddType text/xml .xml
-	AddType video/asf .asf .asx .wax .wmv .wmx
-	AddType video/avi .avi
-	AddType image/bmp .bmp
-	AddType application/java .class
-	AddType video/divx .divx
-	AddType application/msword .doc .docx
-	AddType application/vnd.ms-fontobject .eot
-	AddType application/x-msdownload .exe
-	AddType image/gif .gif
-	AddType application/x-gzip .gz .gzip
-	AddType image/x-icon .ico
-	AddType image/jpeg .jpg .jpeg .jpe
-	AddType image/webp .webp
-	AddType application/json .json
-	AddType application/vnd.ms-access .mdb
-	AddType audio/midi .mid .midi
-	AddType video/quicktime .mov .qt
-	AddType audio/mpeg .mp3 .m4a
-	AddType video/mp4 .mp4 .m4v
-	AddType video/mpeg .mpeg .mpg .mpe
-	AddType application/vnd.ms-project .mpp
-	AddType application/x-font-otf .otf
-	AddType application/vnd.ms-opentype ._otf
-	AddType application/vnd.oasis.opendocument.database .odb
-	AddType application/vnd.oasis.opendocument.chart .odc
-	AddType application/vnd.oasis.opendocument.formula .odf
-	AddType application/vnd.oasis.opendocument.graphics .odg
-	AddType application/vnd.oasis.opendocument.presentation .odp
-	AddType application/vnd.oasis.opendocument.spreadsheet .ods
-	AddType application/vnd.oasis.opendocument.text .odt
-	AddType audio/ogg .ogg
-	AddType application/pdf .pdf
-	AddType image/png .png
-	AddType application/vnd.ms-powerpoint .pot .pps .ppt .pptx
-	AddType audio/x-realaudio .ra .ram
-	AddType image/svg+xml .svg .svgz
-	AddType application/x-shockwave-flash .swf
-	AddType application/x-tar .tar
-	AddType image/tiff .tif .tiff
-	AddType application/x-font-ttf .ttf .ttc
-	AddType application/vnd.ms-opentype ._ttf
-	AddType audio/wav .wav
-	AddType audio/wma .wma
-	AddType application/vnd.ms-write .wri
-	AddType application/font-woff .woff
-	AddType application/font-woff2 .woff2
-	AddType application/vnd.ms-excel .xla .xls .xlsx .xlt .xlw
-	AddType application/zip .zip
+    AddType text/css                         .css
+    AddType application/javascript           .js
+    AddType application/json                 .json
+    AddType image/svg+xml                    .svg .svgz
+    AddType image/webp                       .webp
+    AddType image/x-icon                     .ico
+    AddType image/bmp                        .bmp
+    AddType image/gif                        .gif
+    AddType image/jpeg                       .jpg .jpeg .jpe
+    AddType image/png                        .png
+    AddType image/tiff                       .tif .tiff
+    AddType application/x-font-ttf           .ttf .ttc
+    AddType application/x-font-otf           .otf
+    AddType application/vnd.ms-fontobject    .eot
+    AddType application/font-woff            .woff
+    AddType application/font-woff2           .woff2
+    AddType application/pdf                  .pdf
 </IfModule>
+
 <IfModule mod_expires.c>
-	ExpiresActive On
-	ExpiresByType text/css A31536000
-	ExpiresByType text/x-component A31536000
-	ExpiresByType application/x-javascript A31536000
-	ExpiresByType application/javascript A31536000
-	ExpiresByType text/javascript A31536000
-	ExpiresByType text/x-js A31536000
-	ExpiresByType text/html A3600
-	ExpiresByType text/richtext A3600
-	ExpiresByType image/svg+xml A3600
-	ExpiresByType text/plain A3600
-	ExpiresByType text/xsd A3600
-	ExpiresByType text/xsl A3600
-	ExpiresByType text/xml A3600
-	ExpiresByType video/asf A31536000
-	ExpiresByType video/avi A31536000
-	ExpiresByType image/bmp A31536000
-	ExpiresByType application/java A31536000
-	ExpiresByType video/divx A31536000
-	ExpiresByType application/msword A31536000
-	ExpiresByType application/vnd.ms-fontobject A31536000
-	ExpiresByType application/x-msdownload A31536000
-	ExpiresByType image/gif A31536000
-	ExpiresByType application/x-gzip A31536000
-	ExpiresByType image/x-icon A31536000
-	ExpiresByType image/jpeg A31536000
-	ExpiresByType image/webp A31536000
-	ExpiresByType application/json A31536000
-	ExpiresByType application/vnd.ms-access A31536000
-	ExpiresByType audio/midi A31536000
-	ExpiresByType video/quicktime A31536000
-	ExpiresByType audio/mpeg A31536000
-	ExpiresByType video/mp4 A31536000
-	ExpiresByType video/mpeg A31536000
-	ExpiresByType application/vnd.ms-project A31536000
-	ExpiresByType application/x-font-otf A31536000
-	ExpiresByType application/vnd.ms-opentype A31536000
-	ExpiresByType application/vnd.oasis.opendocument.database A31536000
-	ExpiresByType application/vnd.oasis.opendocument.chart A31536000
-	ExpiresByType application/vnd.oasis.opendocument.formula A31536000
-	ExpiresByType application/vnd.oasis.opendocument.graphics A31536000
-	ExpiresByType application/vnd.oasis.opendocument.presentation A31536000
-	ExpiresByType application/vnd.oasis.opendocument.spreadsheet A31536000
-	ExpiresByType application/vnd.oasis.opendocument.text A31536000
-	ExpiresByType audio/ogg A31536000
-	ExpiresByType application/pdf A31536000
-	ExpiresByType image/png A31536000
-	ExpiresByType application/vnd.ms-powerpoint A31536000
-	ExpiresByType audio/x-realaudio A31536000
-	ExpiresByType image/svg+xml A31536000
-	ExpiresByType application/x-shockwave-flash A31536000
-	ExpiresByType application/x-tar A31536000
-	ExpiresByType image/tiff A31536000
-	ExpiresByType application/x-font-ttf A31536000
-	ExpiresByType application/vnd.ms-opentype A31536000
-	ExpiresByType audio/wav A31536000
-	ExpiresByType audio/wma A31536000
-	ExpiresByType application/vnd.ms-write A31536000
-	ExpiresByType application/font-woff A31536000
-	ExpiresByType application/font-woff2 A31536000
-	ExpiresByType application/vnd.ms-excel A31536000
-	ExpiresByType application/zip A31536000
+    ExpiresActive On
+    ExpiresByType text/css                  "access plus 1 year"
+    ExpiresByType application/javascript    "access plus 1 year"
+    ExpiresByType application/json          "access plus 1 hour"
+    ExpiresByType image/svg+xml             "access plus 1 year"
+    ExpiresByType image/webp                "access plus 1 year"
+    ExpiresByType image/x-icon              "access plus 1 year"
+    ExpiresByType image/bmp                 "access plus 1 year"
+    ExpiresByType image/gif                 "access plus 1 year"
+    ExpiresByType image/jpeg                "access plus 1 year"
+    ExpiresByType image/png                 "access plus 1 year"
+    ExpiresByType image/tiff                "access plus 1 year"
+    ExpiresByType application/x-font-ttf    "access plus 1 year"
+    ExpiresByType application/x-font-otf    "access plus 1 year"
+    ExpiresByType application/vnd.ms-fontobject "access plus 1 year"
+    ExpiresByType application/font-woff     "access plus 1 year"
+    ExpiresByType application/font-woff2    "access plus 1 year"
+    ExpiresByType application/pdf           "access plus 1 month"
 </IfModule>
 
+# -----------------------------------------------------------------------------
+# 4. Compression
+# -----------------------------------------------------------------------------
 <IfModule mod_deflate.c>
-	AddOutputFilterByType DEFLATE text/css text/x-component application/x-javascript application/javascript text/javascript text/x-js text/html text/richtext image/svg+xml text/plain text/xsd text/xsl text/xml image/bmp application/java application/msword application/vnd.ms-fontobject application/x-msdownload image/x-icon image/webp application/json application/vnd.ms-access application/vnd.ms-project application/x-font-otf application/vnd.ms-opentype application/vnd.oasis.opendocument.database application/vnd.oasis.opendocument.chart application/vnd.oasis.opendocument.formula application/vnd.oasis.opendocument.graphics application/vnd.oasis.opendocument.presentation application/vnd.oasis.opendocument.spreadsheet application/vnd.oasis.opendocument.text audio/ogg application/pdf application/vnd.ms-powerpoint image/svg+xml application/x-shockwave-flash image/tiff application/x-font-ttf application/vnd.ms-opentype audio/wav application/vnd.ms-write application/font-woff application/font-woff2 application/vnd.ms-excel
-	<IfModule mod_mime.c>
-		# DEFLATE by extension
-		AddOutputFilter DEFLATE js css htm html xml
-	</IfModule>
+    AddOutputFilterByType DEFLATE text/css text/plain text/xml text/html
+    AddOutputFilterByType DEFLATE application/javascript application/json application/xml
+    AddOutputFilterByType DEFLATE image/svg+xml image/bmp image/x-icon
+    AddOutputFilterByType DEFLATE application/x-font-ttf application/x-font-otf application/vnd.ms-fontobject
 </IfModule>
 
-<FilesMatch "\.(css|htc|less|js|js2|js3|js4|CSS|HTC|LESS|JS|JS2|JS3|JS4)$">
-	FileETag MTime Size
-	<IfModule mod_headers.c>
-		Header set Pragma "public"
-		Header append Cache-Control "public"
-		Header unset Set-Cookie
-		Header set X-Powered-By "MF Static Assets Cacher/1.1.0"
-		Header set X-Cache-Status "HIT"
-	</IfModule>
+# -----------------------------------------------------------------------------
+# 5. ETag + Cache-Control for file-served responses
+#
+# NOTE: we deliberately use "must-revalidate" (not "immutable"). These URLs
+# are not fingerprinted: the same /foo/bar.jpg may correspond to different
+# bytes over time (after a purge=1 or after the origin overwrites the file).
+# "immutable" would trap old bytes in browser caches for a full year.
+# -----------------------------------------------------------------------------
+<FilesMatch "\.(?i:css|js|json|svg|svgz|ico|bmp|gif|jpe?g|png|webp|tiff?|ttf|ttc|otf|eot|woff2?|pdf)$">
+    FileETag MTime Size
+    <IfModule mod_headers.c>
+        Header set Cache-Control "public, max-age=31536000, must-revalidate"
+        Header unset Set-Cookie
+    </IfModule>
 </FilesMatch>
-
-<FilesMatch "\.(html|rtf|rtx|svg|txt|xsd|xsl|xml|HTML|RTF|RTX|SVG|TXT|XSD|XSL|XML)$">
-	FileETag MTime Size
-	<IfModule mod_headers.c>
-		Header append Vary User-Agent env=!dont-vary
-		Header set Pragma "public"
-		Header append Cache-Control "public"
-		Header set X-Powered-By "MF Static Assets Cacher/1.1.0"
-		Header set X-Cache-Status "HIT"
-	</IfModule>
-</FilesMatch>
-
-<FilesMatch "\.(asf|asx|wax|wmv|wmx|avi|bmp|class|divx|doc|docx|eot|exe|gif|gz|gzip|ico|jpg|jpeg|jpe|webp|json|mdb|mid|midi|mov|qt|mp3|m4a|mp4|m4v|mpeg|mpg|mpe|mpp|otf|_otf|odb|odc|odf|odg|odp|ods|odt|ogg|pdf|png|pot|pps|ppt|pptx|ra|ram|svg|svgz|swf|tar|tif|tiff|ttf|ttc|_ttf|wav|wma|wri|woff|woff2|xla|xls|xlsx|xlt|xlw|zip|ASF|ASX|WAX|WMV|WMX|AVI|BMP|CLASS|DIVX|DOC|DOCX|EOT|EXE|GIF|GZ|GZIP|ICO|JPG|JPEG|JPE|WEBP|JSON|MDB|MID|MIDI|MOV|QT|MP3|M4A|MP4|M4V|MPEG|MPG|MPE|MPP|OTF|_OTF|ODB|ODC|ODF|ODG|ODP|ODS|ODT|OGG|PDF|PNG|POT|PPS|PPT|PPTX|RA|RAM|SVG|SVGZ|SWF|TAR|TIF|TIFF|TTF|TTC|_TTF|WAV|WMA|WRI|WOFF|WOFF2|XLA|XLS|XLSX|XLT|XLW|ZIP)$">
-	FileETag MTime Size
-	<IfModule mod_headers.c>
-		Header set Pragma "public"
-		Header append Cache-Control "public"
-		Header unset Set-Cookie
-		Header set X-Powered-By "MF Static Assets Cacher/1.1.0"
-		Header set X-Cache-Status "HIT"
-	</IfModule>
-</FilesMatch>
-
-<FilesMatch "\.(bmp|class|doc|docx|eot|exe|ico|webp|json|mdb|mpp|otf|_otf|odb|odc|odf|odg|odp|ods|odt|ogg|pdf|pot|pps|ppt|pptx|svg|svgz|swf|tif|tiff|ttf|ttc|_ttf|wav|wri|woff|woff2|xla|xls|xlsx|xlt|xlw|BMP|CLASS|DOC|DOCX|EOT|EXE|ICO|WEBP|JSON|MDB|MPP|OTF|_OTF|ODB|ODC|ODF|ODG|ODP|ODS|ODT|OGG|PDF|POT|PPS|PPT|PPTX|SVG|SVGZ|SWF|TIF|TIFF|TTF|TTC|_TTF|WAV|WRI|WOFF|WOFF2|XLA|XLS|XLSX|XLT|XLW)$">
-	<IfModule mod_headers.c>
-		Header unset Last-Modified
-	</IfModule>
-</FilesMatch>
-
-<IfModule mod_headers.c>
-	Header set Strict-Transport-Security "max-age=31536000"
-	Header set Referrer-Policy ""
-</IfModule>
-# END W3TC Browser Cache

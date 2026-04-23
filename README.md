@@ -1,183 +1,300 @@
-# PHP-Based "Transparent Proxy" CDN + Optional on-the-fly Image to WEBP conversion
+# PHP Transparent Proxy CDN (with optional on-the-fly WEBP conversion)
 
-This project can be used to serve **static assets** (like, for example, `css`, `js`, `jpg` files) of your website from a **"self-hosted CDN"**, that will act as a **transparent proxy** from the origin server to the client's browser.
+A self-contained PHP application that turns a VirtualHost into a **self-hosted CDN** for the static assets of another site.
 
-The peculiarity of this project is that, for every image requested **from the transparent proxy**, it will **convert the source image in WEBP format**, serve it, and then for every other request all images will be **permanent-redirected to the webp version**.
+It acts as a **transparent proxy** between the origin server and the client's browser: on the first request a missing asset is fetched from the origin and cached on the local filesystem; on every subsequent request Apache serves the cached copy directly, without going through PHP. If the asset is a raster image (`jpg`, `jpeg`, `png`, `gif`, `bmp`) the proxy optionally generates a `.webp` variant alongside it and either permanent-redirects subsequent requests to the webp copy or serves it inline via content negotiation (see *Query string caching* below).
 
-## What is the purpose of this project?
+> Historical note: the repository name (`php-webp-rewriter-trasparent-proxy`) contains a typo kept for backward-compatibility. The project is a transparent proxy, not a "trasparent" one.
 
-The purpose of this project is to **serve static assets from a CDN in your control**, without having to **touch the code of the origin server**.
+## Table of contents
 
-This is useful, for example, if you:
+- [What is this project good for?](#what-is-this-project-good-for)
+- [Request lifecycle](#request-lifecycle)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Image conversion modes](#image-conversion-modes)
+- [Cache purge](#cache-purge)
+- [Query string caching](#query-string-caching)
+- [Negative caching and circuit breaker](#negative-caching-and-circuit-breaker)
+- [Content negotiation (Accept: image/webp)](#content-negotiation-accept-imagewebp)
+- [Logging](#logging)
+- [Cache maintenance](#cache-maintenance)
+- [Rewriting origin references to the CDN](#rewriting-origin-references-to-the-cdn)
+- [Security considerations](#security-considerations)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
-1. Don't want to use a third-party CDN like Cloudflare or Cloudfront
-2. Don't want to touch the code of the origin server - in the sense that you don't want to deeply change the way static assets are referenced in the HTML, but only write a quick and dirty rewrite rule to redirect all static assets to the CDN itself (or a buffer post-processing function, if you are using a CMS)
-3. Want to serve **webp** images to browsers that support it, and **jpg** images to browsers that don't support it, without having to touch the code of the origin server
+## What is this project good for?
+
+Serving static assets from a CDN **you control**, without having to touch the code of the origin server.
+
+Typical scenarios:
+
+1. You do not want (or cannot) put a third-party CDN (Cloudflare, CloudFront, Fastly, ...) in front of the site.
+2. You do not want to rewrite how assets are referenced in the origin's HTML: a single `.htaccess` rule or an output-buffer rewrite is enough.
+3. You want to serve `.webp` to browsers that support it and fall back to the original raster format otherwise, without touching origin code.
 
 ## Request lifecycle
 
-- The client requests a _Web Page_ of your website
-- That _Web Page_ contains references to static assets (images, css, js, etc) that are re-routed to the CDN in a 1:1 pattern, like `https://my-project.example.com/images/whatever/resource.jpg` -> `https://static.mycdn.com/images/whatever/resource.jpg`
-- The _Transparent Proxy CDN_ receives the _Request_ (file path) and checks if the requested _Resource_ is already present in its filesystem
-- If the _Resource_ is physically present on the CDN's filesystem, it is served to the client and optimized via the `.htaccess` _Expires_ and _Cache-Control_ directives
-- If the _Resource_ is not present on the CDN's filesystem:
-  - If you **have not** enabled the Image to WEBP conversion API, or the _Request_ does not belong to a convertable image, the origin file is **automatically fetched from the origin server** and served to the _Client_, and then it is **cached** on the CDN's filesystem. In this case, _headers_ are blindly mirrored from the origin server to the client, and the _Expires_ and _Cache-Control_ directives are set via PHP
-  - If you **have** enabled the Image to WEBP conversion API, and the _Request_ is convert-able to a **webp** image (jpg,jpeg,png,gif,bmp), the _Transparent Proxy CDN_ will **automatically fetch the image from the origin server**, convert it to **webp** via the **Image to WEBP conversion API**, serve it to the _Client_, and then the **webp** version of the image gets **cached** on the CDN's filesystem. In this case, _headers_ are blindly mirrored from the origin server to the client, and the _Expires_ and _Cache-Control_ directives are set via PHP. **Subsequent requests** to the same image will be **301-redirected** to the **webp** version of the image.
-
-## Can you give me an example of what's going on?
-
-Suppose you:
-
-1. Have an **origin server** called `https://my-project.example.com`
-2. Clone this repository to a VirtualHost called `https://static.mycdn.com`
-3. Want to make all images of `https://my-project.example.com/images/whatever/*.jpg` automatically converted to **webp** and served by the CDN at `https://static.mycdn.com/images/whatever/*.webp`
-
-Then, you would only need to make sure that **images** in the **origin server** are referenced in the HTML this way:
-
-```html
-<!--
-The HTML of a page inside https://my-project.example.com
--->
-<img src="https://static.mycdn.com/images/whatever/resource.jpg" />
-```
-
-Instead of
-
-```html
-<img src="/images/whatever/resource.jpg" />
-```
-
-Then, voilà, **your origin server is webp-enabled without touching a single line of code** (apart from redirecting static assets to the CDN itself, but **that is easy**)
-
-## What files can be served from the static CDN transparent proxy?
-
-You define it via the **.env** file
+1. The client requests a web page of `https://origin.example.com`.
+2. That page references a static asset as `https://cdn.example.com/images/whatever/resource.jpg` (instead of a relative path on the origin).
+3. The CDN receives the request. Apache then **decides who handles it**:
+    - **No query string** and the file **exists on disk**: Apache serves directly. PHP is not invoked.
+    - **No query string** and the file is **missing on disk**: Apache rewrites to `index.php` (cache miss path).
+    - **Any non-empty query string**: Apache always rewrites to `index.php`, because the cache key depends on the query string and Apache alone cannot compute it (see *Query string caching*).
+4. `index.php` runs [public/index.php](public/index.php). Its flow is:
+    1. Validate the request (traversal, extension whitelist).
+    2. Compute the cache location.
+        - Empty QS: `public/<path>`.
+        - Non-empty QS: `public/_qs/<sha256_prefix>/<path>`.
+    3. Apply `purge` / `purge_all` if present.
+    4. Short-circuit to 404 or 503 if a negative-cache marker is still warm.
+    5. Serve from disk if the cache file exists (content-negotiated webp when applicable).
+    6. Otherwise, fetch the origin over HTTPS with cURL, distinguish a real 404 from a transient network failure, persist the bytes atomically, optionally convert to webp, and stream the response.
 
 ## Installation
 
-1. Clone this repo inside your _LAMP_ server with a VirtualHost pointed to `/proj/dir/public`
-2. Make sure `mod_rewrite`, `mod_headers` and `mod_expires` are enabled ( `sudo a2enmod rewrite headers expires` )
-3. Make sure you have `curl` support in your _PHP enabled modules_
-4. Make sure you're running at least **PHP 7.2.5**
-5. Run `composer install` — this will automatically perform an environment check to ensure your system is properly configured
-6. Clone the `.env.example` into `.env` and modify it accordingly to your needs
-7. You must explicitly configure the `IMAGE_CONVERSION_MODE` setting in the `.env` file, based on how you want image conversion to behave (see below)
-8. (Optional) If you set `IMAGE_CONVERSION_MODE = "api"`, install my other project [php-image-to-webp-conversion-api](https://github.com/mauriziofonte/php-image-to-webp-conversion-api) into a separate VirtualHost (preferably with `exec()` enabled), and configure it according to its documentation
+1. Clone this repo onto a LAMP/LEMP server and point a VirtualHost's `DocumentRoot` at `./public`.
+2. Enable the required Apache modules: `sudo a2enmod rewrite headers expires deflate mime`.
+3. Make sure `curl` is available in your PHP build (`php -m | grep -i curl`).
+4. Install dependencies with `composer install`. The `post-install` hook runs [scripts/check-env.php](scripts/check-env.php), which validates every `.env` key (including URL format, numeric ranges and suspicious extensions).
+5. Copy `.env.example` to `.env` and adjust it. The defaults are safe for production (`DEBUG=false`, TLS verification off by default because it would break setups with self-signed origins; turn it on explicitly with `UPSTREAM_VERIFY_TLS=true` when applicable).
+6. If `IMAGE_CONVERSION_MODE = "native"`, install the `cwebp` binary (see *Image conversion modes*).
+7. If `IMAGE_CONVERSION_MODE = "api"`, deploy [mauriziofonte/php-image-to-webp-conversion-api](https://github.com/mauriziofonte/php-image-to-webp-conversion-api) on a separate VirtualHost and set `WEBP_API_SERVER` / `WEBP_API_KEY`.
 
-Specifically, if you want to use the **Image to WEBP conversion API**, you need to set the `WEBP_API_SERVER` and `WEBP_API_KEY` variables in the `.env` file.
+### Minimum PHP version
 
-> **Heads up!**
->
-> The application **automatically caches** the `.env` file into `.cached.env.php` to avoid reading the `.env` file on every request.
->
-> If you modify the `.env` file, you need to **manually delete** the `.cached.env.php` file to force the application to re-read the `.env` file.
+PHP **7.2.5** or later (required by `symfony/http-foundation ^5.4`). The application source targets PHP 7.x syntax only; `match`, arrow functions and PHP-8-only string helpers are not used.
 
-## How to re-route static assets from your origin server to the CDN
+### The cached `.env`
 
-It depends on your application.
+The first request after a fresh install materializes `.env` into a small PHP file named `.cached.env.php` in the project root. This file is an implementation detail of the boot sequence; it avoids re-parsing `.env` on every request and is written atomically (tmp + rename).
 
-- If it is a CMS, refer to the CMS's output buffering and/or output filter functionalities.
-- You can always configure the `.htaccess` file to redirect all static assets to the CDN itself (example below)
-- If it's something custom, you can do the following (untested!):
+If you change `.env`, delete `.cached.env.php` manually to force a re-render.
 
-```php
-<?php
-    // this is a very basic example of how to use output buffering to rewrite static assets
-    ob_start('rewrite_static_assets');
-    ... app code ...
-    ... app code ...
-    $html = ob_get_clean();
-    echo $html;
-    exit();
+## Configuration
 
-    // this is the function that will be called by the output buffer. Every <img> and <link rel="stylesheet" type="text/css"> will be re-routed to the CDN
-    function rewrite_static_assets($buffer) {
-        // rewrite <img > assets (works only if images are referenced with absolute paths without protocol+domain)
-        $buffer = preg_replace_callback('<img\s+src="([^"]+)"', function($matches) {
-            $new_asset_uri = 'https://static.mycdn.com/' . ltrim($matches[1], '/');
-            return str_replace($matches[1], $new_asset_uri, $matches[0]);
-        }, $buffer);
+All settings live in `.env`. Defaults come from [.env.example](.env.example).
 
-        // rewrite <link rel="stylesheet" type="text/css"> assets (same as above)
-        $buffer = preg_replace_callback('<link\s+rel="stylesheet"\s+type="text/css"\s+href="([^"]+)"', function($matches) {
-            $new_asset_uri = 'https://static.mycdn.com/' . ltrim($matches[1], '/');
-            return str_replace($matches[1], $new_asset_uri, $matches[0]);
-        }, $buffer);
+| Key                               | Type      | Default                   | Description                                                                                                                                                     |
+|-----------------------------------|-----------|---------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `DEBUG`                           | bool      | `false`                   | When `true`, enables `display_errors`, `E_ALL` and info-level log entries. **Must be `false` in production** or PHP warnings will poison streamed asset bodies. |
+| `SOURCE_ORIGIN`                   | URL       | *required*                | Origin server from which missing assets are fetched. Validated at install time.                                                                                 |
+| `SOURCE_ORIGIN_SERVER`            | `ip:port` | *optional*                | Pins the cURL connection to a specific `host:port`, bypassing DNS (and therefore any CDN/WAF in front of the origin). See security notes.                       |
+| `CACHEABLE_EXTENSIONS`            | CSV       | `css,js,...,ico`          | Whitelist of file extensions the proxy will serve. Any extension outside this list is rejected with a 404.                                                      |
+| `CACHE_EXPIRY`                    | seconds   | `31536000` (1y)           | `max-age` sent on first-hit responses and, via `.htaccess`, on cache hits. Combined with `must-revalidate` (not `immutable`), so a purge is effective.          |
+| `NEGATIVE_CACHE_TTL`              | seconds   | `300`                     | How long a 404 marker is honored before the proxy re-queries the origin.                                                                                        |
+| `NETWORK_ERROR_TTL`               | seconds   | `30`                      | Circuit-breaker window for transient upstream failures (timeout, DNS, TLS, 5xx).                                                                                |
+| `UPSTREAM_TIMEOUT`                | seconds   | `30`                      | Hard cap on a single upstream fetch. Combined with `CURLOPT_LOW_SPEED_LIMIT=1024` + `_TIME=10`, this also aborts stalled transfers.                             |
+| `UPSTREAM_CONNECT_TIMEOUT`        | seconds   | `5`                       | Socket-level connect timeout.                                                                                                                                   |
+| `UPSTREAM_VERIFY_TLS`             | bool      | `false`                   | If `true`, enables cURL's TLS peer verification. Default off for historical compat with self-signed origins; flip on when on the public Internet.               |
+| `UPSTREAM_FOLLOW_REDIRECTS`       | bool      | `false`                   | If `true`, cURL follows 30x responses. Default off: a compromised origin that redirects to an internal host would turn the proxy into an SSRF vector.           |
+| `IMAGE_CONVERSION_MODE`           | enum      | `none`                    | One of `native`, `api`, `none`.                                                                                                                                 |
+| `WEBP_API_SERVER`                 | URL       | `null`                    | Only used when mode = `api`.                                                                                                                                    |
+| `WEBP_API_KEY`                    | string    | `null`                    | Only used when mode = `api`.                                                                                                                                    |
+| `CHARSET` / `TIMEZONE` / `LOCALE` | string    | `UTF-8` / `UTC` / `en_US` | Standard PHP locale setup.                                                                                                                                      |
 
-        // return the modified buffer
-        return $buffer;
-    }
-?>
+## Image conversion modes
+
+`IMAGE_CONVERSION_MODE` controls how a newly-cached raster image is handled:
+
+- **`native`** - the image is converted on the fly using the `cwebp` binary. Requires PHP's `exec()` and `cwebp` in `PATH`. The output is written to a scratch path and then atomically renamed over the destination, so concurrent workers never observe a truncated `.webp`.
+- **`api`** - the image is POSTed to an external microservice ([php-image-to-webp-conversion-api](https://github.com/mauriziofonte/php-image-to-webp-conversion-api)) which returns the webp payload as base64. Written atomically.
+- **`none`** - conversion is disabled. The original raster image is cached and served as-is.
+
+### Installing `cwebp`
+
+| Distro                 | Command                          |
+|------------------------|----------------------------------|
+| Debian / Ubuntu        | `sudo apt install webp`          |
+| Alpine                 | `apk add libwebp-tools`          |
+| Arch / Manjaro         | `sudo pacman -S libwebp`         |
+| Fedora / RHEL / CentOS | `sudo dnf install libwebp-tools` |
+| macOS (Homebrew)       | `brew install webp`              |
+
+Smoke-test: `cwebp input.jpg -o output.webp`.
+
+## Cache purge
+
+Two query-string flags trigger a cache purge for the current resource. Both flags accept `1` and `true`, case-insensitive.
+
+| Query string   | Effect                                                                                                                                                                                     |
+|----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `?purge=1`     | Deletes the cached file for this exact URL, plus both its negative-cache markers (`.404`, `.netfail`), then re-fetches from the origin.                                                    |
+| `?purge_all=1` | Same as `purge=1`, plus every **sibling representation** sharing the same basename: `.webp` conversion, raster originals (`.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`), and all their markers. |
+
+Purge applies to the exact cache bucket: a purge on `/hero.jpg?v=2` only affects the `_qs/<hash>/` bucket for that query string, not the QS-less `public/hero.jpg` (or any other bucket).
+
+Examples:
+
+``` bash
+# Re-fetch /images/hero.jpg only, keep /images/hero.webp in place
+curl -I 'https://static.mycdn.com/images/hero.jpg?purge=1'
+
+# Rebuild everything under /images/hero.* (raster + webp) in the QS-less bucket
+curl -I 'https://static.mycdn.com/images/hero.jpg?purge_all=1'
+
+# Purge the ?v=42 bucket only
+curl -I 'https://static.mycdn.com/images/hero.jpg?v=42&purge_all=1'
 ```
 
-To configure a permanent redirect of all static assets to the CDN itself, you can use the following `.htaccess` file:
+Purge is **public** (anyone can invoke it). If that is unacceptable, protect the CDN with a front-facing auth proxy, or add a Basic Auth gate in `.htaccess` limited to requests carrying a `purge=` query string.
 
-```apache
+## Query string caching
+
+Cache-busted URLs (e.g. `/hero.jpg?v=42`) are a common origin idiom. A naive disk cache keyed on path alone would pin the very first version the proxy saw and never re-fetch. To avoid that:
+
+- An **empty** (or purge-only) query string keys on the path: `public/<path>`. Apache serves directly on cache hit, zero PHP.
+
+- A **non-empty** query string is canonicalized (proxy-control params stripped, remaining params sorted by key) and hashed with SHA-256; the first 64 bits of the hash become a subdirectory under `public/_qs/`:
+
+  ``` text
+  /hero.jpg?a=1&b=2  -> public/_qs/<sha256_prefix>/hero.jpg
+  /hero.jpg?b=2&a=1  -> same file (canonicalized to a=1&b=2)
+  /hero.jpg?v=42     -> public/_qs/<other_hash>/hero.jpg
+  ```
+
+  Apache always routes such requests through `index.php` (the rewrite rule matches `QUERY_STRING .`), because it cannot compute the SHA-256 on its own. `index.php` reads or writes the correct bucket and serves.
+
+Direct HTTP access to `/_qs/...` is denied with 403 in `.htaccess`: the bucket layout is an internal implementation detail.
+
+Pros: every origin version is preserved as long as its query string is unique, and purges apply to the exact bucket.
+
+Cons: on a QS-keyed hit, PHP runs (no pure-Apache fast path). For a static asset this is still fast (opcode cache, file_get_contents), but it is not free.
+
+## Negative caching and circuit breaker
+
+The proxy maintains two kinds of negative markers next to the cache file. Both are hidden from HTTP by a `FilesMatch "\.(404|netfail)$"` `Require all denied` rule in [public/.htaccess](public/.htaccess).
+
+| Marker           | Armed when origin returns...                                                                                     | TTL                                  | HTTP status served to the client |
+|------------------|------------------------------------------------------------------------------------------------------------------|--------------------------------------|----------------------------------|
+| `<path>.404`     | A semantic `404 Not Found`                                                                                       | `NEGATIVE_CACHE_TTL` (default 300 s) | `404`                            |
+| `<path>.netfail` | `5xx`, connection refused, DNS failure, TLS error, timeout, transfer stalled under the low-speed-limit threshold | `NETWORK_ERROR_TTL` (default 30 s)   | `503` + `Retry-After`            |
+
+Rationale:
+
+- A real `404` is a persistent signal. 5 minutes of suppression prevents a single missing favicon requested a million times from hammering the origin a million times.
+- A network blip is a transient signal. 30 seconds of suppression is a tiny circuit breaker that protects the PHP worker pool (every upstream fetch uses one) without permanently hiding assets that are actually fine.
+
+On a successful re-fetch both markers are dropped. A `purge=1` also clears them.
+
+## Content negotiation (Accept: image/webp)
+
+For **QS-less** requests the `.htaccess` does the classic trick: `request for foo.jpg` + `foo.webp exists on disk` -\> `301 -> foo.webp`.
+
+For **QS-keyed** requests Apache routes through PHP; the decision then is driven by the client's `Accept` header:
+
+- Client sends `Accept: image/webp` (Chrome, Firefox, Safari, Edge on modern versions): the proxy serves the `.webp` sibling if it exists (or generates it lazily on the first webp-capable hit).
+- Client does not advertise webp: the proxy serves the original raster.
+- In both cases the response carries `Vary: Accept` so intermediaries do not cross-pollute cached variants.
+
+A bare `*/*` is intentionally NOT treated as webp support, because old UAs send it and then fail to decode the response.
+
+## Logging
+
+Errors and relevant events are written to `logs/proxy.log` (created lazily, `0755`, outside the DocumentRoot and also blocked by an `.htaccess` 403 in case the VirtualHost is mispointed).
+
+Log format:
+
+``` text
+[<ISO-8601>] <LEVEL> <message> key=value key=value ...
+```
+
+Levels:
+
+- **ERROR** - upstream fetch failures (with `reason`, `curl_errno`, `response_code`), conversion failures, cache write failures.
+- **WARN** - (reserved for future use).
+- **INFO** - purges, upstream 404s, cache operations. Only written when `DEBUG=true`.
+
+Example entry:
+
+``` text
+[2025-03-14T12:34:56+00:00] ERROR upstream fetch failed url=https://origin.example.com/hero.jpg reason=timeout curl_errno=28 curl_error=Operation timed out after 30000 ms response_code=0
+```
+
+For production, rotate `logs/proxy.log` with a standard tool:
+
+``` bash
+# /etc/logrotate.d/php-webp-proxy
+/srv/sites/cdn/logs/proxy.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+```
+
+## Cache maintenance
+
+The proxy does not auto-clean stale negative markers or old cached files. Run maintenance via cron.
+
+``` bash
+# Every hour: drop .404 / .netfail markers older than 1 day so that
+# resources which genuinely came back to life become retryable.
+0 * * * * find /srv/sites/cdn/public -name '*.404' -o -name '*.netfail' -mtime +1 -delete
+
+# Every week: garbage-collect QS buckets not touched in the last 30 days.
+# The _qs/ layout is flat (one level of hash-dirs), so this is cheap.
+15 3 * * 0 find /srv/sites/cdn/public/_qs -mindepth 1 -maxdepth 1 -type d -atime +30 -exec rm -rf {} +
+```
+
+## Rewriting origin references to the CDN
+
+If you cannot change the origin's HTML directly, the cleanest option is an `.htaccess` rule on the origin that 301-redirects every static asset to the CDN:
+
+``` apache
 <IfModule mod_rewrite.c>
-    ### Rewrite all css, js, jpeg, jpg, png, gif, bmp, webp, ttf, woff, woff2, otf, eot, svg, ico files to the CDN
     RewriteEngine On
-    RewriteCond %{REQUEST_URI} \.(css|js|jpg|jpeg|png|gif|bmp|webp|ttf|woff|woff2|otf|eot|svg|ico)$ [NC]
-    RewriteRule ^(.*)$ https://static.mycdn.com/$1 [R=301,L]
+    RewriteCond %{REQUEST_URI} \.(css|js|jpe?g|png|gif|bmp|webp|ttf|woff2?|otf|eot|svg|ico)$ [NC]
+    RewriteRule ^(.*)$ https://static.mycdn.com/$1 [R=301,L,QSA]
 </IfModule>
 ```
 
-## How to configure the .env
+`QSA` on the RewriteRule preserves the origin's query string, which is exactly what the proxy needs for correct QS-keyed caching.
 
-```text
-DEBUG = true|false
-    Defines the error reporting of the application. NEEDS TO BE TURNED OFF IN PRODUCTION, otherwise static assets output may be poisoned from the PHP error output
+For CMSes or custom frameworks, use their output-buffer / output-filter hook:
 
-SOURCE_ORIGIN = "https://main.origin.server.biz"
-    Defines the main host where the "original" static assets are physically present and can be cloned from
-
-SOURCE_ORIGIN_SERVER = "1.2.3.4:443"
-    Defines the IP:PORT where to connect to, while fetching upstream. This is useful when behind a CDN like Cloudflare, that would otherwise respond with a 403 unauthorized
-
-CACHEABLE_EXTENSIONS = "css,js,jpg,jpeg,png,gif,bmp,webp,ttf,woff,woff2,otf,eot,svg,ico"
-    Define the extensions that will be enabled on the transparent proxy. Potentially, you could use this to cache also HTML or ZIP files
-
-CACHE_EXPIRY = 2592000
-    Defines the expiry time of static assets served from the trasparent CDN. Please keep in mind that this directive will be set via PHP only the "first time" a static asset does not exists on the CDN filesystem. Subsequent calls will be cached accordingly to what the .htaccess defines. (1 month)
-
-CHARSET  = "UTF-8"        # Self-explanatory. Valid values are "UTF-8" or "ISO-8859-1"
-TIMEZONE = "Europe/Rome"  # Self-explanatory. Valid values are the ones defined in https://www.php.net/manual/en/timezones.php
-LOCALE   = "en_US"        # Self-explanatory. Valid values are the ones defined in https://www.php.net/manual/en/function.setlocale.php
-
-IMAGE_CONVERSION_MODE = "native"
-    Defines how the Proxy shall behave when it responds to Image requests.
-    - "native" : performs native WEBP conversion on the fly. Requires "cwebp" binary.
-    - "api" : delegates WEPB conversion to a third-party service. 
-    - "none" : no transformation applied when handling images.
-
-WEBP_API_SERVER = "https://my.webp.conversion.microservice.biz"
-    Defines the Image to WEBP api url, that can be cloned from https://github.com/mauriziofonte/php-image-to-webp-conversion-api . Refer to the documentation of that project to know more.
-
-WEBP_API_KEY = "a-very-strong-api-key"
-    Same as WEBP_API_SERVER. Refer to the documentation of "php-image-to-webp-conversion-api" to know more.
+``` php
+ob_start(function ($html) {
+    return preg_replace_callback(
+        '~(<img\s[^>]*\bsrc="|<link\s[^>]*\bhref=")(/[^"]+)~i',
+        function ($m) {
+            return $m[1] . 'https://static.mycdn.com' . $m[2];
+        },
+        $html
+    );
+});
 ```
 
-## Image Conversion Modes
+## Security considerations
 
-The `.env` file supports a directive named `IMAGE_CONVERSION_MODE`, that controls the behaviour of this Proxy when it responds to _Image_ requests (jpg, jpeg, png, bmp, etc.).
+Read these before putting the proxy on the public Internet.
 
-```ini
-IMAGE_CONVERSION_MODE = "native" | "api" | "none"
-```
+- **Public cache surface.** Any HTTP client can cause the proxy to create a new file under `public/` by requesting an arbitrary path that resolves on the origin. Negative caching mitigates the same-URL case, but an attacker generating distinct random paths will still cause one origin fetch per request. Put a rate limiter in front of the CDN (nginx `limit_req`, Apache `mod_ratelimit`, fail2ban watching `index.php` invocations).
+- **Upstream-failure marker as an extra circuit breaker.** Even without a rate limiter, the `.netfail` marker bounds origin exposure: once the origin starts misbehaving, each path auto-suppresses for `NETWORK_ERROR_TTL` seconds.
+- **`SOURCE_ORIGIN_SERVER` bypasses front-facing protections.** Pinning the cURL connection to a specific `ip:port` bypasses the origin's DNS-based CDN/WAF. If you rely on the WAF for security, leave the variable empty.
+- **`UPSTREAM_VERIFY_TLS` defaults to `false`.** This preserves the historical behavior (self-signed origins on private networks work out of the box), but it is the wrong default for a production deployment facing the public Internet. Set `UPSTREAM_VERIFY_TLS=true` whenever you can.
+- **`UPSTREAM_FOLLOW_REDIRECTS` defaults to `false`.** A compromised origin that returns a 30x to an internal host would otherwise become an SSRF pivot. Enable redirects only when the origin legitimately uses them.
+- **`CACHEABLE_EXTENSIONS` can leak sessions.** If you add `html`, `htm`, `xml`, `json` or `php` to the list and the origin ever serves authenticated content on those paths (private profile pages, signed JSON APIs, etc.), the proxy will cache that content (captured without the client's cookies and with no user context) and serve it indiscriminately. The `scripts/check-env.php` check-env step emits a warning when a sensitive extension appears in the list.
+- **Purge is unauthenticated** (see above).
+- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, project-internal directories (`vendor/`, `helpers/`, `scripts/`, `logs/`, `.git/`), the internal QS-bucket layout (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and negative-cache markers (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply.
+- **HSTS** is enabled with `max-age=31536000` only by default. The wider `includeSubDomains` / `preload` variants are commented out in `.htaccess` because they affect sibling hostnames on the same eTLD+1. Enable them only when you understand the blast radius.
 
-This setting controls how the proxy handles image-to-WEBP conversion:
+## Troubleshooting
 
-- `"native"`: images are converted on the fly using the `cwebp` CLI binary (requires `exec()` and `cwebp` installed and available in PATH)
-- `"api"`: images are converted using the external API server defined by `WEBP_API_SERVER` and `WEBP_API_KEY`
-- `"none"`: image conversion is disabled completely, and original image formats are used as-is
+| Symptom                                     | Likely cause                                                                                                                                                                              |
+|---------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `cwebp binary not available in PATH`        | `IMAGE_CONVERSION_MODE=native` but `cwebp` is missing. Install it or switch to `api` / `none`.                                                                                            |
+| New values in `.env` have no effect         | You did not delete `.cached.env.php`.                                                                                                                                                     |
+| 404s for assets that do exist on the origin | A `.404` marker is still warm. Wait `NEGATIVE_CACHE_TTL` seconds or hit the URL with `?purge=1`.                                                                                          |
+| 503 with `Retry-After: 30`                  | A `.netfail` marker is warm (origin was unreachable recently). Either wait or re-check the origin and hit with `?purge=1`.                                                                |
+| 500 `Image conversion failed`               | Origin returned something cURL accepted as 200 but `cwebp` refused. Inspect `public/<path>` and `logs/proxy.log`.                                                                         |
+| All responses HTTP (no HTTPS redirect)      | `mod_rewrite` off or the VirtualHost is behind a TLS-terminating proxy that does not forward `X-Forwarded-Proto: https`.                                                                  |
+| QS-keyed content always a cache miss        | QS parameters contain unique tokens per request (e.g. cache-breakers with timestamps). That is the expected behavior but it defeats the cache. Canonicalize on the origin before linking. |
+| `logs/proxy.log` not appearing              | Web server user cannot write to project root. `chown -R www-data:www-data /srv/sites/cdn`.                                                                                                |
 
-### CWEBP binary installation
+## License
 
-In order for `IMAGE_CONVERSION_MODE` = `native`, your environment **must** have _Cwebp_ support.
-
-- **Ubuntu/Debian** : `sudo apt install webp`
-- **Alpine Linux** : `apk add libwebp-tools`
-- **Arch Linux / Manjaro** : `sudo pacman -S libwebp`
-- **Fedora / RHEL / CentOS** : `sudo dnf install libwebp-tools` or `sudo yum install libwebp-tools`
-- **macOS (Homebrew)** : `brew install webp`
-
-Test _Cwebp_ with: `cwebp input.jpg -o output.webp`
+BSD 3-Clause, see [LICENSE](LICENSE).
