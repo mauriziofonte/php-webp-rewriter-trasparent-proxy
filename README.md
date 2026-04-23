@@ -6,9 +6,32 @@ It acts as a **transparent proxy** between the origin server and the client's br
 
 > Historical note: the repository name (`php-webp-rewriter-trasparent-proxy`) contains a typo kept for backward-compatibility. The project is a transparent proxy, not a "trasparent" one.
 
+## Scope and honest positioning
+
+This is a **small, hobbyist-to-small-production** project. It is appropriate for a narrow set of scenarios and has deliberate limits. Read this section before adopting it so you do not mistake it for something it is not.
+
+**Use this project when:**
+
+- You are on a **LAMP / LEMP** VPS, no ops team, no budget for a third-party CDN, and want WEBP conversion plus a filesystem cache in front of an origin you do not want to modify.
+- Traffic is **moderate and predictable** (roughly: a personal site, a portfolio, a small business site, internal tools). Order of magnitude: up to a few dozen requests per second, not hundreds.
+- **Simplicity wins over performance**: you want one `git clone`, one `composer install`, one `.env`, and you are willing to pay the cost of PHP being in the serving path for query-string-keyed hits.
+- You want the deployment to be a single box you fully control (no external DNS dependency, no vendor account, no egress to someone else's network).
+
+**Do NOT use this project when:**
+
+- You need **production-grade CDN semantics**: Cloudflare's free tier (Polish for WEBP, cache, WAF, DDoS protection, anycast) does all of this, properly, for zero euros and five minutes of DNS work. Use that instead.
+- You expect **hundreds of requests per second or more**, or traffic spikes from bots/scanners. PHP-FPM worker pools cap concurrency well below what `nginx proxy_cache` or Varnish deliver with a tenth of the memory.
+- You need **horizontal scaling** behind a load balancer. The on-disk cache is per-instance; purges and warm-up do not propagate. Building shared state on top of this project is more work than starting from nginx/Varnish.
+- You need **features this project deliberately does not implement**: Range request handling (partial content), Accept-Encoding negotiation (Brotli vs gzip), conditional requests past what Apache provides, authentication/authorization on purge, size-capped or LRU cache eviction, metrics/observability endpoints, HTTP/2 push, HTTP/3.
+- You need an **audited security posture**. This repository has no automated test suite and has not undergone a formal security review. The codebase has been manually hardened (atomic writes, circuit breaker, query-string caching, whitelist header mirroring, structured logging) but manual hardening is not the same as a track record in the wild.
+
+**Real value-add of this project over the alternatives:**
+
+The one thing this project does that is genuinely cumbersome to replicate with off-the-shelf tools is **on-the-fly WEBP conversion against an unmodifiable origin, with automatic 301 fallback for non-webp clients, served from an `.htaccess` + PHP stack**. If that specific combination matches your constraints, this is a reasonable starting point. Everything else (caching, HTTPS redirect, compression, ETags) is solved better elsewhere.
+
 ## Table of contents
 
-- [What is this project good for?](#what-is-this-project-good-for)
+- [Scope and honest positioning](#scope-and-honest-positioning)
 - [Request lifecycle](#request-lifecycle)
 - [Installation](#installation)
 - [Configuration](#configuration)
@@ -23,16 +46,6 @@ It acts as a **transparent proxy** between the origin server and the client's br
 - [Security considerations](#security-considerations)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
-
-## What is this project good for?
-
-Serving static assets from a CDN **you control**, without having to touch the code of the origin server.
-
-Typical scenarios:
-
-1. You do not want (or cannot) put a third-party CDN (Cloudflare, CloudFront, Fastly, ...) in front of the site.
-2. You do not want to rewrite how assets are referenced in the origin's HTML: a single `.htaccess` rule or an output-buffer rewrite is enough.
-3. You want to serve `.webp` to browsers that support it and fall back to the original raster format otherwise, without touching origin code.
 
 ## Request lifecycle
 
