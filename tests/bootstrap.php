@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Mfonte\ProxyCdn\Tests\Support\StrictErrorHandler;
+use Mfonte\ProxyCdn\Tests\StrictErrorHandler;
 
 /*
  * PHPUnit bootstrap. The strict error handler is installed first, before the
@@ -20,7 +20,7 @@ if (!is_file($projectRoot . '/vendor/autoload.php')) {
     exit(1);
 }
 
-require_once __DIR__ . '/Support/StrictErrorHandler.php';
+require_once __DIR__ . '/StrictErrorHandler.php';
 
 StrictErrorHandler::install($projectRoot . DIRECTORY_SEPARATOR . 'vendor');
 

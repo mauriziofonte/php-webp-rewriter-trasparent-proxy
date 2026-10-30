@@ -2,15 +2,15 @@
 
 declare(strict_types=1);
 
-namespace Mfonte\ProxyCdn\Tests\Unit\Support;
+namespace Mfonte\ProxyCdn\Tests\Unit\Tooling;
 
-use Mfonte\ProxyCdn\Tests\Support\StrictErrorHandler;
+use Mfonte\ProxyCdn\Tests\StrictErrorHandler;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
- * @covers \Mfonte\ProxyCdn\Tests\Support\StrictErrorHandler
+ * @covers \Mfonte\ProxyCdn\Tests\StrictErrorHandler
  */
 #[CoversClass(StrictErrorHandler::class)]
 final class StrictErrorHandlerTest extends TestCase
@@ -47,6 +47,7 @@ final class StrictErrorHandlerTest extends TestCase
             'notice in src/' => [E_NOTICE, '/srv/app/src/Kernel.php'],
             'warning in vendor/' => [E_WARNING, self::VENDOR . '/symfony/console/Application.php'],
             'deprecation in a sibling of vendor/' => [E_DEPRECATED, '/srv/app/vendor-old/lib.php'],
+            'deprecation in a vendor/ directory inside tests/' => [E_DEPRECATED, '/srv/app/tests/Fixtures/vendor/lib.php'],
         ];
     }
 
@@ -105,7 +106,7 @@ final class StrictErrorHandlerTest extends TestCase
     public function testTheReportListsEachVendorDeprecationOnceWithItsCount(): void
     {
         $handler = new StrictErrorHandler(self::VENDOR);
-        $file = self::VENDOR . '/vlucas/phpdotenv/src/Dotenv.php';
+        $file = self::VENDOR . '/psr/log/src/LoggerInterface.php';
         $handler(E_DEPRECATED, 'Old API', $file, 7);
         $handler(E_DEPRECATED, 'Old API', $file, 7);
 
@@ -141,12 +142,50 @@ final class StrictErrorHandlerTest extends TestCase
         self::assertFalse($handler(E_WARNING, 'Silenced', '/srv/app/src/Kernel.php', 1));
     }
 
-    public function testTheBootstrapHandlerIsActiveWhileTestsRun(): void
+    public function testErrorsSilencedWithTheAtOperatorAreLeftToPhp(): void
     {
-        $this->expectException(\ErrorException::class);
-        $this->expectExceptionMessage('Raised from tests/');
+        error_clear_last();
 
-        trigger_error('Raised from tests/', E_USER_DEPRECATED);
+        @trigger_error('Silenced', E_USER_WARNING);
+
+        $last = error_get_last();
+        self::assertNotNull($last);
+        self::assertSame('Silenced', $last['message']);
+    }
+
+    /**
+     * @return array<string, array{int}>
+     */
+    public static function provideUserErrorSeverities(): array
+    {
+        return [
+            'E_USER_NOTICE' => [E_USER_NOTICE],
+            'E_USER_WARNING' => [E_USER_WARNING],
+            'E_USER_DEPRECATED' => [E_USER_DEPRECATED],
+        ];
+    }
+
+    /**
+     * The handler installed by tests/bootstrap.php is still the current one
+     * while a test runs: PHPUnit has not replaced it with its own, which only
+     * reports deprecations.
+     *
+     * @dataProvider provideUserErrorSeverities
+     */
+    #[DataProvider('provideUserErrorSeverities')]
+    public function testTheBootstrapHandlerIsActiveWhileTestsRun(int $severity): void
+    {
+        try {
+            trigger_error('Raised from tests/', $severity);
+        } catch (\ErrorException $exception) {
+            self::assertSame('Raised from tests/', $exception->getMessage());
+            self::assertSame($severity, $exception->getSeverity());
+            self::assertSame(__FILE__, $exception->getFile());
+
+            return;
+        }
+
+        self::fail('The error did not become an ErrorException: the handler of tests/bootstrap.php is not active.');
     }
 
     private function report(StrictErrorHandler $handler): string

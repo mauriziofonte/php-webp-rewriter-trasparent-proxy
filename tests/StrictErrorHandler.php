@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Mfonte\ProxyCdn\Tests\Support;
+namespace Mfonte\ProxyCdn\Tests;
 
 /**
  * Error handler installed by tests/bootstrap.php, before the Composer
@@ -63,9 +63,9 @@ final class StrictErrorHandler
     /**
      * Handles one PHP error, with the signature expected by set_error_handler().
      *
-     * @return bool true when the error is a tolerated vendor deprecation, false to let PHP handle it
-     *
      * @throws \ErrorException for every error that is reported and not tolerated
+     *
+     * @return bool true when the error is a tolerated vendor deprecation, false to let PHP handle it
      */
     public function __invoke(int $severity, string $message, string $file = '', int $line = 0): bool
     {

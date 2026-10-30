@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Mfonte\ProxyCdn\Tests\Unit\Support;
+namespace Mfonte\ProxyCdn\Tests\Unit\Tooling;
 
 use PHPUnit\Framework\Attributes\CoversNothing;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -21,12 +21,12 @@ final class BootstrapTest extends TestCase
 {
     private const FILES = [
         '/tests/bootstrap.php',
-        '/tests/Support/StrictErrorHandler.php',
+        '/tests/StrictErrorHandler.php',
         '/vendor/autoload.php',
-        '/helpers/functions.php',
+        '/src/functions.php',
     ];
 
-    private const DIRECTORIES = ['/tests/Support', '/tests', '/vendor', '/helpers', ''];
+    private const DIRECTORIES = ['/tests', '/vendor', '/src', ''];
 
     /**
      * @var string
@@ -38,12 +38,12 @@ final class BootstrapTest extends TestCase
         parent::set_up();
 
         $root = dirname(__DIR__, 3);
-        $this->project = sys_get_temp_dir() . '/proxy-cdn-bootstrap-' . bin2hex(random_bytes(6));
+        $this->project = sys_get_temp_dir() . '/bootstrap-test-' . bin2hex(random_bytes(6));
 
-        foreach (['/tests/Support', '/vendor', '/helpers'] as $directory) {
+        foreach (['/tests', '/vendor', '/src'] as $directory) {
             self::assertTrue(mkdir($this->project . $directory, 0777, true));
         }
-        foreach (['/tests/bootstrap.php', '/tests/Support/StrictErrorHandler.php'] as $file) {
+        foreach (['/tests/bootstrap.php', '/tests/StrictErrorHandler.php'] as $file) {
             self::assertTrue(copy($root . $file, $this->project . $file));
         }
     }
@@ -78,8 +78,8 @@ final class BootstrapTest extends TestCase
 
     public function testProjectDeprecationsRaisedWhileAutoloadingAreFatal(): void
     {
-        $this->writeFile('/helpers/functions.php', "trigger_error('Deprecated in a files entry', E_USER_DEPRECATED);\n");
-        $this->writeFile('/vendor/autoload.php', "require __DIR__ . '/../helpers/functions.php';\n");
+        $this->writeFile('/src/functions.php', "trigger_error('Deprecated in a files entry', E_USER_DEPRECATED);\n");
+        $this->writeFile('/vendor/autoload.php', "require __DIR__ . '/../src/functions.php';\n");
 
         list($exitCode, $output) = $this->runBootstrap();
 

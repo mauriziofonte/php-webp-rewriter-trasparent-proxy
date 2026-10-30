@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Mfonte\ProxyCdn\Tests\Unit\Packaging;
+namespace Mfonte\ProxyCdn\Tests\Unit\Tooling;
 
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -201,7 +201,7 @@ final class ComposerManifestTest extends TestCase
     {
         return [
             // The deprecation rules make the PHP 8.5 run report curl_close() and the like.
-            'phpstan' => ['phpstan', ['phpstan/phpstan', 'phpstan/phpstan-deprecation-rules']],
+            'phpstan' => ['phpstan', ['phpstan/phpstan', 'phpstan/phpstan-deprecation-rules', 'phpstan/phpstan-phpunit']],
             'php-cs-fixer' => ['php-cs-fixer', ['friendsofphp/php-cs-fixer']],
             'psalm' => ['psalm', ['vimeo/psalm']],
         ];

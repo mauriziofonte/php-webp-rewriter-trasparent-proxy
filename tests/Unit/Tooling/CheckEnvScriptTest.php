@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Mfonte\ProxyCdn\Tests\Unit\Packaging;
+namespace Mfonte\ProxyCdn\Tests\Unit\Tooling;
 
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\DataProvider;

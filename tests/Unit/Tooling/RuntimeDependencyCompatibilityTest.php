@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Mfonte\ProxyCdn\Tests\Unit\Packaging;
+namespace Mfonte\ProxyCdn\Tests\Unit\Tooling;
 
 use Dotenv\Dotenv;
 use Mfonte\ProxyCdn\Tests\Fixtures\Console\GreetCommand;

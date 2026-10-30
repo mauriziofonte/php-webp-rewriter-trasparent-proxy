@@ -51,16 +51,11 @@
   "minimum-stability": "stable",
   "prefer-stable": true,
   "scripts": {
+    "test": "@php vendor/bin/phpunit",
     "analyse": [
       "@php tools/require-tool.php phpstan",
-      "@php tools/phpstan/vendor/bin/phpstan analyse --configuration=phpstan.neon.dist",
-      "@php tools/phpstan/vendor/bin/phpstan analyse --configuration=phpstan-php85.neon.dist"
-    ],
-    "check-env": "@php scripts/check-env.php",
-    "ci": [
-      "@cs:check",
-      "@analyse",
-      "@test"
+      "@php tools/phpstan/vendor/bin/phpstan analyse --configuration=phpstan.neon.dist --no-progress --memory-limit=1G",
+      "@php tools/phpstan/vendor/bin/phpstan analyse --configuration=phpstan-php85.neon.dist --no-progress --memory-limit=1G"
     ],
     "cs:check": [
       "@php tools/require-tool.php php-cs-fixer",
@@ -70,21 +65,26 @@
       "@php tools/require-tool.php php-cs-fixer",
       "@php tools/php-cs-fixer/vendor/bin/php-cs-fixer fix"
     ],
-    "post-install-cmd": "@php scripts/check-env.php --informational",
-    "post-update-cmd": "@php scripts/check-env.php --informational",
     "taint": [
       "@php tools/require-tool.php psalm",
       "@php tools/psalm/vendor/bin/psalm --config=psalm.xml.dist --taint-analysis"
     ],
-    "test": "@php vendor/bin/phpunit"
+    "ci": [
+      "@cs:check",
+      "@analyse",
+      "@test"
+    ],
+    "check-env": "@php scripts/check-env.php",
+    "post-install-cmd": "@php scripts/check-env.php --informational",
+    "post-update-cmd": "@php scripts/check-env.php --informational"
   },
   "scripts-descriptions": {
-    "analyse": "Runs PHPStan at max level as PHP 7.2.5 and as PHP 8.5 (needs tools/phpstan).",
-    "check-env": "Validates the .env configuration and exits non-zero on any error.",
-    "ci": "Runs cs:check, analyse and test, in this order.",
-    "cs:check": "Reports coding standard violations as a diff (needs tools/php-cs-fixer).",
-    "cs:fix": "Fixes coding standard violations (needs tools/php-cs-fixer).",
-    "taint": "Runs the Psalm taint analysis on src/ (needs tools/psalm).",
-    "test": "Runs the PHPUnit test suite."
+    "test": "Run the PHPUnit test suite.",
+    "analyse": "Run PHPStan at level max as PHP 7.2.5 and as PHP 8.5 (needs tools/phpstan).",
+    "cs:check": "Report coding style violations as a diff, without changing files (needs tools/php-cs-fixer).",
+    "cs:fix": "Fix coding style violations in place (needs tools/php-cs-fixer).",
+    "taint": "Run the Psalm taint analysis on src/ (needs tools/psalm).",
+    "ci": "Run cs:check, analyse and test, in this order.",
+    "check-env": "Validate the .env configuration and exit non-zero on any error."
   }
 }

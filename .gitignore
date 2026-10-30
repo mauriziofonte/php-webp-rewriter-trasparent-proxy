@@ -1,14 +1,12 @@
-# Dependencies. No lock files are committed: a single composer.lock cannot
-# serve every supported PHP version (7.2 to 8.5), so CI resolves lowest and
-# highest dependencies on each one.
+# Composer: no lock file is committed (one lock cannot serve PHP 7.2 and 8.5)
 /vendor/
 /tools/*/vendor/
 composer.lock
 
-# Test and static analysis caches
-.phpunit.cache/
-.phpunit.result.cache
-.php-cs-fixer.cache
+# Tool caches
+/.phpunit.cache/
+/.phpunit.result.cache
+/.php-cs-fixer.cache
 
 # Runtime configuration: .env holds deployment secrets, .cached.env.php is the
 # compiled configuration rendered from it.
