@@ -1,0 +1,64 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Mfonte\ProxyCdn\Cache;
+
+/**
+ * Storage of cache entries and of the marker files kept next to them,
+ * addressed by absolute path.
+ *
+ * Writes are atomic: a reader sees either the previous contents or the new
+ * ones, never a partial file. Implementations never throw and never emit PHP
+ * warnings; failures are reported through the return values.
+ */
+interface CacheStorage
+{
+    /**
+     * Whether $path is an existing regular file.
+     */
+    public function isFile(string $path): bool;
+
+    /**
+     * Contents of the file at $path, or null when it cannot be read.
+     */
+    public function read(string $path): ?string;
+
+    /**
+     * Size in bytes of the file at $path, or null when it does not exist.
+     */
+    public function size(string $path): ?int;
+
+    /**
+     * Unix time of the last modification of $path, or null when it does not exist.
+     */
+    public function modifiedAt(string $path): ?int;
+
+    /**
+     * Atomically replaces the file at $path with $contents, creating the
+     * missing parent directories.
+     *
+     * @return bool true when the file holds $contents afterwards
+     */
+    public function write(string $path, string $contents): bool;
+
+    /**
+     * Creates $directory and its missing parents.
+     *
+     * @return bool true when $directory exists afterwards
+     */
+    public function ensureDirectory(string $directory): bool;
+
+    /**
+     * Creates the empty file $path, or sets its modification time to now.
+     * The parent directory must exist.
+     *
+     * @return bool true on success
+     */
+    public function touch(string $path): bool;
+
+    /**
+     * Removes the file at $path when it exists.
+     */
+    public function delete(string $path): void;
+}
