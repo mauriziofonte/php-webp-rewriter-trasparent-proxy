@@ -10,27 +10,36 @@ namespace Mfonte\ProxyCdn\Cache;
  *
  * Writes are atomic: a reader sees either the previous contents or the new
  * ones, never a partial file. Implementations never throw and never emit PHP
- * warnings; failures are reported through the return values.
+ * warnings; failures are reported through the return values. The readers
+ * are impure: another process may change the files between two calls.
  */
 interface CacheStorage
 {
     /**
      * Whether $path is an existing regular file.
+     *
+     * @phpstan-impure
      */
     public function isFile(string $path): bool;
 
     /**
      * Contents of the file at $path, or null when it cannot be read.
+     *
+     * @phpstan-impure
      */
     public function read(string $path): ?string;
 
     /**
      * Size in bytes of the file at $path, or null when it does not exist.
+     *
+     * @phpstan-impure
      */
     public function size(string $path): ?int;
 
     /**
      * Unix time of the last modification of $path, or null when it does not exist.
+     *
+     * @phpstan-impure
      */
     public function modifiedAt(string $path): ?int;
 
