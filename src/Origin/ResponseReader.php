@@ -13,8 +13,7 @@ namespace Mfonte\ProxyCdn\Origin;
  * Every read is one fread() into a buffer, never fgets(), so that the
  * deadline and the low speed limit are checked on every read, inside a
  * line too: fgets() keeps waiting for the end of a line for as long as
- * bytes trickle in, each within the read timeout (finding 1 of the PRX-4
- * review).
+ * bytes trickle in, each within the read timeout.
  *
  * The methods that can fail return the failure as
  * [HttpResponse::OUTCOME_*, error number, message].

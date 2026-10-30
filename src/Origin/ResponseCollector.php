@@ -502,9 +502,8 @@ final class ResponseCollector
     /**
      * Creates the body file in the temporary directory, and nowhere else:
      * tempnam() would silently fall back to the system directory when the
-     * configured one is not writable (finding 3 of the PRX-4 review). The
-     * file is new ("x" mode) and readable by its owner only, as with
-     * tempnam().
+     * configured one is not writable. The file is new ("x" mode) and
+     * readable by its owner only, as with tempnam().
      */
     private function createFile(): bool
     {

@@ -286,7 +286,7 @@ abstract class TransportContractTestCase extends TestCase
     /**
      * Authorization, Cookie, Proxy-Authorization and a custom Host go to the
      * origin of the request only: a redirect to another host or port drops
-     * them, on every transport and libcurl (finding 2 of the PRX-4 review).
+     * them, on every transport and libcurl.
      *
      * @dataProvider provideRedirectTargets
      */
@@ -541,7 +541,7 @@ abstract class TransportContractTestCase extends TestCase
 
     /**
      * A gzip stream cut short inside complete HTTP framing is a truncated
-     * body for every transport (finding 5 of the PRX-4 review).
+     * body for every transport.
      */
     public function testAGzipStreamCutShortInsideItsFramingIsANetworkFailure(): void
     {
@@ -620,8 +620,7 @@ abstract class TransportContractTestCase extends TestCase
 
     /**
      * Bytes that trickle in inside a line, five a second, pass a low speed
-     * limit of one byte a second: the deadline still ends the transfer
-     * (finding 1 of the PRX-4 review).
+     * limit of one byte a second: the deadline still ends the transfer.
      *
      * @dataProvider provideTrickledParts
      */

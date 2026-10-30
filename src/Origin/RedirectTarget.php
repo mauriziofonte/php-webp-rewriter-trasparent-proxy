@@ -18,8 +18,9 @@ final class RedirectTarget
     /**
      * Request fields sent to the origin of the request only: they are
      * dropped when a redirect leads to another scheme, host or port, as
-     * libcurl 7.83 and later does for Authorization and Cookie (finding 2
-     * of the PRX-4 review).
+     * libcurl 7.83 and later does for Authorization and Cookie; older
+     * libcurl sends them to another port of the same host, and every
+     * version keeps Proxy-Authorization.
      */
     public const ORIGIN_BOUND_HEADERS = ['authorization', 'cookie', 'proxy-authorization', 'host'];
 

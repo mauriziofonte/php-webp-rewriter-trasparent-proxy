@@ -27,7 +27,7 @@ final class ConfigValidator
     /**
      * The largest UPSTREAM_MAX_SIZE, 256 MiB: until bodies are streamed to
      * the cache (PRX-7), the kernel holds an origin body in memory as a
-     * string (finding 4 of the PRX-4 review).
+     * string, and a larger one would exhaust the memory limit.
      */
     public const MAX_UPSTREAM_MAX_SIZE = 268435456;
 

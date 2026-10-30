@@ -196,8 +196,8 @@ final class ResponseCollectorTest extends TestCase
     }
 
     /**
-     * A gzip stream cut short inside complete HTTP framing (finding 5 of
-     * the PRX-4 review): libcurl cannot tell, the collector can.
+     * A gzip stream cut short inside complete HTTP framing: libcurl cannot
+     * tell, the collector can.
      */
     public function testATruncatedGzipStreamIsANetworkFailure(): void
     {
@@ -457,7 +457,7 @@ final class ResponseCollectorTest extends TestCase
 
     /**
      * No silent fallback to the system temporary directory, as tempnam()
-     * does (finding 3 of the PRX-4 review).
+     * does.
      */
     public function testAnUnwritableTemporaryDirectoryIsAFailure(): void
     {

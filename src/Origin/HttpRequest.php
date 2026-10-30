@@ -23,8 +23,7 @@ final class HttpRequest
 
     /**
      * The characters a URL must not contain, which could end or alter the
-     * request line: spaces and the ASCII control characters (finding 6 of
-     * the PRX-4 review).
+     * request line: spaces and the ASCII control characters.
      *
      * @internal for RedirectTarget
      */
