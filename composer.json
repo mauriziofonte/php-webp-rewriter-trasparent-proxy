@@ -32,7 +32,9 @@
     "symfony/string": "<5.4.35 || >=6.0,<6.4.3 || >=7.0,<7.0.3"
   },
   "suggest": {
-    "ext-curl": "Preferred transport for origin fetches (HTTP/2, connection reuse, parallel warm-up)"
+    "ext-curl": "Preferred transport for origin fetches (HTTP/2, connection reuse, parallel warm-up)",
+    "ext-openssl": "Needed for https origins when ext-curl is missing (StreamTransport)",
+    "ext-zlib": "Lets origins send gzip bodies, which are then asked for and inflated"
   },
   "autoload": {
     "psr-4": {
