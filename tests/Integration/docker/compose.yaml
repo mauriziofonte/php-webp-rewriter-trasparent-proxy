@@ -22,6 +22,7 @@ services:
       - ./origin/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./origin/origin.js:/etc/nginx/njs/origin.js:ro
       - ../../Fixtures/origin:/srv/origin:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/tls:/etc/nginx/tls:ro
     ports:
       - 127.0.0.1::80
 
@@ -33,6 +34,8 @@ services:
       - ${HARNESS_WORKDIR:?set by run.sh}/apache/logs:/var/log/harness
       - ./php-fpm/zz-harness.conf:/usr/local/etc/php-fpm.d/zz-harness.conf:ro
       - ./php-fpm/harness.ini:/usr/local/etc/php/conf.d/zz-harness.ini:ro
+      - ./php-fpm/origin-protocol.php:/etc/harness/origin-protocol.php:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/tls/origin.crt:/etc/harness/origin-ca.pem:ro
     depends_on:
       - origin
 
@@ -54,6 +57,8 @@ services:
       - ${HARNESS_WORKDIR:?set by run.sh}/nginx/logs:/var/log/harness
       - ./php-fpm/zz-harness.conf:/usr/local/etc/php-fpm.d/zz-harness.conf:ro
       - ./php-fpm/harness.ini:/usr/local/etc/php/conf.d/zz-harness.ini:ro
+      - ./php-fpm/origin-protocol.php:/etc/harness/origin-protocol.php:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/tls/origin.crt:/etc/harness/origin-ca.pem:ro
     depends_on:
       - origin
 

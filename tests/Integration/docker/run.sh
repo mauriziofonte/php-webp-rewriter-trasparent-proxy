@@ -2,7 +2,8 @@
 #
 # Integration harness entry point: starts the proxy behind Apache + PHP-FPM
 # and behind nginx + PHP-FPM (compose.yaml), checks the fake origin, then runs
-# a smoke test on each stack: the first request is fetched from the origin
+# a smoke test on each stack: the HTTP client negotiates HTTP/2 with the
+# origin over TLS from PHP-FPM, the first request is fetched from the origin
 # through PHP-FPM, the second is served from the cache by the web server
 # without reaching PHP-FPM or the origin.
 #
@@ -63,7 +64,7 @@ case "$stack" in
     *) die "--stack expects apache, nginx or all, got '$stack'" ;;
 esac
 
-for tool in docker curl git cmp; do
+for tool in docker curl git cmp openssl; do
     command -v "$tool" >/dev/null || die "$tool is required"
 done
 docker compose version >/dev/null 2>&1 || die "the docker compose plugin is required"
@@ -181,6 +182,14 @@ for s in "${stacks[@]}"; do
     fi
 done
 
+# The certificate of the TLS port of the fake origin, for the name "origin".
+mkdir -p "$workdir/tls"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=origin \
+    -addext subjectAltName=DNS:origin -addext basicConstraints=critical,CA:TRUE \
+    -keyout "$workdir/tls/origin.key" -out "$workdir/tls/origin.crt" >/dev/null 2>&1 ||
+    die "openssl cannot generate the origin certificate"
+chmod 644 "$workdir/tls/origin.key" "$workdir/tls/origin.crt"
+
 # --- start ------------------------------------------------------------------
 
 log "Starting ${services[*]} (PHP $php_version)"
@@ -291,7 +300,22 @@ smoke() {
         "$(cache_status "$workdir/$s/first.headers")" "$(cache_status "$workdir/$s/second.headers")"
 }
 
+# The transports from PHP-FPM against the TLS port of the origin: curl
+# negotiates HTTP/2 through ALPN, streams speak HTTP/1.1, and both store the
+# fixture unchanged.
+client() {
+    local s="$1" output digest
+    log "Origin client: fpm-$s (PHP $php_version)"
+    output="$(compose exec -T "fpm-$s" php /etc/harness/origin-protocol.php /app/vendor/autoload.php 2>&1)" || die "fpm-$s: $output"
+    digest="$(openssl dgst -sha256 -r "$fixture" | cut -d' ' -f1)"
+    while read -r name outcome version body; do
+        expect "fpm-$s: $name fetched the fixture" "$outcome $body" "success $digest"
+        pass "fpm-$s: $name over $version"
+    done <<<"$output"
+}
+
 for s in "${stacks[@]}"; do
+    client "$s"
     smoke "$s"
 done
 
