@@ -400,6 +400,44 @@ final class ResponseCollectorTest extends TestCase
         self::assertStringContainsString('Cannot create a temporary file', $response->getError());
     }
 
+    public function testTheBodyFileIsPrivateToItsOwner(): void
+    {
+        $collector = $this->collector();
+
+        $this->head($collector, 'HTTP/1.1 200 OK', []);
+        $collector->bodyChunk('body');
+        $body = $collector->finish(null, 0, '', self::URL, 0.0)->getBody();
+
+        self::assertNotNull($body);
+        self::assertSame($this->directory->path(), dirname($body->getPath()));
+        self::assertStringStartsWith(ResponseCollector::FILE_PREFIX, basename($body->getPath()));
+        self::assertSame(0600, fileperms($body->getPath()) & 0777);
+    }
+
+    /**
+     * No silent fallback to the system temporary directory, as tempnam()
+     * does (finding 3 of the PRX-4 review).
+     */
+    public function testAnUnwritableTemporaryDirectoryIsAFailure(): void
+    {
+        $directory = $this->directory->path('read-only');
+        mkdir($directory, 0500);
+        if (is_writable($directory)) {
+            chmod($directory, 0700);
+            self::markTestSkipped('the user can write to read-only directories (root)');
+        }
+        $system = glob(sys_get_temp_dir() . '/' . ResponseCollector::FILE_PREFIX . '*');
+        $collector = new ResponseCollector(new HttpRequest(self::URL), (new HttpClientOptions())->withTemporaryDirectory($directory));
+
+        self::assertFalse($this->head($collector, 'HTTP/1.1 200 OK', []));
+        $response = $collector->finish(HttpResponse::OUTCOME_OTHER, 23, '', self::URL, 0.0);
+        chmod($directory, 0700);
+
+        self::assertSame(HttpResponse::OUTCOME_OTHER, $response->getOutcome());
+        self::assertSame('Cannot create a temporary file in ' . $directory, $response->getError());
+        self::assertSame($system, glob(sys_get_temp_dir() . '/' . ResponseCollector::FILE_PREFIX . '*'));
+    }
+
     public function testAnAbandonedCollectorDeletesItsFile(): void
     {
         $collector = $this->collector();

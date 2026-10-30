@@ -39,6 +39,11 @@ final class ResponseCollector
      */
     public const MAX_HEADER_BYTES = 102400;
 
+    /**
+     * Prefix of the temporary files of the bodies.
+     */
+    public const FILE_PREFIX = 'pcdn-';
+
     private const ABORT_NONE = 0;
 
     private const ABORT_TOO_LARGE = 1;
@@ -481,19 +486,43 @@ final class ResponseCollector
             return $this->abort(self::ABORT_TOO_LARGE, 'The response body announces ' . $length . ' bytes, more than ' . $this->maxBodySize);
         }
 
-        $path = is_dir($this->temporaryDirectory) ? @tempnam($this->temporaryDirectory, 'pcdn-') : false;
-        $file = is_string($path) ? @fopen($path, 'wb') : false;
-        if (!is_string($path) || !is_resource($file)) {
-            if (is_string($path)) {
-                @unlink($path);
-            }
-
+        if (!$this->createFile()) {
             return $this->abort(self::ABORT_FILE, 'Cannot create a temporary file in ' . $this->temporaryDirectory);
         }
-        $this->path = $path;
-        $this->file = $file;
 
         return true;
+    }
+
+    /**
+     * Creates the body file in the temporary directory, and nowhere else:
+     * tempnam() would silently fall back to the system directory when the
+     * configured one is not writable (finding 3 of the PRX-4 review). The
+     * file is new ("x" mode) and readable by its owner only, as with
+     * tempnam().
+     */
+    private function createFile(): bool
+    {
+        if (!is_dir($this->temporaryDirectory)) {
+            return false;
+        }
+        $prefix = rtrim($this->temporaryDirectory, '/\\') . DIRECTORY_SEPARATOR . self::FILE_PREFIX;
+        for ($attempt = 0; $attempt < 3; ++$attempt) {
+            try {
+                $path = $prefix . bin2hex(random_bytes(8));
+            } catch (\Exception $exception) {
+                return false;
+            }
+            $file = @fopen($path, 'xb');
+            if (is_resource($file)) {
+                @chmod($path, 0600);
+                $this->path = $path;
+                $this->file = $file;
+
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
