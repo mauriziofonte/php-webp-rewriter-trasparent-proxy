@@ -209,13 +209,13 @@ Log format: one JSON object per line (JSON Lines), with the fields `timestamp` (
 
 Levels:
 
-- **error** - upstream fetch failures (with `reason`, `curl_errno`, `response_code`), conversion failures, an invalid configuration.
+- **error** - upstream fetch failures (with `reason`, `response_code`, and for a transport failure `transport_error_code` and `transport_error`: the libcurl error number or the system errno of the stream transport, and its message), conversion failures, an invalid configuration.
 - **info** - purges, upstream 404s. Only written when `DEBUG=true`.
 
 Example entry:
 
 ``` text
-{"timestamp":"2025-03-14T12:34:56.123456+00:00","level":"error","channel":"proxy-cdn","message":"upstream fetch failed","context":{"url":"https://origin.example.com/hero.jpg","reason":"timeout","curl_errno":28,"curl_error":"Operation timed out after 30000 ms","response_code":0}}
+{"timestamp":"2025-03-14T12:34:56.123456+00:00","level":"error","channel":"proxy-cdn","message":"upstream fetch failed","context":{"url":"https://origin.example.com/hero.jpg","reason":"timeout","transport_error_code":28,"transport_error":"Operation timed out after 30000 ms","response_code":0}}
 ```
 
 For production, rotate `logs/proxy.log` with a standard tool:

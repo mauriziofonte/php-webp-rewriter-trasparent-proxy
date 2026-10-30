@@ -140,8 +140,8 @@ final class HttpOriginFetcher implements OriginFetcher
         $this->logger->error('upstream fetch failed', [
             'url' => $url,
             'reason' => $reason,
-            'error_code' => $errorCode,
-            'error' => $error,
+            'transport_error_code' => $errorCode,
+            'transport_error' => $error,
             'response_code' => $status,
         ]);
 

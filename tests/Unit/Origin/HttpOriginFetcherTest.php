@@ -157,7 +157,7 @@ final class HttpOriginFetcherTest extends TestCase
         self::assertSame([[
             'level' => 'error',
             'message' => 'upstream fetch failed',
-            'context' => ['url' => self::URL, 'reason' => $reason, 'error_code' => 28, 'error' => 'Operation timed out', 'response_code' => 0],
+            'context' => ['url' => self::URL, 'reason' => $reason, 'transport_error_code' => 28, 'transport_error' => 'Operation timed out', 'response_code' => 0],
         ]], $this->logger->getRecords());
     }
 
