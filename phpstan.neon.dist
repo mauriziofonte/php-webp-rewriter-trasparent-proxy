@@ -11,16 +11,21 @@ includes:
     - tools/phpstan/vendor/phpstan/phpstan-phpunit/extension.neon
     - tools/phpstan/vendor/phpstan/phpstan-phpunit/rules.neon
 
+# No bootstrapFiles: PHPStan's entry script already requires the working
+# directory's vendor/autoload.php and locates the project, autoload-dev and
+# vendor/ classes from composer.json and vendor/composer/installed.json. Run
+# it with a PHP that the installed vendor/ accepts: Composer's platform check
+# stops any PHP older than the one vendor/ was resolved for.
 parameters:
-    # PHPStan is installed under tools/phpstan, so it needs the project's
-    # autoloader to discover vendor/ and the autoload-dev classes.
-    bootstrapFiles:
-        - vendor/autoload.php
     level: max
     phpVersion: 70205
     paths:
         - src
         - tests
+    # Declares the PHPUnit 10+ attributes the tests use, so that they are
+    # checked even when vendor/ holds PHPUnit 8.5 or 9.6 (see the file).
+    scanFiles:
+        - tools/phpstan/stubs/phpunit-attributes.stub
 
 services:
     # PHPStan 2 parses the files it does not analyse (vendor/) with the grammar
