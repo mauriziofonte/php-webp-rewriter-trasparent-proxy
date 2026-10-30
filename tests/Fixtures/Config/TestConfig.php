@@ -38,6 +38,8 @@ final class TestConfig
             'UPSTREAM_CONNECT_TIMEOUT' => '5',
             'UPSTREAM_VERIFY_TLS' => 'true',
             'UPSTREAM_FOLLOW_REDIRECTS' => 'false',
+            'UPSTREAM_MAX_SIZE' => '67108864',
+            'UPSTREAM_USER_AGENT' => null,
             'IMAGE_CONVERSION_MODE' => 'none',
             'WEBP_API_SERVER' => null,
             'WEBP_API_KEY' => null,

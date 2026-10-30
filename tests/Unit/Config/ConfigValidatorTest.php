@@ -112,6 +112,28 @@ final class ConfigValidatorTest extends TestCase
                 ['UPSTREAM_FOLLOW_REDIRECTS' => '2'],
                 "UPSTREAM_FOLLOW_REDIRECTS must be one of: true, false, 1, 0 (got: '2')",
             ],
+            'max size zero' => [['UPSTREAM_MAX_SIZE' => '0'], 'UPSTREAM_MAX_SIZE must be between 1 and ' . PHP_INT_MAX . ' (got: 0)'],
+            'max size with a unit' => [['UPSTREAM_MAX_SIZE' => '64M'], "UPSTREAM_MAX_SIZE must be a non-negative integer (got: '64M')"],
+            'User-Agent with a line feed' => [
+                ['UPSTREAM_USER_AGENT' => "agent\nX-Injected: 1"],
+                "UPSTREAM_USER_AGENT must be 1 to 512 printable ASCII characters (got: 'agent\nX-Injected: 1')",
+            ],
+            'User-Agent with UTF-8' => [
+                ['UPSTREAM_USER_AGENT' => 'agént'],
+                "UPSTREAM_USER_AGENT must be 1 to 512 printable ASCII characters (got: 'agént')",
+            ],
+            'origin server with a path' => [
+                ['SOURCE_ORIGIN_SERVER' => '192.0.2.10:443/x'],
+                'SOURCE_ORIGIN_SERVER must be "address", "address:port" or "[IPv6 address]:port" (got: \'192.0.2.10:443/x\')',
+            ],
+            'origin server with a bad port' => [
+                ['SOURCE_ORIGIN_SERVER' => '192.0.2.10:70000'],
+                'SOURCE_ORIGIN_SERVER must be "address", "address:port" or "[IPv6 address]:port" (got: \'192.0.2.10:70000\')',
+            ],
+            'origin server IPv6 without brackets' => [
+                ['SOURCE_ORIGIN_SERVER' => '2001:db8::1:443'],
+                'SOURCE_ORIGIN_SERVER must be "address", "address:port" or "[IPv6 address]:port" (got: \'2001:db8::1:443\')',
+            ],
             'unknown time zone' => [['TIMEZONE' => 'Mars/Olympus'], "TIMEZONE must be a valid time zone identifier (got: 'Mars/Olympus')"],
         ];
     }
@@ -163,6 +185,11 @@ final class ConfigValidatorTest extends TestCase
             ]],
             'booleans in upper case' => [['DEBUG' => 'FALSE', 'UPSTREAM_VERIFY_TLS' => 'True', 'UPSTREAM_FOLLOW_REDIRECTS' => '0']],
             'time zone in lower case' => [['TIMEZONE' => 'europe/rome']],
+            'origin server forms' => [['SOURCE_ORIGIN_SERVER' => '192.0.2.10']],
+            'origin server with IPv6' => [['SOURCE_ORIGIN_SERVER' => '[2001:db8::1]:8443']],
+            'origin server name' => [['SOURCE_ORIGIN_SERVER' => 'origin.internal:8080']],
+            'smallest max size' => [['UPSTREAM_MAX_SIZE' => '1']],
+            'custom User-Agent' => [['UPSTREAM_USER_AGENT' => 'my-cdn/1.0 (+https://cdn.example.test)']],
         ];
     }
 

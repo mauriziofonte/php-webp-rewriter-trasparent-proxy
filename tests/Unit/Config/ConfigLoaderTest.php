@@ -9,6 +9,7 @@ use Mfonte\ProxyCdn\Config\CompiledConfigCache;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Config\ConfigLoader;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
+use Mfonte\ProxyCdn\Origin\HttpClientOptions;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -125,6 +126,8 @@ final class ConfigLoaderTest extends TestCase
         self::assertSame(5, $config->getUpstreamConnectTimeout());
         self::assertFalse($config->shouldVerifyUpstreamTls());
         self::assertFalse($config->shouldFollowUpstreamRedirects());
+        self::assertSame(HttpClientOptions::DEFAULT_MAX_BODY_SIZE, $config->getUpstreamMaxSize());
+        self::assertNull($config->getUpstreamUserAgent());
         self::assertSame(Config::CONVERSION_NONE, $config->getImageConversionMode());
         self::assertNull($config->getWebpApiServer());
         self::assertNull($config->getWebpApiKey());

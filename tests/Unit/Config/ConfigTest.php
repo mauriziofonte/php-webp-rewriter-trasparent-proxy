@@ -36,6 +36,8 @@ final class ConfigTest extends TestCase
         self::assertSame(5, $config->getUpstreamConnectTimeout());
         self::assertTrue($config->shouldVerifyUpstreamTls());
         self::assertFalse($config->shouldFollowUpstreamRedirects());
+        self::assertSame(1000000, $config->getUpstreamMaxSize());
+        self::assertSame('agent/1.0', $config->getUpstreamUserAgent());
         self::assertSame(Config::CONVERSION_API, $config->getImageConversionMode());
         self::assertSame('https://api.example.test/convert', $config->getWebpApiServer());
         self::assertSame('secret', $config->getWebpApiKey());
@@ -51,12 +53,14 @@ final class ConfigTest extends TestCase
         $config = Config::fromArray(self::values([
             'SOURCE_ORIGIN_SERVER' => null,
             'TIMEZONE' => null,
+            'UPSTREAM_USER_AGENT' => null,
             'WEBP_API_SERVER' => null,
             'WEBP_API_KEY' => null,
         ]));
 
         self::assertNull($config->getSourceOriginServer());
         self::assertNull($config->getTimezone());
+        self::assertNull($config->getUpstreamUserAgent());
         self::assertNull($config->getWebpApiServer());
         self::assertNull($config->getWebpApiKey());
     }
@@ -160,6 +164,8 @@ final class ConfigTest extends TestCase
             'UPSTREAM_CONNECT_TIMEOUT' => 5,
             'UPSTREAM_VERIFY_TLS' => true,
             'UPSTREAM_FOLLOW_REDIRECTS' => false,
+            'UPSTREAM_MAX_SIZE' => 1000000,
+            'UPSTREAM_USER_AGENT' => 'agent/1.0',
             'IMAGE_CONVERSION_MODE' => Config::CONVERSION_API,
             'WEBP_API_SERVER' => 'https://api.example.test/convert',
             'WEBP_API_KEY' => 'secret',

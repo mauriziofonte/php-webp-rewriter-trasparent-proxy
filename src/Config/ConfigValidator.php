@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Config;
 
+use Mfonte\ProxyCdn\Origin\HttpClientOptions;
+
 /**
  * Validates the raw configuration values, as read from the environment and
  * the .env file. ConfigLoader runs it before the proxy starts and the
@@ -31,6 +33,7 @@ final class ConfigValidator
         'NETWORK_ERROR_TTL' => [0, 3600],
         'UPSTREAM_TIMEOUT' => [1, 300],
         'UPSTREAM_CONNECT_TIMEOUT' => [1, 60],
+        'UPSTREAM_MAX_SIZE' => [1, PHP_INT_MAX],
     ];
 
     private const BOOLEAN_KEYS = ['DEBUG', 'UPSTREAM_VERIFY_TLS', 'UPSTREAM_FOLLOW_REDIRECTS'];
@@ -52,6 +55,16 @@ final class ConfigValidator
             $errors[] = 'SOURCE_ORIGIN must be a valid URL (got: ' . var_export($origin, true) . ')';
         } elseif (preg_match('#^https?://#i', $origin) !== 1) {
             $errors[] = 'SOURCE_ORIGIN must use http:// or https:// scheme (got: ' . var_export($origin, true) . ')';
+        }
+
+        $server = $values['SOURCE_ORIGIN_SERVER'] ?? null;
+        if ($server !== null && HttpClientOptions::parseAddress($server) === null) {
+            $errors[] = 'SOURCE_ORIGIN_SERVER must be "address", "address:port" or "[IPv6 address]:port" (got: ' . var_export($server, true) . ')';
+        }
+
+        $userAgent = $values['UPSTREAM_USER_AGENT'] ?? null;
+        if ($userAgent !== null && !HttpClientOptions::isUserAgent($userAgent)) {
+            $errors[] = 'UPSTREAM_USER_AGENT must be 1 to 512 printable ASCII characters (got: ' . var_export($userAgent, true) . ')';
         }
 
         $extensions = self::extensionList($values['CACHEABLE_EXTENSIONS'] ?? null);

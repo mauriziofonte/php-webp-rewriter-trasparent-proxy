@@ -92,6 +92,16 @@ final class Config
     private $upstreamFollowRedirects;
 
     /**
+     * @var int
+     */
+    private $upstreamMaxSize;
+
+    /**
+     * @var string|null
+     */
+    private $upstreamUserAgent;
+
+    /**
      * @var string
      */
     private $imageConversionMode;
@@ -135,6 +145,8 @@ final class Config
         $config->upstreamConnectTimeout = self::integer($values, 'UPSTREAM_CONNECT_TIMEOUT');
         $config->upstreamVerifyTls = self::boolean($values, 'UPSTREAM_VERIFY_TLS');
         $config->upstreamFollowRedirects = self::boolean($values, 'UPSTREAM_FOLLOW_REDIRECTS');
+        $config->upstreamMaxSize = self::integer($values, 'UPSTREAM_MAX_SIZE');
+        $config->upstreamUserAgent = self::optionalString($values, 'UPSTREAM_USER_AGENT');
         $config->imageConversionMode = self::string($values, 'IMAGE_CONVERSION_MODE');
         $config->webpApiServer = self::optionalString($values, 'WEBP_API_SERVER');
         $config->webpApiKey = self::optionalString($values, 'WEBP_API_KEY');
@@ -168,6 +180,8 @@ final class Config
             'UPSTREAM_CONNECT_TIMEOUT' => $this->upstreamConnectTimeout,
             'UPSTREAM_VERIFY_TLS' => $this->upstreamVerifyTls,
             'UPSTREAM_FOLLOW_REDIRECTS' => $this->upstreamFollowRedirects,
+            'UPSTREAM_MAX_SIZE' => $this->upstreamMaxSize,
+            'UPSTREAM_USER_AGENT' => $this->upstreamUserAgent,
             'IMAGE_CONVERSION_MODE' => $this->imageConversionMode,
             'WEBP_API_SERVER' => $this->webpApiServer,
             'WEBP_API_KEY' => $this->webpApiKey,
@@ -191,8 +205,9 @@ final class Config
     }
 
     /**
-     * SOURCE_ORIGIN_SERVER: "address:port" every origin connection is pinned
-     * to, bypassing DNS; null when connections follow DNS.
+     * SOURCE_ORIGIN_SERVER: "address" or "address:port" every origin
+     * connection is pinned to, bypassing DNS (an IPv6 address in brackets);
+     * null when connections follow DNS.
      */
     public function getSourceOriginServer(): ?string
     {
@@ -295,6 +310,24 @@ final class Config
     public function shouldFollowUpstreamRedirects(): bool
     {
         return $this->upstreamFollowRedirects;
+    }
+
+    /**
+     * UPSTREAM_MAX_SIZE: bytes an origin body may have once decoded; a
+     * larger one is not fetched (finding P-17).
+     */
+    public function getUpstreamMaxSize(): int
+    {
+        return $this->upstreamMaxSize;
+    }
+
+    /**
+     * UPSTREAM_USER_AGENT: the User-Agent of origin requests; null for the
+     * default, which names this software (finding P-22).
+     */
+    public function getUpstreamUserAgent(): ?string
+    {
+        return $this->upstreamUserAgent;
     }
 
     /**

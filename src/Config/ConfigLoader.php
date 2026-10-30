@@ -25,7 +25,8 @@ use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 final class ConfigLoader
 {
     /**
-     * The configuration keys, as in 2.x.
+     * The configuration keys: those of 2.x, plus UPSTREAM_MAX_SIZE and
+     * UPSTREAM_USER_AGENT (PRX-4).
      */
     public const KEYS = [
         'DEBUG',
@@ -42,13 +43,16 @@ final class ConfigLoader
         'UPSTREAM_CONNECT_TIMEOUT',
         'UPSTREAM_VERIFY_TLS',
         'UPSTREAM_FOLLOW_REDIRECTS',
+        'UPSTREAM_MAX_SIZE',
+        'UPSTREAM_USER_AGENT',
         'IMAGE_CONVERSION_MODE',
         'WEBP_API_SERVER',
         'WEBP_API_KEY',
     ];
 
     /**
-     * Defaults of the keys that may be left unset, as in 2.x.
+     * Defaults of the keys that may be left unset, as in 2.x. The default
+     * of UPSTREAM_MAX_SIZE is HttpClientOptions::DEFAULT_MAX_BODY_SIZE.
      */
     private const DEFAULTS = [
         'DEBUG' => 'false',
@@ -62,6 +66,7 @@ final class ConfigLoader
         'UPSTREAM_CONNECT_TIMEOUT' => '5',
         'UPSTREAM_VERIFY_TLS' => 'false',
         'UPSTREAM_FOLLOW_REDIRECTS' => 'false',
+        'UPSTREAM_MAX_SIZE' => '67108864',
         'IMAGE_CONVERSION_MODE' => Config::CONVERSION_NONE,
     ];
 
@@ -69,7 +74,7 @@ final class ConfigLoader
      * Changes whenever the compiled format or the normalisation changes, so
      * that files compiled by another version are recompiled.
      */
-    private const FORMAT = 'proxy-cdn-config-1';
+    private const FORMAT = 'proxy-cdn-config-2';
 
     /**
      * @var string|null
@@ -178,6 +183,8 @@ final class ConfigLoader
             'UPSTREAM_CONNECT_TIMEOUT' => (int) $value('UPSTREAM_CONNECT_TIMEOUT'),
             'UPSTREAM_VERIFY_TLS' => ConfigValidator::booleanOf($value('UPSTREAM_VERIFY_TLS')) === true,
             'UPSTREAM_FOLLOW_REDIRECTS' => ConfigValidator::booleanOf($value('UPSTREAM_FOLLOW_REDIRECTS')) === true,
+            'UPSTREAM_MAX_SIZE' => (int) $value('UPSTREAM_MAX_SIZE'),
+            'UPSTREAM_USER_AGENT' => $optional('UPSTREAM_USER_AGENT'),
             'IMAGE_CONVERSION_MODE' => $value('IMAGE_CONVERSION_MODE'),
             'WEBP_API_SERVER' => $optional('WEBP_API_SERVER'),
             'WEBP_API_KEY' => $optional('WEBP_API_KEY'),
