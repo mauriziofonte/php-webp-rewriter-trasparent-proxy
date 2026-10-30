@@ -1,0 +1,49 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Mfonte\ProxyCdn\Tests\Integration\Characterization;
+
+use PHPUnit\Framework\Attributes\CoversNothing;
+use PHPUnit\Framework\Attributes\Group;
+
+/**
+ * Failures to store a fetched file. The obstacles are files and directories
+ * in the way, so that the tests also fail the write when they run as root.
+ *
+ * @coversNothing
+ *
+ * @group characterization
+ */
+#[CoversNothing]
+#[Group('characterization')]
+final class CacheWriteFailureTest extends CharacterizationTestCase
+{
+    /**
+     * An internal error is answered with 404 (finding P-21, resolved by
+     * PRX-5).
+     */
+    public function testCacheDirectoryFailureAnswers404P21(): void
+    {
+        file_put_contents($this->publicPath('nested'), 'a file where a directory is needed');
+
+        $response = $this->get('/nested/deep.css');
+
+        self::assertErrorResponse($response, 404, 'Cannot create cache directory', '/nested/deep.css');
+        self::assertSame(1, $this->origin->countRequestsFor('/nested/deep.css'));
+    }
+
+    /**
+     * An internal error is answered with 404 (finding P-21, resolved by
+     * PRX-5), and the temporary file of the atomic write is removed.
+     */
+    public function testCacheFileFailureAnswers404P21(): void
+    {
+        mkdir($this->publicPath('css/site.css'), 0777, true);
+
+        $response = $this->get('/css/site.css');
+
+        self::assertErrorResponse($response, 404, 'Cannot create cache file', '/css/site.css');
+        self::assertSame(['.', '..', 'site.css'], scandir($this->publicPath('css')));
+    }
+}

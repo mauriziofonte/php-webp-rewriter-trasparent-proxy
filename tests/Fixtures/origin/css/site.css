@@ -1,0 +1,5 @@
+body { background: url(/images/gradient.png); }
+.quoted { background: url('/images/gradient.png'); }
+.double { background: url("/images/gradient.png"); }
+.protocol-relative { background: url(//static.example.test/x.png); }
+.relative { background: url(images/gradient.png); }
