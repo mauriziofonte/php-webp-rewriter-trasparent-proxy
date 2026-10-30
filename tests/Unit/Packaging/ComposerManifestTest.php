@@ -40,7 +40,16 @@ final class ComposerManifestTest extends TestCase
 
     public function testRuntimeRequirementsAreExactlyThePlannedOnes(): void
     {
-        $manifest = self::readManifest('composer.json');
+        $require = self::section(self::readManifest('composer.json'), 'require');
+
+        // The conversion library is required from git: the integration branch
+        // aliased to 1.0.0 until the library is released, ^1.0 from then on
+        // (plan section 9).
+        self::assertContains(
+            $require['mfonte/secure-image-converter'] ?? null,
+            ['dev-claude/project-thread-79fchb as 1.0.0', '^1.0']
+        );
+        unset($require['mfonte/secure-image-converter']);
 
         // Any further runtime dependency needs explicit approval (plan section 4).
         // Floors are security floors: the first release of each line that
@@ -54,7 +63,19 @@ final class ComposerManifestTest extends TestCase
                 'symfony/http-foundation' => '^5.4.54 || ^6.4.46 || ^7.4.19 || ^8.1.7',
                 'vlucas/phpdotenv' => '^5.5',
             ],
-            $manifest['require'] ?? null
+            $require
+        );
+    }
+
+    /**
+     * The library is not on Packagist: Composer reads it from its GitHub
+     * repository.
+     */
+    public function testConversionLibraryRepositoryIsDeclared(): void
+    {
+        self::assertSame(
+            [['type' => 'vcs', 'url' => 'https://github.com/mauriziofonte/php-secure-image-converter']],
+            self::readManifest('composer.json')['repositories'] ?? null
         );
     }
 
