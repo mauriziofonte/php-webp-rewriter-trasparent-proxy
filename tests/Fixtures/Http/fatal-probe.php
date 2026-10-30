@@ -8,11 +8,12 @@ declare(strict_types=1);
  * a fatal error while its temporary file exists. TemporaryFilesTest runs it
  * in a separate PHP process and checks that the file is deleted anyway.
  *
- * The last error is written to the report file at shutdown, which shows
- * that the fatal error happened where expected and that the shutdown
- * functions ran. It is not printed: before PHP 8, the @ of
- * ResponseBody::getContents() hides even a fatal error, and what a process
- * prints after one differs between builds.
+ * Its shutdown function, registered before any other and therefore run
+ * before TemporaryFiles::deleteAll(), writes to the report file the message
+ * and the file of the last error, then the body files that exist at that
+ * point, one per line. It writes rather than prints: what a process prints
+ * after a fatal error differs between builds (the @ of
+ * ResponseBody::getContents() hides it on some before PHP 8, not on all).
  *
  * Usage: php -d memory_limit=16M fatal-probe.php <curl|stream> <url> <temporary directory> <report file>
  */
@@ -27,7 +28,11 @@ use Psr\Log\NullLogger;
 error_reporting(E_ALL);
 register_shutdown_function(static function () use ($argv): void {
     $error = error_get_last();
-    file_put_contents($argv[4], $error === null ? 'none' : $error['message']);
+    $bodies = scandir($argv[3]);
+    file_put_contents($argv[4], implode("\n", array_merge(
+        $error === null ? ['', ''] : [$error['message'], $error['file']],
+        array_diff($bodies === false ? [] : $bodies, ['.', '..'])
+    )));
 });
 
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
