@@ -14,8 +14,11 @@ namespace Mfonte\ProxyCdn\Origin;
  *   (CURL_HTTP_VERSION_2TLS); http stays on HTTP/1.1. With libcurl 7.74
  *   and later, transfers of MultiClient wait for a connection they can
  *   multiplex (CURLOPT_PIPEWAIT).
- * - TCP_NODELAY is set, IPv4 and IPv6 are both used (libcurl races them),
- *   and every content coding libcurl supports is accepted and decoded.
+ * - TCP_NODELAY is set, and IPv4 and IPv6 are both used (libcurl races
+ *   them).
+ * - libcurl does not decode content codings: ResponseCollector asks for
+ *   gzip and inflates it, so that a gzip stream cut short inside complete
+ *   HTTP framing is a truncated body, which libcurl would not report.
  * - Only http and https are allowed, for the request and for redirects.
  * - One easy handle is reused for every send(), and a share handle shares
  *   DNS answers, TLS sessions and connections: on PHP 8.5 and later it is
@@ -116,16 +119,13 @@ final class CurlTransport implements HttpClient
             CURLOPT_TCP_KEEPALIVE => 1,
             CURLOPT_BUFFERSIZE => 65536,
             CURLOPT_HEADER => false,
+            CURLOPT_HTTP_CONTENT_DECODING => false,
             CURLOPT_HTTP_VERSION => $options->isHttp2Enabled() && self::supportsHttp2() ? CURL_HTTP_VERSION_2TLS : CURL_HTTP_VERSION_1_1,
         ];
         if ($curlOptions[CURLOPT_HTTP_VERSION] === CURL_HTTP_VERSION_2TLS && self::waitsForMultiplexingSafely()) {
             // In MultiClient, wait for a connection that can multiplex
             // rather than opening a second one to the same origin.
             $curlOptions[CURLOPT_PIPEWAIT] = true;
-        }
-        if ($options->isCompressionEnabled()) {
-            // The empty string sends every coding libcurl can decode.
-            $curlOptions[CURLOPT_ENCODING] = '';
         }
         if ($options->getCaFile() !== null) {
             $curlOptions[CURLOPT_CAINFO] = $options->getCaFile();
@@ -224,7 +224,7 @@ final class CurlTransport implements HttpClient
         }
         $handle = $this->handle;
         if ($handle === null) {
-            return (new ResponseCollector($request, $this->options, true))
+            return (new ResponseCollector($request, $this->options))
                 ->finish(HttpResponse::OUTCOME_OTHER, 0, 'The cURL handle cannot be created', $request->getUrl(), 0.0);
         }
 
@@ -262,7 +262,7 @@ final class CurlTransport implements HttpClient
      */
     public function prepare($handle, HttpRequest $request): ResponseCollector
     {
-        $collector = new ResponseCollector($request, $this->options, $this->options->isCompressionEnabled());
+        $collector = new ResponseCollector($request, $this->options);
 
         $headers = [];
         foreach ($request->getHeaders() as $name => $value) {
@@ -270,6 +270,9 @@ final class CurlTransport implements HttpClient
         }
         if ($request->getHeader('user-agent') === null) {
             $headers[] = $this->userAgentLine;
+        }
+        if ($collector->requestsGzip()) {
+            $headers[] = 'accept-encoding: gzip';
         }
 
         $url = $request->getUrl();

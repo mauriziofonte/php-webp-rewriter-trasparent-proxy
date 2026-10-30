@@ -7,8 +7,8 @@ namespace Mfonte\ProxyCdn\Origin;
 /**
  * Reads the body of one StreamTransport response from its socket: framed by
  * Content-Length, by the chunked transfer coding, or by the end of the
- * connection. It inflates gzip when asked, enforces the deadline and the
- * low speed limit, and feeds the decoded bytes to the collector.
+ * connection. It enforces the deadline and the low speed limit, and feeds
+ * the bytes to the collector, which decodes them.
  *
  * Every method returns null on success, or the failure as
  * [HttpResponse::OUTCOME_*, error number, message].
@@ -21,12 +21,6 @@ final class BodyReader
      * Bytes read from the socket at once.
      */
     private const READ_SIZE = 65536;
-
-    /**
-     * Compressed bytes inflated at once: a compression bomb then expands to
-     * about a thousand times this size in memory before the size check.
-     */
-    private const INFLATE_SLICE = 1024;
 
     /**
      * Bytes a chunk size line or a trailer line may have.
@@ -42,11 +36,6 @@ final class BodyReader
      * @var ResponseCollector
      */
     private $collector;
-
-    /**
-     * @var InflateContextOrResource|null
-     */
-    private $inflate;
 
     /**
      * @var float
@@ -74,17 +63,15 @@ final class BodyReader
     private $windowBytes = 0;
 
     /**
-     * @param resource                      $socket        the connection, positioned after the header block
-     * @param InflateContextOrResource|null $inflate       the gzip context, or null for an identity body
-     * @param float                         $deadline      microtime() at which the request times out
-     * @param int                           $lowSpeedLimit bytes per second under which the transfer is too slow
-     * @param float                         $lowSpeedTime  seconds the transfer may stay under the limit
+     * @param resource $socket        the connection, positioned after the header block
+     * @param float    $deadline      microtime() at which the request times out
+     * @param int      $lowSpeedLimit bytes per second under which the transfer is too slow
+     * @param float    $lowSpeedTime  seconds the transfer may stay under the limit
      */
-    public function __construct($socket, ResponseCollector $collector, $inflate, float $deadline, int $lowSpeedLimit, float $lowSpeedTime)
+    public function __construct($socket, ResponseCollector $collector, float $deadline, int $lowSpeedLimit, float $lowSpeedTime)
     {
         $this->socket = $socket;
         $this->collector = $collector;
-        $this->inflate = $inflate;
         $this->deadline = $deadline;
         $this->lowSpeedLimit = $lowSpeedLimit;
         $this->lowSpeedTime = $lowSpeedTime;
@@ -168,20 +155,6 @@ final class BodyReader
     }
 
     /**
-     * Checks that a gzip body ended where its stream ends.
-     *
-     * @return array{0: string, 1: int, 2: string}|null
-     */
-    public function finishDecoding(): ?array
-    {
-        if ($this->inflate !== null && inflate_get_status($this->inflate) !== ZLIB_STREAM_END) {
-            return [HttpResponse::OUTCOME_NETWORK, 0, 'The compressed body is truncated'];
-        }
-
-        return null;
-    }
-
-    /**
      * @return array{0: string, 1: int, 2: string}|null
      */
     private function skipTrailer(): ?array
@@ -251,27 +224,12 @@ final class BodyReader
     }
 
     /**
-     * Decodes and stores raw body bytes.
+     * Hands body bytes to the collector.
      *
      * @return array{0: string, 1: int, 2: string}|null
      */
     private function deliver(string $raw): ?array
     {
-        if ($this->inflate === null) {
-            return $this->collector->bodyChunk($raw) ? null : [HttpResponse::OUTCOME_OTHER, 0, 'Aborted'];
-        }
-
-        $length = strlen($raw);
-        for ($offset = 0; $offset < $length; $offset += self::INFLATE_SLICE) {
-            $decoded = @inflate_add($this->inflate, substr($raw, $offset, self::INFLATE_SLICE), ZLIB_SYNC_FLUSH);
-            if (!is_string($decoded)) {
-                return [HttpResponse::OUTCOME_OTHER, 0, 'The compressed body is corrupt'];
-            }
-            if ($decoded !== '' && !$this->collector->bodyChunk($decoded)) {
-                return [HttpResponse::OUTCOME_OTHER, 0, 'Aborted'];
-            }
-        }
-
-        return null;
+        return $this->collector->bodyChunk($raw) ? null : [HttpResponse::OUTCOME_OTHER, 0, 'Aborted'];
     }
 }

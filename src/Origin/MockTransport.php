@@ -45,7 +45,9 @@ final class MockTransport implements HttpClient
 
     /**
      * Makes every later request for $url answer $status with $headers and
-     * $body.
+     * $body. The body is sent as it would be on the wire: with
+     * "Content-Encoding: gzip" it must be gzip data, which is inflated as
+     * the real transports do.
      *
      * @param array<string, string> $headers response fields, keyed by name in any case
      */
@@ -75,7 +77,7 @@ final class MockTransport implements HttpClient
     public function send(HttpRequest $request): HttpResponse
     {
         $this->requests[] = $request;
-        $collector = new ResponseCollector($request, $this->options, true);
+        $collector = new ResponseCollector($request, $this->options);
         $url = $request->getUrl();
 
         for ($redirects = 0; ; ++$redirects) {

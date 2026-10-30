@@ -12,9 +12,10 @@ namespace Mfonte\ProxyCdn\Origin;
  * need allow_url_fopen, and it honours the same contract as CurlTransport:
  * separate connect and total timeouts, a low speed limit, the body streamed
  * to a temporary file with the same maximum size checks, chunked bodies,
- * gzip decoded when ext-zlib is loaded, truncated bodies detected, interim
- * responses skipped, redirects followed only to http and https, and the
- * connect-to pin with the original Host header and TLS server name.
+ * gzip asked for when ResponseCollector decodes it, truncated bodies
+ * detected, interim responses skipped, redirects followed only to http and
+ * https, and the connect-to pin with the original Host header and TLS
+ * server name.
  *
  * Its limits: one connection per request ("Connection: close"), HTTP/1.1
  * only, no proxy, the addresses of a host name tried one after the other
@@ -33,11 +34,6 @@ final class StreamTransport implements HttpClient
     private $options;
 
     /**
-     * @var bool
-     */
-    private $decodesGzip;
-
-    /**
      * @var array{0: string, 1: int|null}|null
      */
     private $connectTo;
@@ -50,7 +46,6 @@ final class StreamTransport implements HttpClient
     public function __construct(HttpClientOptions $options)
     {
         $this->options = $options;
-        $this->decodesGzip = $options->isCompressionEnabled() && function_exists('inflate_init');
         $connectTo = $options->getConnectTo();
         $this->connectTo = $connectTo === null ? null : HttpClientOptions::parseAddress($connectTo);
 
@@ -82,7 +77,7 @@ final class StreamTransport implements HttpClient
     {
         $startedAt = microtime(true);
         $deadline = $startedAt + $this->options->getTimeout();
-        $collector = new ResponseCollector($request, $this->options, $this->decodesGzip);
+        $collector = new ResponseCollector($request, $this->options);
         $url = $request->getUrl();
         $origin = self::hostAndPort($url);
 
@@ -174,7 +169,7 @@ final class StreamTransport implements HttpClient
                 }
             }
 
-            $failure = $this->writeRequest($socket, $request, $url, $host, $port, $secure, $deadline);
+            $failure = $this->writeRequest($socket, $request, $collector->requestsGzip(), $url, $host, $port, $secure, $deadline);
 
             return $failure ?? $this->readResponse($socket, $collector, $deadline);
         } finally {
@@ -187,7 +182,7 @@ final class StreamTransport implements HttpClient
      *
      * @return array{0: string, 1: int, 2: string}|null
      */
-    private function writeRequest($socket, HttpRequest $request, string $url, string $host, int $port, bool $secure, float $deadline): ?array
+    private function writeRequest($socket, HttpRequest $request, bool $gzip, string $url, string $host, int $port, bool $secure, float $deadline): ?array
     {
         $path = parse_url($url, PHP_URL_PATH);
         $query = parse_url($url, PHP_URL_QUERY);
@@ -206,7 +201,7 @@ final class StreamTransport implements HttpClient
         if (!isset($headers['user-agent'])) {
             $head .= 'user-agent: ' . $this->options->getUserAgent() . "\r\n";
         }
-        if ($this->decodesGzip && !isset($headers['accept-encoding'])) {
+        if ($gzip) {
             $head .= "accept-encoding: gzip\r\n";
         }
         $head .= "connection: close\r\n\r\n";
@@ -273,19 +268,7 @@ final class StreamTransport implements HttpClient
             return null;
         }
 
-        $inflate = null;
-        $encoding = strtolower(trim((string) $collector->getHeader('content-encoding')));
-        if ($this->decodesGzip && $encoding !== '' && $encoding !== 'identity') {
-            if ($encoding !== 'gzip' && $encoding !== 'x-gzip') {
-                return [HttpResponse::OUTCOME_OTHER, 0, 'Unsupported content encoding: ' . $encoding];
-            }
-            $inflate = inflate_init(ZLIB_ENCODING_GZIP);
-            if ($inflate === false) {
-                return [HttpResponse::OUTCOME_OTHER, 0, 'Cannot initialise gzip decoding'];
-            }
-        }
-
-        $reader = new BodyReader($socket, $collector, $inflate, $deadline, $this->options->getLowSpeedLimit(), $lowSpeedTime);
+        $reader = new BodyReader($socket, $collector, $deadline, $this->options->getLowSpeedLimit(), $lowSpeedTime);
         $transferEncoding = strtolower((string) $collector->getHeader('transfer-encoding'));
         $length = $collector->getHeader('content-length');
         if (strpos($transferEncoding, 'chunked') !== false) {
@@ -296,7 +279,7 @@ final class StreamTransport implements HttpClient
             $failure = $reader->readUntilClose();
         }
 
-        return $failure ?? $reader->finishDecoding();
+        return $failure;
     }
 
     /**

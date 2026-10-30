@@ -72,7 +72,8 @@ final class CurlTransportTest extends TransportContractTestCase
         self::assertSame(4, $curlOptions[CURLOPT_MAXREDIRS]);
         self::assertSame(CURL_IPRESOLVE_WHATEVER, $curlOptions[CURLOPT_IPRESOLVE], 'IPv4 is not forced (finding P-22)');
         self::assertTrue($curlOptions[CURLOPT_TCP_NODELAY]);
-        self::assertSame('', $curlOptions[CURLOPT_ENCODING]);
+        self::assertFalse($curlOptions[CURLOPT_HTTP_CONTENT_DECODING], 'ResponseCollector decodes gzip');
+        self::assertArrayNotHasKey(CURLOPT_ENCODING, $curlOptions);
         self::assertSame(
             CurlTransport::supportsHttp2() ? CURL_HTTP_VERSION_2TLS : CURL_HTTP_VERSION_1_1,
             $curlOptions[CURLOPT_HTTP_VERSION]
@@ -87,7 +88,6 @@ final class CurlTransportTest extends TransportContractTestCase
         $plain = (new CurlTransport($options->withHttp2(false)->withCompression(false)->withTlsVerification(false), false))->getCurlOptions();
 
         self::assertSame(CURL_HTTP_VERSION_1_1, $plain[CURLOPT_HTTP_VERSION]);
-        self::assertArrayNotHasKey(CURLOPT_ENCODING, $plain);
         self::assertArrayNotHasKey(CURLOPT_PIPEWAIT, $plain);
         self::assertArrayNotHasKey(CURLOPT_CAINFO, $plain);
         self::assertArrayNotHasKey(CURLOPT_SHARE, $plain);

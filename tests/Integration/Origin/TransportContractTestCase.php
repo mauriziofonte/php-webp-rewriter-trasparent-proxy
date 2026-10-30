@@ -454,6 +454,21 @@ abstract class TransportContractTestCase extends TestCase
         $this->assertNoBodyFileLeft();
     }
 
+    /**
+     * A gzip stream cut short inside complete HTTP framing is a truncated
+     * body for every transport (finding 5 of the PRX-4 review).
+     */
+    public function testAGzipStreamCutShortInsideItsFramingIsANetworkFailure(): void
+    {
+        $response = $this->send($this->url('/bytes/300000?gzip=1&gzip_cut=1000'));
+
+        self::assertSame(HttpResponse::OUTCOME_NETWORK, $response->getOutcome());
+        self::assertSame('The compressed body is truncated', $response->getError());
+        self::assertSame(200, $response->getStatus());
+        self::assertNull($response->getBody());
+        $this->assertNoBodyFileLeft();
+    }
+
     public function testAConnectionClosedWithoutAnswerIsAConnectFailure(): void
     {
         $response = $this->send($this->url('/close'));

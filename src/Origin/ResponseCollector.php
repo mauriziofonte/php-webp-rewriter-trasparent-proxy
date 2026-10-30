@@ -15,7 +15,11 @@ namespace Mfonte\ProxyCdn\Origin;
  *   GET opens a temporary file for the body, unless its Content-Length
  *   already exceeds the maximum size; any other body is discarded, and
  *   aborted after DISCARD_LIMIT bytes;
- * - body chunks are written to the file until the maximum size is reached.
+ * - body chunks arrive as received, transfer coding removed; a gzip body is
+ *   inflated here when requestsGzip() asked for it, any other content
+ *   coding is then refused, and a gzip stream that does not end with the
+ *   body is a truncated body;
+ * - decoded bytes are written to the file until the maximum size is reached.
  *
  * headerLine() and bodyChunk() return false when the transfer must be
  * aborted; finish() then reports why, whatever error the transport saw.
@@ -46,6 +50,12 @@ final class ResponseCollector
     private const ABORT_PROTOCOL = 4;
 
     /**
+     * Compressed bytes inflated at once: a compression bomb then expands to
+     * about a thousand times this size in memory before the size check.
+     */
+    private const INFLATE_SLICE = 1024;
+
+    /**
      * @var bool
      */
     private $isHead;
@@ -68,7 +78,19 @@ final class ResponseCollector
     /**
      * @var bool
      */
-    private $decodesContent;
+    private $requestsGzip;
+
+    /**
+     * The gzip decoder of the body being stored, or null for an identity body.
+     *
+     * @var InflateContextOrResource|null
+     */
+    private $inflate;
+
+    /**
+     * @var int
+     */
+    private $encodedBytes = 0;
 
     /**
      * @var int
@@ -130,17 +152,26 @@ final class ResponseCollector
      */
     private $abortMessage = '';
 
-    /**
-     * @param bool $decodesContent whether the transport decodes the content codings it receives, so that a stored
-     *                             body never keeps its Content-Encoding
-     */
-    public function __construct(HttpRequest $request, HttpClientOptions $options, bool $decodesContent)
+    public function __construct(HttpRequest $request, HttpClientOptions $options)
     {
         $this->isHead = $request->getMethod() === HttpRequest::METHOD_HEAD;
         $this->followRedirects = $options->shouldFollowRedirects();
         $this->maxBodySize = $options->getMaxBodySize();
         $this->temporaryDirectory = $options->getTemporaryDirectory();
-        $this->decodesContent = $decodesContent;
+        $this->requestsGzip = $options->isCompressionEnabled() && $request->getHeader('accept-encoding') === null
+            && function_exists('inflate_init');
+    }
+
+    /**
+     * Whether the transport must send "Accept-Encoding: gzip": compression
+     * is enabled, ext-zlib is loaded and the request has no Accept-Encoding
+     * of its own. A gzip body is then inflated before it is stored; with an
+     * Accept-Encoding of the request, the body is stored as received and
+     * keeps its Content-Encoding.
+     */
+    public function requestsGzip(): bool
+    {
+        return $this->requestsGzip;
     }
 
     /**
@@ -192,8 +223,7 @@ final class ResponseCollector
     }
 
     /**
-     * Feeds a chunk of the body, already decoded from its transfer and
-     * content codings.
+     * Feeds a chunk of the body as received, its transfer coding removed.
      *
      * @return bool false when the transfer must be aborted
      */
@@ -206,19 +236,26 @@ final class ResponseCollector
             return true;
         }
 
-        $length = strlen($data);
         if ($this->file === null) {
-            $this->discarded += $length;
+            $this->discarded += strlen($data);
 
             return $this->discarded <= self::DISCARD_LIMIT || $this->abort(self::ABORT_DISCARDED, '');
         }
-        if ($length > $this->maxBodySize - $this->bytes) {
-            return $this->abort(self::ABORT_TOO_LARGE, 'The response body exceeds ' . $this->maxBodySize . ' bytes');
+        if ($this->inflate === null) {
+            return $this->store($data);
         }
-        if (@fwrite($this->file, $data) !== $length) {
-            return $this->abort(self::ABORT_FILE, 'The response body cannot be written to ' . (string) $this->path);
+
+        $length = strlen($data);
+        $this->encodedBytes += $length;
+        for ($offset = 0; $offset < $length; $offset += self::INFLATE_SLICE) {
+            $decoded = @inflate_add($this->inflate, (string) substr($data, $offset, self::INFLATE_SLICE), ZLIB_SYNC_FLUSH);
+            if (!is_string($decoded)) {
+                return $this->abort(self::ABORT_PROTOCOL, 'The compressed body is corrupt');
+            }
+            if ($decoded !== '' && !$this->store($decoded)) {
+                return false;
+            }
         }
-        $this->bytes += $length;
 
         return true;
     }
@@ -309,6 +346,11 @@ final class ResponseCollector
             );
         }
 
+        if ($failure === null && $this->inflate !== null && $this->encodedBytes > 0 && inflate_get_status($this->inflate) !== ZLIB_STREAM_END) {
+            $failure = HttpResponse::OUTCOME_NETWORK;
+            $error = 'The compressed body is truncated';
+        }
+
         if ($failure !== null) {
             if ($this->final && $this->path === null) {
                 // The final status is known and its body was not wanted:
@@ -350,7 +392,7 @@ final class ResponseCollector
         if ($this->path !== null) {
             $this->headers['content-length'] = (string) $this->bytes;
             unset($this->headers['transfer-encoding']);
-            if ($this->decodesContent && isset($this->headers['content-encoding']) && strtolower($this->headers['content-encoding']) !== 'identity') {
+            if ($this->inflate !== null) {
                 unset($this->headers['content-encoding']);
             }
             $body = new ResponseBody($this->path, $this->bytes);
@@ -380,6 +422,8 @@ final class ResponseCollector
         }
         $this->bytes = 0;
         $this->discarded = 0;
+        $this->encodedBytes = 0;
+        $this->inflate = null;
         $this->final = false;
         $this->headers = [];
         $this->lastField = null;
@@ -414,7 +458,20 @@ final class ResponseCollector
         }
 
         $length = $this->headers['content-length'] ?? null;
-        $encoding = strtolower($this->headers['content-encoding'] ?? 'identity');
+        $encoding = strtolower(trim($this->headers['content-encoding'] ?? ''));
+        if ($encoding === '') {
+            $encoding = 'identity';
+        }
+        if ($encoding !== 'identity' && $this->requestsGzip) {
+            if ($encoding !== 'gzip' && $encoding !== 'x-gzip') {
+                return $this->abort(self::ABORT_PROTOCOL, 'Unsupported content encoding: ' . substr($encoding, 0, 64));
+            }
+            $inflate = inflate_init(ZLIB_ENCODING_GZIP);
+            if ($inflate === false) {
+                return $this->abort(self::ABORT_PROTOCOL, 'Cannot initialise gzip decoding');
+            }
+            $this->inflate = $inflate;
+        }
         if ($length !== null && $encoding === 'identity' && ctype_digit($length) && (strlen($length) > 18 || (int) $length > $this->maxBodySize)) {
             return $this->abort(self::ABORT_TOO_LARGE, 'The response body announces ' . $length . ' bytes, more than ' . $this->maxBodySize);
         }
@@ -446,6 +503,24 @@ final class ResponseCollector
         }
 
         return false;
+    }
+
+    /**
+     * Writes decoded body bytes to the file, within the maximum size.
+     */
+    private function store(string $data): bool
+    {
+        $length = strlen($data);
+        if ($length > $this->maxBodySize - $this->bytes) {
+            return $this->abort(self::ABORT_TOO_LARGE, 'The response body exceeds ' . $this->maxBodySize . ' bytes');
+        }
+        $file = $this->file;
+        if ($file === null || @fwrite($file, $data) !== $length) {
+            return $this->abort(self::ABORT_FILE, 'The response body cannot be written to ' . (string) $this->path);
+        }
+        $this->bytes += $length;
+
+        return true;
     }
 
     private function deleteFile(): void

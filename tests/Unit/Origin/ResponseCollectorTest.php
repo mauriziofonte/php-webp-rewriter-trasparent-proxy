@@ -154,13 +154,22 @@ final class ResponseCollectorTest extends TestCase
         self::assertSame(HttpResponse::OUTCOME_TOO_LARGE, $collector->finish(null, 0, '', self::URL, 0.0)->getOutcome());
     }
 
+    public function testGzipIsRequestedUnlessTheRequestChoosesItsEncodings(): void
+    {
+        $options = (new HttpClientOptions())->withTemporaryDirectory($this->directory->path());
+
+        self::assertTrue($this->collector()->requestsGzip());
+        self::assertFalse($this->collector($options->withCompression(false))->requestsGzip());
+        self::assertFalse((new ResponseCollector(new HttpRequest(self::URL, ['Accept-Encoding' => 'br']), $options))->requestsGzip());
+    }
+
     public function testAnEncodedBodyIsMeasuredAfterDecoding(): void
     {
-        $collector = $this->collector((new HttpClientOptions())->withMaxBodySize(10), true);
+        $collector = $this->collector((new HttpClientOptions())->withMaxBodySize(10));
+        $encoded = (string) gzencode(str_repeat('x', 11));
 
-        self::assertTrue($this->head($collector, 'HTTP/1.1 200 OK', ['Content-Length: 50', 'Content-Encoding: gzip']), 'the encoded length is not the size');
-        self::assertTrue($collector->bodyChunk('0123456789'));
-        self::assertFalse($collector->bodyChunk('a'));
+        self::assertTrue($this->head($collector, 'HTTP/1.1 200 OK', ['Content-Length: ' . strlen($encoded) * 10, 'Content-Encoding: gzip']), 'the encoded length is not the size');
+        self::assertFalse($collector->bodyChunk($encoded));
         self::assertFalse($collector->bodyChunk('b'), 'nothing more is accepted after an abort');
         $response = $collector->finish(HttpResponse::OUTCOME_OTHER, 23, 'Failure writing output', self::URL, 0.0);
 
@@ -168,25 +177,89 @@ final class ResponseCollectorTest extends TestCase
         self::assertSame([], $this->temporaryFiles());
     }
 
-    public function testADecodedBodyLosesItsContentEncoding(): void
+    public function testAGzipBodyIsInflatedAndLosesItsContentEncoding(): void
     {
-        $collector = $this->collector(null, true);
+        $collector = $this->collector();
+        $encoded = (string) gzencode(str_repeat('decoded!', 1000));
 
-        $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Length: 4', 'Content-Encoding: gzip', 'Transfer-Encoding: chunked']);
-        $collector->bodyChunk('decoded!');
+        $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Length: ' . strlen($encoded), 'Content-Encoding: gzip', 'Transfer-Encoding: chunked']);
+        foreach (str_split($encoded, 7) as $piece) {
+            self::assertTrue($collector->bodyChunk($piece));
+        }
         $response = $collector->finish(null, 0, '', self::URL, 0.0);
 
-        self::assertSame(['content-length' => '8'], $response->getHeaders());
+        self::assertSame(['content-length' => '8000'], $response->getHeaders());
+        $body = $response->getBody();
+        self::assertNotNull($body);
+        self::assertSame(str_repeat('decoded!', 1000), $body->getContents());
+    }
+
+    /**
+     * A gzip stream cut short inside complete HTTP framing (finding 5 of
+     * the PRX-4 review): libcurl cannot tell, the collector can.
+     */
+    public function testATruncatedGzipStreamIsANetworkFailure(): void
+    {
+        $collector = $this->collector();
+        $encoded = (string) gzencode(str_repeat('x', 5000));
+
+        $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Length: 10', 'Content-Encoding: gzip']);
+        self::assertTrue($collector->bodyChunk(substr($encoded, 0, 10)));
+        $response = $collector->finish(null, 0, '', self::URL, 0.0);
+
+        self::assertSame(HttpResponse::OUTCOME_NETWORK, $response->getOutcome());
+        self::assertSame('The compressed body is truncated', $response->getError());
+        self::assertSame(200, $response->getStatus());
+        self::assertNull($response->getBody());
+        self::assertSame([], $this->temporaryFiles());
+    }
+
+    public function testAnEmptyGzipBodyIsAnEmptyBody(): void
+    {
+        $collector = $this->collector();
+
+        $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Length: 0', 'Content-Encoding: gzip']);
+        $response = $collector->finish(null, 0, '', self::URL, 0.0);
+
+        self::assertSame(HttpResponse::OUTCOME_SUCCESS, $response->getOutcome());
+        self::assertSame(0, self::bodySize($response));
+    }
+
+    public function testACorruptGzipBodyIsAnotherFailure(): void
+    {
+        $collector = $this->collector();
+
+        $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Encoding: gzip']);
+        self::assertFalse($collector->bodyChunk('this is not gzip data'));
+        $response = $collector->finish(HttpResponse::OUTCOME_OTHER, 23, 'Failure writing output', self::URL, 0.0);
+
+        self::assertSame(HttpResponse::OUTCOME_OTHER, $response->getOutcome());
+        self::assertSame('The compressed body is corrupt', $response->getError());
+        self::assertSame([], $this->temporaryFiles());
+    }
+
+    public function testAnotherContentCodingIsRefusedWhenGzipWasRequested(): void
+    {
+        $collector = $this->collector();
+
+        self::assertFalse($this->head($collector, 'HTTP/1.1 200 OK', ['Content-Encoding: br']));
+        $response = $collector->finish(HttpResponse::OUTCOME_OTHER, 23, '', self::URL, 0.0);
+
+        self::assertSame(HttpResponse::OUTCOME_OTHER, $response->getOutcome());
+        self::assertSame('Unsupported content encoding: br', $response->getError());
+        self::assertSame([], $this->temporaryFiles());
     }
 
     public function testAnUndecodedBodyKeepsItsContentEncoding(): void
     {
-        $collector = $this->collector(null, false);
+        $collector = $this->collector((new HttpClientOptions())->withCompression(false));
 
         $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Encoding: br']);
         $collector->bodyChunk('raw');
+        $response = $collector->finish(null, 0, '', self::URL, 0.0);
 
-        self::assertSame('br', $collector->finish(null, 0, '', self::URL, 0.0)->getHeader('content-encoding'));
+        self::assertSame('br', $response->getHeader('content-encoding'));
+        self::assertSame(3, self::bodySize($response));
     }
 
     public function testTheBodyOfAnErrorIsDiscardedUpToALimit(): void
@@ -218,8 +291,7 @@ final class ResponseCollectorTest extends TestCase
     {
         $collector = new ResponseCollector(
             new HttpRequest(self::URL, [], HttpRequest::METHOD_HEAD),
-            (new HttpClientOptions())->withTemporaryDirectory($this->directory->path()),
-            true
+            (new HttpClientOptions())->withTemporaryDirectory($this->directory->path())
         );
 
         $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Length: 123456789012']);
@@ -319,7 +391,7 @@ final class ResponseCollectorTest extends TestCase
 
     public function testAMissingTemporaryDirectoryIsAFailure(): void
     {
-        $collector = new ResponseCollector(new HttpRequest(self::URL), (new HttpClientOptions())->withTemporaryDirectory($this->directory->path('missing')), true);
+        $collector = new ResponseCollector(new HttpRequest(self::URL), (new HttpClientOptions())->withTemporaryDirectory($this->directory->path('missing')));
 
         self::assertFalse($this->head($collector, 'HTTP/1.1 200 OK', []));
         $response = $collector->finish(HttpResponse::OUTCOME_OTHER, 23, '', self::URL, 0.0);
@@ -340,13 +412,20 @@ final class ResponseCollectorTest extends TestCase
         self::assertSame([], $this->temporaryFiles());
     }
 
-    private function collector(?HttpClientOptions $options = null, bool $decodes = true): ResponseCollector
+    private function collector(?HttpClientOptions $options = null): ResponseCollector
     {
         return new ResponseCollector(
             new HttpRequest(self::URL),
-            ($options ?? new HttpClientOptions())->withTemporaryDirectory($this->directory->path()),
-            $decodes
+            ($options ?? new HttpClientOptions())->withTemporaryDirectory($this->directory->path())
         );
+    }
+
+    private static function bodySize(HttpResponse $response): int
+    {
+        $body = $response->getBody();
+        self::assertNotNull($body);
+
+        return $body->getSize();
     }
 
     /**

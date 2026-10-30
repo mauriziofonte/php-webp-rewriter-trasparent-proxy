@@ -99,7 +99,7 @@ final class MultiClient
                 $key = $keys[$next++];
                 $handle = $this->idle !== [] ? array_pop($this->idle) : $this->transport->createHandle();
                 if ($handle === null) {
-                    $responses[$key] = (new ResponseCollector($requests[$key], new HttpClientOptions(), true))
+                    $responses[$key] = (new ResponseCollector($requests[$key], new HttpClientOptions()))
                         ->finish(HttpResponse::OUTCOME_OTHER, 0, 'The cURL handle cannot be created', $requests[$key]->getUrl(), 0.0);
                     continue;
                 }

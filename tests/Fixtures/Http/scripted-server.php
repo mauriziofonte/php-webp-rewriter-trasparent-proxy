@@ -23,6 +23,8 @@ declare(strict_types=1);
  *   /bytes/<n>                 200 with n bytes of ScriptedServer::payload():
  *                              [mode] length (default), chunked or close (no length);
  *                              [gzip=1] gzip when the request accepts it;
+ *                              [gzip_cut=k] with gzip=1 and mode=length, only the first
+ *                              k bytes of the gzip stream, announced as the whole body;
  *                              [truncate=k] closes after k body bytes;
  *                              [header_delay], [body_delay], [stall]: milliseconds
  *                              before the headers, before the body, after its first block
@@ -275,6 +277,9 @@ function bytes($stream, int $size, array $query, bool $acceptsGzip, bool $keepAl
         $headers['Content-Encoding'] = 'gzip';
         if ($mode === 'length') {
             $encoded = (string) gzencode(payload($size, $block));
+            if (isset($query['gzip_cut']) && is_string($query['gzip_cut'])) {
+                $encoded = (string) substr($encoded, 0, (int) $query['gzip_cut']);
+            }
         }
     }
     if ($mode === 'length') {
