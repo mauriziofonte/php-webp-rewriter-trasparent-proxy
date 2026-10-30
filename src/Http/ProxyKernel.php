@@ -201,8 +201,8 @@ final class ProxyKernel
 
                 return $this->responses->error($path, ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
             }
-            // Every other failure opens the breaker, redirects and 403
-            // included (finding P-13).
+            // Every other failure opens the breaker, redirects, 403 and 410
+            // included (finding P-13, resolved by PRX-5).
             $this->circuitBreaker->recordFailure($file);
 
             return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);

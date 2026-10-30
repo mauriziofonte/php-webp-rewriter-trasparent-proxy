@@ -217,11 +217,12 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
-     * A redirect opens the breaker like a network failure (finding P-13).
+     * A redirect opens the breaker like a network failure (finding P-13,
+     * resolved by PRX-5).
      */
     public function testARedirectOpensTheBreakerP13(): void
     {
-        $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_OTHER, 301));
+        $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_REDIRECT, 301));
 
         self::assertSame(503, $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
         self::assertFileExists($this->directory->path('js/app.js.netfail'));

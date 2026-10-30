@@ -103,7 +103,8 @@ final class CircuitBreakerTest extends CharacterizationTestCase
 
     /**
      * Redirects, 403 and 410 are treated like network failures (finding
-     * P-13, resolved by PRX-4 and PRX-5).
+     * P-13). Since PRX-4 the fetcher reports each with a reason of its own;
+     * PRX-5 changes how the kernel treats them.
      *
      * @dataProvider provideNonFailureStatuses
      */

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Integration\Characterization;
 
+use Mfonte\ProxyCdn\Origin\HttpClientOptions;
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
@@ -20,8 +21,6 @@ use PHPUnit\Framework\Attributes\Group;
 #[Group('characterization')]
 final class MissAndHitTest extends CharacterizationTestCase
 {
-    private const FIREFOX_81 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:81.0) Gecko/20100101 Firefox/81.0';
-
     public function testMissFetchesFromTheOriginStoresTheFileAndAnswersWithTheProxyHeaders(): void
     {
         $png = self::fixture('images/gradient.png');
@@ -53,18 +52,19 @@ final class MissAndHitTest extends CharacterizationTestCase
     }
 
     /**
-     * The origin request carries a fake Firefox 81 User-Agent (finding P-22,
-     * resolved by PRX-4), the proxy's own scheme and host as Referer, and
-     * no-cache directives.
+     * The origin request carries the proxy's own scheme and host as Referer
+     * and no-cache directives, as in 2.x, and a User-Agent that names this
+     * software instead of the fake Firefox 81 of 2.x (finding P-22, resolved
+     * by PRX-4).
      */
-    public function testOriginRequestCarriesTheLegacyHeadersP22(): void
+    public function testOriginRequestCarriesTheProxyHeadersP22(): void
     {
         $this->get('/images/gradient.png');
 
         $request = $this->origin->getLastRequest();
         self::assertSame('GET', $request['method']);
         self::assertSame('/images/gradient.png', $request['uri']);
-        self::assertSame(self::FIREFOX_81, $request['headers']['user-agent'] ?? null);
+        self::assertSame(HttpClientOptions::DEFAULT_USER_AGENT, $request['headers']['user-agent'] ?? null);
         self::assertSame('http://127.0.0.1:' . $this->proxy->getPort(), $request['headers']['referer'] ?? null);
         self::assertSame('no-cache', $request['headers']['pragma'] ?? null);
         self::assertSame('no-cache', $request['headers']['cache-control'] ?? null);

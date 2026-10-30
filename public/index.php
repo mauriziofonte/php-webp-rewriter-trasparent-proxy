@@ -22,7 +22,7 @@ use Mfonte\ProxyCdn\Http\ProxyKernel;
 use Mfonte\ProxyCdn\Http\ResponseFactory;
 use Mfonte\ProxyCdn\Image\Legacy\LegacyConverterFactory;
 use Mfonte\ProxyCdn\Observability\JsonLogger;
-use Mfonte\ProxyCdn\Origin\Legacy\CurlOriginFetcher;
+use Mfonte\ProxyCdn\Origin\HttpOriginFetcher;
 use Mfonte\ProxyCdn\Origin\MarkerFileCircuitBreaker;
 use Mfonte\ProxyCdn\Security\PathSanitizer;
 use Psr\Log\LogLevel;
@@ -63,7 +63,7 @@ $kernel = new ProxyKernel(
     $negativeCache,
     new MarkerFileCircuitBreaker($storage, $config->getNetworkErrorTtl()),
     new Purger($storage, $negativeCache),
-    CurlOriginFetcher::fromConfig($config, $logger),
+    HttpOriginFetcher::fromConfig($config, $logger),
     LegacyConverterFactory::fromConfig($config, $storage, $logger),
     $responses,
     new FileResponder($storage, $responses),

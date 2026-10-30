@@ -9,15 +9,32 @@ namespace Mfonte\ProxyCdn\Origin;
  * or a failure with its reason. Immutable.
  *
  * As in 2.x only a 200 is a success; every other status and every transport
- * error is a failure, classified by one of the FAILURE_* reasons.
+ * error is a failure, classified by one of the FAILURE_* reasons. Redirects,
+ * 403, 410 and other 4xx statuses have reasons of their own (finding P-13),
+ * which ProxyKernel still treats as 2.x did until PRX-5.
  */
 final class OriginResponse
 {
+    /** The origin answered with a redirect (3xx other than 304) that was not followed. */
+    public const FAILURE_REDIRECT = 'redirect';
+
+    /** The origin answered 403. */
+    public const FAILURE_FORBIDDEN = 'forbidden';
+
     /** The origin answered 404. */
     public const FAILURE_NOT_FOUND = 'not_found';
 
+    /** The origin answered 410. */
+    public const FAILURE_GONE = 'gone';
+
+    /** The origin answered with a 4xx status other than 403, 404 and 410. */
+    public const FAILURE_CLIENT_ERROR = 'client_error';
+
     /** The origin answered with a 5xx status. */
     public const FAILURE_SERVER_ERROR = 'server_error';
+
+    /** The body exceeds the maximum size (UPSTREAM_MAX_SIZE). */
+    public const FAILURE_TOO_LARGE = 'too_large';
 
     /** The connection or the transfer timed out. */
     public const FAILURE_TIMEOUT = 'timeout';
@@ -34,7 +51,7 @@ final class OriginResponse
     /** Sending or receiving failed during the transfer. */
     public const FAILURE_NETWORK = 'network';
 
-    /** Any other status (3xx, 4xx other than 404) or transport error. */
+    /** Any other status (2xx other than 200, 304, outside 200-599) or failure. */
     public const FAILURE_OTHER = 'other';
 
     /**

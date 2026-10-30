@@ -159,7 +159,7 @@ Route::get('/{path}', function (\Illuminate\Http\Request \$request) {
         \$negativeCache,
         new \Mfonte\ProxyCdn\Origin\MarkerFileCircuitBreaker(\$storage, \$config->getNetworkErrorTtl()),
         new \Mfonte\ProxyCdn\Cache\Purger(\$storage, \$negativeCache),
-        \Mfonte\ProxyCdn\Origin\Legacy\CurlOriginFetcher::fromConfig(\$config, \$logger),
+        \Mfonte\ProxyCdn\Origin\HttpOriginFetcher::fromConfig(\$config, \$logger),
         null,
         \$responses,
         new \Mfonte\ProxyCdn\Http\FileResponder(\$storage, \$responses),
