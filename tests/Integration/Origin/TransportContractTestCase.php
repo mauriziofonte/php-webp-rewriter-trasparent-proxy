@@ -33,6 +33,13 @@ abstract class TransportContractTestCase extends TestCase
     private static $server;
 
     /**
+     * A second plain server, another origin on another port.
+     *
+     * @var ScriptedServer|null
+     */
+    private static $otherServer;
+
+    /**
      * @var ScriptedServer|null
      */
     private static $tlsServer;
@@ -58,6 +65,8 @@ abstract class TransportContractTestCase extends TestCase
         self::$serverDirectory = $directory;
         mkdir($directory->path('plain'));
         self::$server = ScriptedServer::start($directory->path('plain'));
+        mkdir($directory->path('other'));
+        self::$otherServer = ScriptedServer::start($directory->path('other'));
         if (TestCertificate::isSupported()) {
             mkdir($directory->path('tls'));
             self::$certificate = TestCertificate::create($directory->path('tls'));
@@ -67,7 +76,7 @@ abstract class TransportContractTestCase extends TestCase
 
     public static function tear_down_after_class(): void
     {
-        foreach ([self::$server, self::$tlsServer] as $server) {
+        foreach ([self::$server, self::$otherServer, self::$tlsServer] as $server) {
             if ($server !== null) {
                 $server->stop();
             }
@@ -76,6 +85,7 @@ abstract class TransportContractTestCase extends TestCase
             self::$serverDirectory->remove();
         }
         self::$server = null;
+        self::$otherServer = null;
         self::$tlsServer = null;
         self::$certificate = null;
         self::$serverDirectory = null;
@@ -271,6 +281,81 @@ abstract class TransportContractTestCase extends TestCase
         self::assertSame($this->url('/redirect/1'), $response->getEffectiveUrl());
         self::assertNull($response->getBody());
         self::assertCount($before + 1, self::server()->getRequests(), 'the location is not requested');
+    }
+
+    /**
+     * Authorization, Cookie, Proxy-Authorization and a custom Host go to the
+     * origin of the request only: a redirect to another host or port drops
+     * them, on every transport and libcurl (finding 2 of the PRX-4 review).
+     *
+     * @dataProvider provideRedirectTargets
+     */
+    #[DataProvider('provideRedirectTargets')]
+    public function testOriginBoundFieldsAreNotSentToAnotherOrigin(string $target, bool $sameOrigin): void
+    {
+        $port = self::server()->getPort();
+        $otherPort = self::otherServer()->getPort();
+        $location = strtr($target, ['{port}' => (string) $port, '{other}' => (string) $otherPort]);
+        $client = $this->createClient($this->options()->withRedirects(true, 5));
+        $headers = [
+            'Authorization' => 'Bearer s3cr3t',
+            'Cookie' => 'session=abc',
+            'Proxy-Authorization' => 'Basic cHJveHk=',
+            'Host' => '127.0.0.1:' . $port,
+            'X-Kept' => 'yes',
+        ];
+
+        $response = $client->send(new HttpRequest($this->url('/redirect-to?location=' . rawurlencode($location)), $headers));
+
+        $echo = self::json($response)['headers'];
+        self::assertSame('yes', $echo['x-kept'] ?? null);
+        if ($sameOrigin) {
+            self::assertSame('Bearer s3cr3t', $echo['authorization'] ?? null);
+            self::assertSame('session=abc', $echo['cookie'] ?? null);
+            self::assertSame('Basic cHJveHk=', $echo['proxy-authorization'] ?? null);
+            self::assertSame('127.0.0.1:' . $port, $echo['host'] ?? null);
+        } else {
+            self::assertArrayNotHasKey('authorization', $echo);
+            self::assertArrayNotHasKey('cookie', $echo);
+            self::assertArrayNotHasKey('proxy-authorization', $echo);
+            self::assertSame((string) parse_url($location, PHP_URL_HOST) . ':' . (string) parse_url($location, PHP_URL_PORT), $echo['host'] ?? null);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function provideRedirectTargets(): array
+    {
+        return [
+            'same origin' => ['/echo', true],
+            'same origin, absolute' => ['http://127.0.0.1:{port}/echo', true],
+            'another host' => ['http://localhost:{port}/echo', false],
+            'another port' => ['http://127.0.0.1:{other}/echo', false],
+        ];
+    }
+
+    public function testFieldsDroppedOnceAreNotSentAgain(): void
+    {
+        $port = self::server()->getPort();
+        $back = 'http://127.0.0.1:' . $port . '/echo';
+        $away = 'http://localhost:' . $port . '/redirect-to?location=' . rawurlencode($back);
+        $client = $this->createClient($this->options()->withRedirects(true, 5));
+
+        $response = $client->send(new HttpRequest($this->url('/redirect-to?location=' . rawurlencode($away)), ['Authorization' => 'Bearer s3cr3t']));
+
+        self::assertSame($back, $response->getEffectiveUrl());
+        self::assertArrayNotHasKey('authorization', self::json($response)['headers']);
+    }
+
+    public function testA304WithALocationIsNotFollowed(): void
+    {
+        $client = $this->createClient($this->options()->withRedirects(true, 5));
+
+        $response = $client->send(new HttpRequest($this->url('/status/304?location=/echo')));
+
+        self::assertSame(HttpResponse::OUTCOME_NOT_MODIFIED, $response->getOutcome());
+        self::assertSame($this->url('/status/304?location=/echo'), $response->getEffectiveUrl());
     }
 
     public function testTooManyRedirectsAreARedirectOutcome(): void
@@ -768,6 +853,15 @@ abstract class TransportContractTestCase extends TestCase
         }
 
         return self::$server;
+    }
+
+    protected static function otherServer(): ScriptedServer
+    {
+        if (self::$otherServer === null) {
+            throw new \LogicException('The second scripted server is not running');
+        }
+
+        return self::$otherServer;
     }
 
     protected function tlsServer(): ScriptedServer

@@ -47,17 +47,9 @@ final class HttpRequest
         if ($method !== self::METHOD_GET && $method !== self::METHOD_HEAD) {
             throw new InvalidArgumentException('The method must be GET or HEAD, got ' . $method);
         }
-        $scheme = parse_url($url, PHP_URL_SCHEME);
-        $host = parse_url($url, PHP_URL_HOST);
-        if ($url === '' || !is_string($scheme) || !in_array(strtolower($scheme), ['http', 'https'], true) || !is_string($host) || $host === '') {
-            throw new InvalidArgumentException('The URL must be an absolute http or https URL');
-        }
-        if (strpbrk($url, "\r\n\0 ") !== false) {
-            throw new InvalidArgumentException('The URL must not contain spaces or control characters');
-        }
 
         $this->method = $method;
-        $this->url = $url;
+        $this->url = self::checkUrl($url);
         foreach ($headers as $name => $value) {
             $this->headers[self::checkName((string) $name)] = self::checkValue($value);
         }
@@ -71,6 +63,19 @@ final class HttpRequest
     public function getUrl(): string
     {
         return $this->url;
+    }
+
+    /**
+     * A copy for another URL, with the same method and header fields.
+     *
+     * @throws InvalidArgumentException when the URL is invalid
+     */
+    public function withUrl(string $url): self
+    {
+        $copy = clone $this;
+        $copy->url = self::checkUrl($url);
+
+        return $copy;
     }
 
     /**
@@ -140,6 +145,25 @@ final class HttpRequest
         $copy = $etag === null ? $this->withoutHeader('if-none-match') : $this->withHeader('if-none-match', $etag);
 
         return $lastModified === null ? $copy->withoutHeader('if-modified-since') : $copy->withHeader('if-modified-since', $lastModified);
+    }
+
+    /**
+     * @return non-empty-string
+     *
+     * @throws InvalidArgumentException
+     */
+    private static function checkUrl(string $url): string
+    {
+        $scheme = parse_url($url, PHP_URL_SCHEME);
+        $host = parse_url($url, PHP_URL_HOST);
+        if ($url === '' || !is_string($scheme) || !in_array(strtolower($scheme), ['http', 'https'], true) || !is_string($host) || $host === '') {
+            throw new InvalidArgumentException('The URL must be an absolute http or https URL');
+        }
+        if (strpbrk($url, "\r\n\0 ") !== false) {
+            throw new InvalidArgumentException('The URL must not contain spaces or control characters');
+        }
+
+        return $url;
     }
 
     /**

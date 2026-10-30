@@ -44,6 +44,21 @@ final class HttpRequestTest extends TestCase
         self::assertSame([], $copy->withoutHeader('Accept')->withoutHeader('x-new')->getHeaders());
     }
 
+    public function testWithUrlKeepsTheMethodAndTheFields(): void
+    {
+        $request = new HttpRequest('http://origin.example.test/a.css', ['Accept' => 'text/css'], HttpRequest::METHOD_HEAD);
+
+        $copy = $request->withUrl('https://other.example.test/b.css');
+
+        self::assertSame('https://other.example.test/b.css', $copy->getUrl());
+        self::assertSame('HEAD', $copy->getMethod());
+        self::assertSame(['accept' => 'text/css'], $copy->getHeaders());
+        self::assertSame('http://origin.example.test/a.css', $request->getUrl());
+
+        $this->expectException(InvalidArgumentException::class);
+        $request->withUrl('ftp://origin.example.test/a.css');
+    }
+
     public function testWithConditionsSetsAndRemovesTheValidators(): void
     {
         $request = new HttpRequest('http://origin.example.test/a.png');

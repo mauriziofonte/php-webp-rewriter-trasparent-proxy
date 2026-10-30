@@ -89,7 +89,7 @@ final class MultiClient
         $keys = array_keys($requests);
         $count = count($keys);
         $next = 0;
-        /** @var array<int, array{0: K, 1: CurlHandleOrResource, 2: ResponseCollector}> $running */
+        /** @var array<int, array{0: K, 1: CurlTransfer}> $running */
         $running = [];
         /** @var array<K, HttpResponse> $responses */
         $responses = [];
@@ -103,9 +103,9 @@ final class MultiClient
                         ->finish(HttpResponse::OUTCOME_OTHER, 0, 'The cURL handle cannot be created', $requests[$key]->getUrl(), 0.0);
                     continue;
                 }
-                $collector = $this->transport->prepare($handle, $requests[$key]);
+                $transfer = $this->transport->startTransfer($handle, $requests[$key]);
                 curl_multi_add_handle($multi, $handle);
-                $running[self::id($handle)] = [$key, $handle, $collector];
+                $running[self::id($handle)] = [$key, $transfer];
             }
 
             do {
@@ -120,12 +120,17 @@ final class MultiClient
                 if (!isset($running[$id])) {
                     continue;
                 }
-                $transfer = $running[$id];
+                list($key, $transfer) = $running[$id];
+                curl_multi_remove_handle($multi, $transfer->handle);
+                $response = $this->transport->endTransfer($transfer, is_int($message['result']) ? $message['result'] : 0);
+                if ($response === null) {
+                    // A redirect: the handle is set for the next transfer.
+                    curl_multi_add_handle($multi, $transfer->handle);
+                    continue;
+                }
                 unset($running[$id]);
-                curl_multi_remove_handle($multi, $transfer[1]);
-                $errno = is_int($message['result']) ? $message['result'] : 0;
-                $responses[$transfer[0]] = $this->transport->complete($transfer[1], $transfer[2], $errno);
-                $this->idle[] = $transfer[1];
+                $responses[$key] = $response;
+                $this->idle[] = $transfer->handle;
             }
 
             if ($status !== CURLM_OK) {
@@ -154,21 +159,21 @@ final class MultiClient
      *
      * @template K of array-key
      *
-     * @param array<int, array{0: K, 1: CurlHandleOrResource, 2: ResponseCollector}> $running
-     * @param array<K, HttpResponse>                                                 $responses
+     * @param array<int, array{0: K, 1: CurlTransfer}> $running
+     * @param array<K, HttpResponse>                   $responses
      */
     private function abandon(array $running, array &$responses, string $error): void
     {
-        foreach ($running as $transfer) {
+        foreach ($running as list($key, $transfer)) {
             if ($this->multi !== null) {
-                curl_multi_remove_handle($this->multi, $transfer[1]);
+                curl_multi_remove_handle($this->multi, $transfer->handle);
             }
-            $responses[$transfer[0]] = $transfer[2]->finish(
+            $responses[$key] = $transfer->collector->finish(
                 HttpResponse::OUTCOME_OTHER,
                 0,
                 $error,
-                (string) curl_getinfo($transfer[1], CURLINFO_EFFECTIVE_URL),
-                (float) curl_getinfo($transfer[1], CURLINFO_TOTAL_TIME)
+                (string) curl_getinfo($transfer->handle, CURLINFO_EFFECTIVE_URL),
+                microtime(true) - $transfer->startedAt
             );
         }
     }

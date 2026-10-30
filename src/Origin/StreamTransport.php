@@ -14,8 +14,9 @@ namespace Mfonte\ProxyCdn\Origin;
  * to a temporary file with the same maximum size checks, chunked bodies,
  * gzip asked for when ResponseCollector decodes it, truncated bodies
  * detected, interim responses skipped, redirects followed only to http and
- * https, and the connect-to pin with the original Host header and TLS
- * server name.
+ * https and without the fields bound to the origin (see RedirectTarget),
+ * and the connect-to pin with the original Host header and TLS server
+ * name.
  *
  * Its limits: one connection per request ("Connection: close"), HTTP/1.1
  * only, no proxy, the addresses of a host name tried one after the other
@@ -94,8 +95,8 @@ final class StreamTransport implements HttpClient
                     return $collector->finish(null, 0, '', $url, microtime(true) - $startedAt);
                 }
 
-                $target = RedirectTarget::resolve($url, (string) $collector->getHeader('location'));
-                if ($target === null) {
+                $next = RedirectTarget::follow($request, (string) $collector->getHeader('location'));
+                if ($next === null) {
                     return $collector->finish(HttpResponse::OUTCOME_OTHER, 0, 'Redirect to an unsupported location', $url, microtime(true) - $startedAt);
                 }
                 if ($redirects >= $this->options->getMaxRedirects()) {
@@ -107,7 +108,8 @@ final class StreamTransport implements HttpClient
                         microtime(true) - $startedAt
                     );
                 }
-                $url = $target;
+                $request = $next;
+                $url = $request->getUrl();
             }
         } finally {
             restore_error_handler();

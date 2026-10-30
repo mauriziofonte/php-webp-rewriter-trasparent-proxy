@@ -19,7 +19,8 @@ namespace Mfonte\ProxyCdn\Origin;
  * - libcurl does not decode content codings: ResponseCollector asks for
  *   gzip and inflates it, so that a gzip stream cut short inside complete
  *   HTTP framing is a truncated body, which libcurl would not report.
- * - Only http and https are allowed, for the request and for redirects.
+ * - Only http and https are allowed. Redirects are followed by the
+ *   transport, one transfer each, with the policy of RedirectTarget.
  * - One easy handle is reused for every send(), and a share handle shares
  *   DNS answers, TLS sessions and connections: on PHP 8.5 and later it is
  *   persistent (curl_share_init_persistent), so connections to the origin
@@ -112,8 +113,8 @@ final class CurlTransport implements HttpClient
             CURLOPT_LOW_SPEED_TIME => $options->getLowSpeedTime(),
             CURLOPT_SSL_VERIFYPEER => $options->shouldVerifyTls(),
             CURLOPT_SSL_VERIFYHOST => $options->shouldVerifyTls() ? 2 : 0,
-            CURLOPT_FOLLOWLOCATION => $options->shouldFollowRedirects(),
-            CURLOPT_MAXREDIRS => $options->getMaxRedirects(),
+            // Redirects are followed by endTransfer().
+            CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_IPRESOLVE => CURL_IPRESOLVE_WHATEVER,
             CURLOPT_TCP_NODELAY => true,
             CURLOPT_TCP_KEEPALIVE => 1,
@@ -228,10 +229,13 @@ final class CurlTransport implements HttpClient
                 ->finish(HttpResponse::OUTCOME_OTHER, 0, 'The cURL handle cannot be created', $request->getUrl(), 0.0);
         }
 
-        $collector = $this->prepare($handle, $request);
-        curl_exec($handle);
+        $transfer = $this->startTransfer($handle, $request);
+        do {
+            curl_exec($handle);
+            $response = $this->endTransfer($transfer, curl_errno($handle));
+        } while ($response === null);
 
-        return $this->complete($handle, $collector, curl_errno($handle));
+        return $response;
     }
 
     /**
@@ -253,16 +257,85 @@ final class CurlTransport implements HttpClient
     }
 
     /**
-     * Sets the options of $request on $handle and returns the collector its
-     * callbacks feed.
+     * Sets the options of $request on $handle, ready for curl_exec() or
+     * curl_multi_add_handle().
      *
      * @internal for MultiClient
      *
      * @param CurlHandleOrResource $handle a handle from createHandle()
      */
-    public function prepare($handle, HttpRequest $request): ResponseCollector
+    public function startTransfer($handle, HttpRequest $request): CurlTransfer
     {
-        $collector = new ResponseCollector($request, $this->options);
+        $transfer = new CurlTransfer($handle, $request, new ResponseCollector($request, $this->options));
+        $this->configure($transfer);
+
+        return $transfer;
+    }
+
+    /**
+     * Ends a transfer of $transfer: its response, or null when the
+     * transfer was a redirect to follow and the handle is set for the next
+     * one, to run the same way.
+     *
+     * Redirects are followed here rather than by libcurl, so that every
+     * transport applies the policy of RedirectTarget: libcurl before 7.83
+     * (the PHP 7.2 and 7.3 images) sends Authorization and Cookie to
+     * another port of the same host, and every libcurl sends
+     * Proxy-Authorization, and a custom Host to another port, along.
+     *
+     * @internal for MultiClient
+     *
+     * @param int $errno the CURLE_* result of the transfer, 0 on success
+     */
+    public function endTransfer(CurlTransfer $transfer, int $errno): ?HttpResponse
+    {
+        $collector = $transfer->collector;
+        $url = (string) curl_getinfo($transfer->handle, CURLINFO_EFFECTIVE_URL);
+        // A followed redirect ends with CURLE_WRITE_ERROR (23) when its
+        // body was too large to read.
+        if (($errno === 0 || $errno === 23) && $collector->isFollowingRedirect()) {
+            $next = RedirectTarget::follow($transfer->request, (string) $collector->getHeader('location'));
+            if ($next === null) {
+                return $collector->finish(HttpResponse::OUTCOME_OTHER, 0, 'Redirect to an unsupported location', $url, microtime(true) - $transfer->startedAt);
+            }
+            if ($transfer->redirects >= $this->options->getMaxRedirects()) {
+                return $collector->finish(
+                    HttpResponse::OUTCOME_REDIRECT,
+                    0,
+                    'Maximum (' . $this->options->getMaxRedirects() . ') redirects followed',
+                    $url,
+                    microtime(true) - $transfer->startedAt
+                );
+            }
+            ++$transfer->redirects;
+            $transfer->request = $next;
+            $this->configure($transfer);
+
+            return null;
+        }
+
+        $failure = null;
+        $error = '';
+        if ($errno !== 0) {
+            $failure = self::ERROR_OUTCOMES[$errno] ?? HttpResponse::OUTCOME_OTHER;
+            $error = curl_error($transfer->handle);
+            if ($error === '') {
+                $error = (string) curl_strerror($errno);
+            }
+        }
+
+        return $collector->finish($failure, $errno, $error, $url, microtime(true) - $transfer->startedAt);
+    }
+
+    /**
+     * Sets the options of the current request of $transfer on its handle:
+     * URL, header fields, callbacks, method, the time left before the
+     * deadline of the first transfer, and the connect-to pin of its origin.
+     */
+    private function configure(CurlTransfer $transfer): void
+    {
+        $request = $transfer->request;
+        $collector = $transfer->collector;
 
         $headers = [];
         foreach ($request->getHeaders() as $name => $value) {
@@ -275,10 +348,11 @@ final class CurlTransport implements HttpClient
             $headers[] = 'accept-encoding: gzip';
         }
 
-        $url = $request->getUrl();
+        $timeLeft = $transfer->startedAt + $this->options->getTimeout() - microtime(true);
         $options = [
-            CURLOPT_URL => $url,
+            CURLOPT_URL => $request->getUrl(),
             CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_TIMEOUT_MS => max(1, (int) ceil($timeLeft * 1000)),
             CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use ($collector): int {
                 return $collector->headerLine($line) ? strlen($line) : 0;
             },
@@ -292,40 +366,11 @@ final class CurlTransport implements HttpClient
             $options[CURLOPT_HTTPGET] = true;
         }
         if ($this->connectTo !== null) {
-            $options[CURLOPT_CONNECT_TO] = [self::connectToEntry($url, $this->connectTo)];
+            // Pinned on the host and port of the first URL: libcurl ignores
+            // the entry for a redirect to another one.
+            $options[CURLOPT_CONNECT_TO] = [self::connectToEntry($transfer->originUrl, $this->connectTo)];
         }
-        curl_setopt_array($handle, $options);
-
-        return $collector;
-    }
-
-    /**
-     * Builds the response of a finished transfer.
-     *
-     * @internal for MultiClient
-     *
-     * @param CurlHandleOrResource $handle the handle of the transfer
-     * @param int                  $errno  its CURLE_* result, 0 on success
-     */
-    public function complete($handle, ResponseCollector $collector, int $errno): HttpResponse
-    {
-        $failure = null;
-        $error = '';
-        if ($errno !== 0) {
-            $failure = self::ERROR_OUTCOMES[$errno] ?? HttpResponse::OUTCOME_OTHER;
-            $error = curl_error($handle);
-            if ($error === '') {
-                $error = (string) curl_strerror($errno);
-            }
-        }
-
-        return $collector->finish(
-            $failure,
-            $errno,
-            $error,
-            (string) curl_getinfo($handle, CURLINFO_EFFECTIVE_URL),
-            (float) curl_getinfo($handle, CURLINFO_TOTAL_TIME)
-        );
+        curl_setopt_array($transfer->handle, $options);
     }
 
     /**

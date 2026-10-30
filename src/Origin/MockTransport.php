@@ -98,14 +98,15 @@ final class MockTransport implements HttpClient
                 return $collector->finish(null, 0, '', $url, 0.0);
             }
 
-            $target = RedirectTarget::resolve($url, (string) $collector->getHeader('location'));
-            if ($target === null) {
+            $next = RedirectTarget::follow($request, (string) $collector->getHeader('location'));
+            if ($next === null) {
                 return $collector->finish(HttpResponse::OUTCOME_OTHER, 0, 'Redirect to an unsupported location', $url, 0.0);
             }
             if ($redirects >= $this->options->getMaxRedirects()) {
                 return $collector->finish(HttpResponse::OUTCOME_REDIRECT, 0, 'Too many redirects', $url, 0.0);
             }
-            $url = $target;
+            $request = $next;
+            $url = $request->getUrl();
         }
     }
 

@@ -233,7 +233,12 @@ final class ResponseCollector
             return false;
         }
         if (!$this->final) {
-            return true;
+            // The body of a redirect the transport follows: a few bytes
+            // are read, so that the connection can be reused, then the
+            // transfer ends; the redirect is still followed.
+            $this->discarded += strlen($data);
+
+            return $this->discarded <= self::DISCARD_LIMIT;
         }
 
         if ($this->file === null) {
@@ -279,13 +284,13 @@ final class ResponseCollector
 
     /**
      * Whether the last complete header block is a redirect the transport
-     * is expected to follow: with redirects enabled, a 3xx other than 304
-     * that has a Location, as libcurl follows them.
+     * must follow: with redirects enabled, a 3xx other than 304 that has a
+     * Location, unless the transfer was aborted.
      */
     public function isFollowingRedirect(): bool
     {
-        return !$this->final && $this->followRedirects && $this->status >= 300 && $this->status < 400
-            && $this->status !== 304 && isset($this->headers['location']);
+        return !$this->final && $this->abort === self::ABORT_NONE && $this->followRedirects
+            && $this->status >= 300 && $this->status < 400 && $this->status !== 304 && isset($this->headers['location']);
     }
 
     /**

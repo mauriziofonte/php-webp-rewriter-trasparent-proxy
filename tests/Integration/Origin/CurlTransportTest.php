@@ -68,8 +68,8 @@ final class CurlTransportTest extends TransportContractTestCase
         self::assertTrue($curlOptions[CURLOPT_SSL_VERIFYPEER]);
         self::assertSame(2, $curlOptions[CURLOPT_SSL_VERIFYHOST]);
         self::assertSame('/etc/ssl/ca.pem', $curlOptions[CURLOPT_CAINFO]);
-        self::assertTrue($curlOptions[CURLOPT_FOLLOWLOCATION]);
-        self::assertSame(4, $curlOptions[CURLOPT_MAXREDIRS]);
+        self::assertFalse($curlOptions[CURLOPT_FOLLOWLOCATION], 'the transport follows redirects itself');
+        self::assertArrayNotHasKey(CURLOPT_MAXREDIRS, $curlOptions);
         self::assertSame(CURL_IPRESOLVE_WHATEVER, $curlOptions[CURLOPT_IPRESOLVE], 'IPv4 is not forced (finding P-22)');
         self::assertTrue($curlOptions[CURLOPT_TCP_NODELAY]);
         self::assertFalse($curlOptions[CURLOPT_HTTP_CONTENT_DECODING], 'ResponseCollector decodes gzip');

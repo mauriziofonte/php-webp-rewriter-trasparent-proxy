@@ -133,6 +133,40 @@ final class MultiClientTest extends TestCase
         unset($first);
     }
 
+    /**
+     * Each redirect is a transfer of its own on the same handle, with the
+     * policy of RedirectTarget, as with CurlTransport::send().
+     */
+    public function testRedirectsAreFollowedTransferByTransfer(): void
+    {
+        $options = (new HttpClientOptions())->withTemporaryDirectory($this->directory->path('bodies'))->withRedirects(true, 3);
+        $client = new MultiClient(new CurlTransport($options), 2);
+        $base = $this->servers[0]->getBaseUrl();
+        $away = $this->servers[1]->getBaseUrl() . '/echo';
+
+        $responses = $client->sendAll([
+            'chain' => new HttpRequest($base . '/redirect/2'),
+            'away' => new HttpRequest($base . '/redirect-to?location=' . rawurlencode($away), ['Authorization' => 'Bearer s3cr3t', 'X-Kept' => 'yes']),
+            'loop' => new HttpRequest($base . '/redirect/9'),
+            'plain' => new HttpRequest($this->servers[2]->getBaseUrl() . '/echo'),
+        ]);
+
+        self::assertSame(HttpResponse::OUTCOME_SUCCESS, $responses['chain']->getOutcome());
+        self::assertSame($base . '/redirect/0', $responses['chain']->getEffectiveUrl());
+        $body = $responses['chain']->getBody();
+        self::assertNotNull($body);
+        self::assertSame('done', $body->getContents());
+        self::assertSame($away, $responses['away']->getEffectiveUrl());
+        $echo = $responses['away']->getBody();
+        self::assertNotNull($echo);
+        /** @var array{headers: array<string, string>} $request */
+        $request = json_decode((string) $echo->getContents(), true);
+        self::assertSame('yes', $request['headers']['x-kept'] ?? null);
+        self::assertArrayNotHasKey('authorization', $request['headers']);
+        self::assertSame(HttpResponse::OUTCOME_REDIRECT, $responses['loop']->getOutcome());
+        self::assertSame(HttpResponse::OUTCOME_SUCCESS, $responses['plain']->getOutcome());
+    }
+
     public function testTheConcurrencyIsAtLeastOne(): void
     {
         $this->expectException(InvalidArgumentException::class);

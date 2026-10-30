@@ -18,7 +18,9 @@ namespace Mfonte\ProxyCdn\Origin;
  *   limit, and no file is left behind;
  * - the body of any other answer is discarded;
  * - interim 1xx responses are skipped, redirects are followed only when the
- *   options say so, and only to http or https URLs;
+ *   options say so, only to http or https URLs, and without Authorization,
+ *   Cookie, Proxy-Authorization or a custom Host once they lead to another
+ *   origin (see RedirectTarget);
  * - transport and HTTP failures never throw: they are outcomes of the
  *   returned HttpResponse.
  */
