@@ -18,6 +18,11 @@ composer.lock
 # Runtime logs
 /logs/
 
+# Temporary files of atomicWrite() (helpers/functions.php), left behind when
+# a write is interrupted between tempnam() and rename(), for example next to
+# .cached.env.php in the project root.
+.mftpcdn.*
+
 # Cache entries: the proxy stores fetched assets inside public/ so that the
 # web server can serve hits directly. Only the front controller and the
 # server configuration are part of the repository.
