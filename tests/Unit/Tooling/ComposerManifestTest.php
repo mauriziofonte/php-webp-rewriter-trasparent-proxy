@@ -54,17 +54,36 @@ final class ComposerManifestTest extends TestCase
         // Any further runtime dependency needs explicit approval (plan section 4).
         // Floors are security floors: the first release of each line that
         // fixes every published advisory (see the PRX-1 commit message).
+        // The console and phpdotenv floors are the first releases that load
+        // without deprecations on PHP 8.4 and later (implicitly nullable
+        // parameters), so that bin/proxy-cdn and the install hooks print none.
         self::assertSame(
             [
                 'php' => '^7.2.5 || ^8.0',
                 'ext-json' => '*',
                 'psr/log' => '^1.1 || ^2.0 || ^3.0',
-                'symfony/console' => '^5.4 || ^6.4 || ^7.0 || ^8.0',
+                'symfony/console' => '^5.4.35 || ^6.4.3 || ^7.0.3 || ^8.0',
                 'symfony/http-foundation' => '^5.4.54 || ^6.4.46 || ^7.4.19 || ^8.1.7',
-                'vlucas/phpdotenv' => '^5.5',
+                'vlucas/phpdotenv' => '^5.6.1',
             ],
             $require
         );
+    }
+
+    /**
+     * symfony/string comes with symfony/console, whose 5.4 releases accept
+     * it from 5.1: the conflict raises its floor to the first release of
+     * each line without PHP 8.4 deprecations, without adding a dependency.
+     */
+    public function testTransitiveFloorsAreConflictsNotRequirements(): void
+    {
+        $manifest = self::readManifest('composer.json');
+
+        self::assertSame(
+            ['symfony/string' => '<5.4.35 || >=6.0,<6.4.3 || >=7.0,<7.0.3'],
+            self::section($manifest, 'conflict')
+        );
+        self::assertArrayNotHasKey('symfony/string', self::section($manifest, 'require'));
     }
 
     /**
