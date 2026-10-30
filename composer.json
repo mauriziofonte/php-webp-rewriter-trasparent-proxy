@@ -1,25 +1,45 @@
 {
-    "require": {
-        "symfony/http-foundation": "^5.4",
-        "vlucas/phpdotenv": "^5.5"
-    },
-    "require-dev": {
-        "mfonte/coding-standard": "^1.3"
-    },
-    "autoload": {
-        "files": [
-            "helpers/functions.php"
-        ]
-    },
-    "scripts": {
-        "check-env": [
-            "@php scripts/check-env.php"
-        ],
-        "post-install-cmd": [
-            "@check-env"
-        ],
-        "post-update-cmd": [
-            "@check-env"
-        ]
+  "name": "mfonte/proxy-cdn",
+  "description": "Transparent proxy CDN: fetches static assets from an origin, caches them on disk and serves cache hits straight from Apache or nginx.",
+  "type": "project",
+  "license": "BSD-3-Clause",
+  "authors": [
+    {
+      "name": "Maurizio Fonte",
+      "homepage": "https://github.com/mauriziofonte"
     }
+  ],
+  "require": {
+    "php": "^7.2.5 || ^8.0",
+    "ext-json": "*",
+    "psr/log": "^1.1 || ^2.0 || ^3.0",
+    "symfony/console": "^5.4 || ^6.4 || ^7.0 || ^8.0",
+    "symfony/http-foundation": "^5.4.54 || ^6.4.46 || ^7.4.19 || ^8.1.7",
+    "vlucas/phpdotenv": "^5.5"
+  },
+  "suggest": {
+    "ext-curl": "Preferred transport for origin fetches (HTTP/2, connection reuse, parallel warm-up)"
+  },
+  "autoload": {
+    "psr-4": {
+      "Mfonte\\ProxyCdn\\": "src/"
+    },
+    "files": [
+      "helpers/functions.php"
+    ]
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "sort-packages": true
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true,
+  "scripts": {
+    "check-env": "@php scripts/check-env.php",
+    "post-install-cmd": "@php scripts/check-env.php --informational",
+    "post-update-cmd": "@php scripts/check-env.php --informational"
+  },
+  "scripts-descriptions": {
+    "check-env": "Validates the .env configuration and exits non-zero on any error."
+  }
 }

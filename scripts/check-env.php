@@ -2,8 +2,6 @@
 <?php
 declare(strict_types=1);
 
-require_once __DIR__ . '/../vendor/autoload.php';
-
 define('STDOUT_ISATTY', function_exists('posix_isatty') && posix_isatty(STDOUT));
 
 function color(string $text, string $ansiCode): string
@@ -26,17 +24,39 @@ function listError(string $text): void
     echo '    ' . color("\xE2\x80\xA2", '31') . ' ' . $text . PHP_EOL;
 }
 
+/*
+ * --informational is used by the Composer post-install and post-update hooks:
+ * problems are reported but the exit code is always 0, so that installing the
+ * dependencies never fails because the application is not configured yet.
+ * Running "composer check-env" (no flag) keeps failing on every error.
+ */
+$informational = in_array('--informational', array_slice($_SERVER['argv'], 1), true);
+
 $envFile = dirname(__DIR__) . '/.env';
 
 if (! is_file($envFile)) {
+    if ($informational) {
+        echo color('! ', '33') . 'NOTE: no .env file yet. Copy .env.example to .env, adjust it,' . PHP_EOL;
+        echo '    then run "composer check-env" to validate the configuration.' . PHP_EOL;
+        exit(0);
+    }
     failure('Environment check failed: you must first create the .env file with the desired configuration options.');
     exit(1);
 }
 
-$dotenv = Dotenv\Dotenv::createUnsafeImmutable(dirname(__DIR__));
-$dotenv->load();
+// Loaded only once a .env exists, so that the informational run never depends
+// on the autoloader (or on Composer's platform check) when there is nothing to
+// validate yet.
+require_once __DIR__ . '/../vendor/autoload.php';
 
 $errors = [];
+
+try {
+    $dotenv = Dotenv\Dotenv::createUnsafeImmutable(dirname(__DIR__));
+    $dotenv->load();
+} catch (Throwable $e) {
+    $errors[] = 'The .env file cannot be parsed: ' . $e->getMessage();
+}
 
 /* ------------------------------------------------------------------ *
  * Required values
@@ -161,6 +181,10 @@ if (! empty($errors)) {
     failure('Environment check failed:');
     foreach ($errors as $error) {
         listError($error);
+    }
+    if ($informational) {
+        echo '    Fix the errors above, then run "composer check-env" to validate the configuration.' . PHP_EOL;
+        exit(0);
     }
     exit(1);
 }
