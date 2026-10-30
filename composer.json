@@ -17,6 +17,10 @@
     "symfony/http-foundation": "^5.4.54 || ^6.4.46 || ^7.4.19 || ^8.1.7",
     "vlucas/phpdotenv": "^5.5"
   },
+  "require-dev": {
+    "phpunit/phpunit": "^8.5.52 || ^9.6.33 || ^10.5.62 || ^11.5.50",
+    "yoast/phpunit-polyfills": "^2.0 || ^3.0 || ^4.0"
+  },
   "suggest": {
     "ext-curl": "Preferred transport for origin fetches (HTTP/2, connection reuse, parallel warm-up)"
   },
@@ -28,6 +32,11 @@
       "helpers/functions.php"
     ]
   },
+  "autoload-dev": {
+    "psr-4": {
+      "Mfonte\\ProxyCdn\\Tests\\": "tests/"
+    }
+  },
   "config": {
     "optimize-autoloader": true,
     "sort-packages": true
@@ -35,11 +44,40 @@
   "minimum-stability": "stable",
   "prefer-stable": true,
   "scripts": {
+    "analyse": [
+      "@php tools/require-tool.php phpstan",
+      "@php tools/phpstan/vendor/bin/phpstan analyse --configuration=phpstan.neon.dist",
+      "@php tools/phpstan/vendor/bin/phpstan analyse --configuration=phpstan-php85.neon.dist"
+    ],
     "check-env": "@php scripts/check-env.php",
+    "ci": [
+      "@cs:check",
+      "@analyse",
+      "@test"
+    ],
+    "cs:check": [
+      "@php tools/require-tool.php php-cs-fixer",
+      "@php tools/php-cs-fixer/vendor/bin/php-cs-fixer fix --dry-run --diff"
+    ],
+    "cs:fix": [
+      "@php tools/require-tool.php php-cs-fixer",
+      "@php tools/php-cs-fixer/vendor/bin/php-cs-fixer fix"
+    ],
     "post-install-cmd": "@php scripts/check-env.php --informational",
-    "post-update-cmd": "@php scripts/check-env.php --informational"
+    "post-update-cmd": "@php scripts/check-env.php --informational",
+    "taint": [
+      "@php tools/require-tool.php psalm",
+      "@php tools/psalm/vendor/bin/psalm --config=psalm.xml.dist --taint-analysis"
+    ],
+    "test": "@php vendor/bin/phpunit"
   },
   "scripts-descriptions": {
-    "check-env": "Validates the .env configuration and exits non-zero on any error."
+    "analyse": "Runs PHPStan at max level as PHP 7.2.5 and as PHP 8.5 (needs tools/phpstan).",
+    "check-env": "Validates the .env configuration and exits non-zero on any error.",
+    "ci": "Runs cs:check, analyse and test, in this order.",
+    "cs:check": "Reports coding standard violations as a diff (needs tools/php-cs-fixer).",
+    "cs:fix": "Fixes coding standard violations (needs tools/php-cs-fixer).",
+    "taint": "Runs the Psalm taint analysis on src/ (needs tools/psalm).",
+    "test": "Runs the PHPUnit test suite."
   }
 }

@@ -1,0 +1,33 @@
+# PHPStan at level max, analysed as PHP 7.2.5 (the lowest supported version).
+# phpstan-php85.neon.dist includes this file and analyses as PHP 8.5.
+# No baseline: every finding is fixed, or ignored inline with a justification.
+# The 2.x files (bootstrap.php, helpers/, public/index.php, scripts/) are not
+# analysed: PRX-3 replaces them with src/.
+
+# The deprecation rules report calls deprecated in the analysed PHP version
+# (curl_close() and finfo_close() on PHP 8.5) or in the dependencies.
+includes:
+    - tools/phpstan/vendor/phpstan/phpstan-deprecation-rules/rules.neon
+    - tools/phpstan/vendor/phpstan/phpstan-phpunit/extension.neon
+    - tools/phpstan/vendor/phpstan/phpstan-phpunit/rules.neon
+
+parameters:
+    # PHPStan is installed under tools/phpstan, so it needs the project's
+    # autoloader to discover vendor/ and the autoload-dev classes.
+    bootstrapFiles:
+        - vendor/autoload.php
+    level: max
+    phpVersion: 70205
+    paths:
+        - src
+        - tests
+
+services:
+    # PHPStan 2 parses the files it does not analyse (vendor/) with the grammar
+    # of phpVersion. The PHP 7 grammar cannot read dependencies written for
+    # PHP 8 (PHPUnit 10+, Symfony 6+, psr/log 2+), which then look as if they
+    # did not exist. Parse those files with the PHP 8 grammar, as PHPStan 1
+    # did; src/ and tests/ are still parsed and checked as PHP 7.2.5.
+    currentPhpVersionSimpleDirectParser:
+        arguments:
+            parser: @php8PhpParser
