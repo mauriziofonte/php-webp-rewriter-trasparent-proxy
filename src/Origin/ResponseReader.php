@@ -5,27 +5,34 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Origin;
 
 /**
- * Reads the body of one StreamTransport response from its socket: framed by
- * Content-Length, by the chunked transfer coding, or by the end of the
- * connection. It enforces the deadline and the low speed limit, and feeds
- * the bytes to the collector, which decodes them.
+ * Reads one StreamTransport response from its socket: the lines of its
+ * header blocks, then its body, framed by Content-Length, by the chunked
+ * transfer coding, or by the end of the connection, which goes to the
+ * collector.
  *
- * Every method returns null on success, or the failure as
+ * Every read is one fread() into a buffer, never fgets(), so that the
+ * deadline and the low speed limit are checked on every read, inside a
+ * line too: fgets() keeps waiting for the end of a line for as long as
+ * bytes trickle in, each within the read timeout (finding 1 of the PRX-4
+ * review).
+ *
+ * The methods that can fail return the failure as
  * [HttpResponse::OUTCOME_*, error number, message].
  *
  * @internal used by StreamTransport
  */
-final class BodyReader
+final class ResponseReader
 {
+    /**
+     * Bytes a line may have: a header line, a chunk size line or a trailer
+     * line.
+     */
+    public const MAX_LINE = 16384;
+
     /**
      * Bytes read from the socket at once.
      */
     private const READ_SIZE = 65536;
-
-    /**
-     * Bytes a chunk size line or a trailer line may have.
-     */
-    private const MAX_LINE = 16384;
 
     /**
      * @var resource
@@ -63,7 +70,21 @@ final class BodyReader
     private $windowBytes = 0;
 
     /**
-     * @param resource $socket        the connection, positioned after the header block
+     * Bytes received and not consumed yet.
+     *
+     * @var string
+     */
+    private $buffer = '';
+
+    /**
+     * What is being read, for the messages.
+     *
+     * @var string
+     */
+    private $reading = 'the response header block';
+
+    /**
+     * @param resource $socket        the connection, once the request is sent
      * @param float    $deadline      microtime() at which the request times out
      * @param int      $lowSpeedLimit bytes per second under which the transfer is too slow
      * @param float    $lowSpeedTime  seconds the transfer may stay under the limit
@@ -79,18 +100,58 @@ final class BodyReader
     }
 
     /**
-     * Reads exactly $length bytes.
+     * One line, its line feed included, as fgets() would return it: without
+     * the line feed when the line is longer than MAX_LINE bytes or when the
+     * connection ends first; null at the end of the connection.
+     *
+     * @return string|array{0: string, 1: int, 2: string}|null
+     */
+    public function line()
+    {
+        while (true) {
+            $end = strpos($this->buffer, "\n");
+            if ($end !== false && $end < self::MAX_LINE) {
+                $length = $end + 1;
+                break;
+            }
+            if (strlen($this->buffer) >= self::MAX_LINE) {
+                $length = self::MAX_LINE;
+                break;
+            }
+            $data = $this->receive(self::READ_SIZE);
+            if (is_array($data)) {
+                return $data;
+            }
+            if ($data === '') {
+                if ($this->buffer === '') {
+                    return null;
+                }
+                $length = strlen($this->buffer);
+                break;
+            }
+            $this->buffer .= $data;
+        }
+
+        $line = (string) substr($this->buffer, 0, $length);
+        $this->buffer = (string) substr($this->buffer, $length);
+
+        return $line;
+    }
+
+    /**
+     * Reads a body of exactly $length bytes.
      *
      * @return array{0: string, 1: int, 2: string}|null
      */
     public function readLength(int $length): ?array
     {
+        $this->reading = 'the response body';
         for ($remaining = $length; $remaining > 0; $remaining -= strlen($data)) {
             $data = $this->read(min(self::READ_SIZE, $remaining));
             if (is_array($data)) {
                 return $data;
             }
-            if ($data === null) {
+            if ($data === '') {
                 return [HttpResponse::OUTCOME_NETWORK, 0, 'Transfer closed with ' . $remaining . ' bytes remaining to read'];
             }
             $failure = $this->deliver($data);
@@ -103,15 +164,16 @@ final class BodyReader
     }
 
     /**
-     * Reads until the server closes the connection.
+     * Reads a body that ends when the server closes the connection.
      *
      * @return array{0: string, 1: int, 2: string}|null
      */
     public function readUntilClose(): ?array
     {
+        $this->reading = 'the response body';
         while (true) {
             $data = $this->read(self::READ_SIZE);
-            if ($data === null) {
+            if ($data === '') {
                 return null;
             }
             $failure = is_array($data) ? $data : $this->deliver($data);
@@ -122,23 +184,28 @@ final class BodyReader
     }
 
     /**
-     * Reads a chunked body, its last chunk and its trailer fields.
+     * Reads a chunked body, its last chunk and its trailer fields, which
+     * the collector receives as header lines.
      *
      * @return array{0: string, 1: int, 2: string}|null
      */
     public function readChunked(): ?array
     {
+        $this->reading = 'the response body';
         while (true) {
             $line = $this->line();
             if (!is_string($line)) {
                 return $line ?? [HttpResponse::OUTCOME_NETWORK, 0, 'Transfer closed before the last chunk'];
+            }
+            if (substr($line, -1) !== "\n") {
+                return [HttpResponse::OUTCOME_NETWORK, 0, 'Malformed chunked body: line too long or unterminated'];
             }
             $size = trim(explode(';', $line, 2)[0]);
             if ($size === '' || strlen($size) > 15 || !ctype_xdigit($size)) {
                 return [HttpResponse::OUTCOME_NETWORK, 0, 'Malformed chunk size'];
             }
             if (hexdec($size) === 0) {
-                return $this->skipTrailer();
+                return $this->readTrailer();
             }
             $failure = $this->readLength((int) hexdec($size));
             if ($failure !== null) {
@@ -157,12 +224,20 @@ final class BodyReader
     /**
      * @return array{0: string, 1: int, 2: string}|null
      */
-    private function skipTrailer(): ?array
+    private function readTrailer(): ?array
     {
         do {
             $line = $this->line();
             if (!is_string($line)) {
                 return $line ?? [HttpResponse::OUTCOME_NETWORK, 0, 'Transfer closed in the trailer'];
+            }
+            if (substr($line, -1) !== "\n") {
+                return [HttpResponse::OUTCOME_NETWORK, 0, 'Malformed chunked body: line too long or unterminated'];
+            }
+            // The trailer counts towards the size limit of the header block,
+            // as with libcurl, which hands it to the header callback.
+            if (!$this->collector->headerLine($line)) {
+                return [HttpResponse::OUTCOME_OTHER, 0, 'Aborted'];
             }
         } while (rtrim($line, "\r\n") !== '');
 
@@ -170,26 +245,44 @@ final class BodyReader
     }
 
     /**
-     * Up to $length bytes; null at the end of the connection.
+     * Up to $length bytes, from the buffer first; '' at the end of the
+     * connection.
      *
-     * @return string|array{0: string, 1: int, 2: string}|null
+     * @return string|array{0: string, 1: int, 2: string}
      */
     private function read(int $length)
+    {
+        if ($this->buffer === '') {
+            return $this->receive($length);
+        }
+        $data = (string) substr($this->buffer, 0, $length);
+        $this->buffer = (string) substr($this->buffer, strlen($data));
+
+        return $data;
+    }
+
+    /**
+     * One read from the socket, of at most $length bytes, within the
+     * deadline and the low speed limit; '' at the end of the connection.
+     *
+     * @return string|array{0: string, 1: int, 2: string}
+     */
+    private function receive(int $length)
     {
         StreamTransport::arm($this->socket, $this->deadline, $this->lowSpeedTime);
         // A failed read (false) is handled like an empty one.
         $data = (string) fread($this->socket, max(1, $length));
         if ($data === '') {
             if (StreamTransport::timedOut($this->socket)) {
-                return [HttpResponse::OUTCOME_TIMEOUT, 0, 'Timed out reading the response body'];
+                return [HttpResponse::OUTCOME_TIMEOUT, 0, 'Timed out reading ' . $this->reading];
             }
 
-            return feof($this->socket) ? null : [HttpResponse::OUTCOME_NETWORK, 0, 'Failure receiving the response body'];
+            return feof($this->socket) ? '' : [HttpResponse::OUTCOME_NETWORK, 0, 'Failure receiving ' . $this->reading];
         }
 
         $now = microtime(true);
         if ($now > $this->deadline) {
-            return [HttpResponse::OUTCOME_TIMEOUT, 0, 'Timed out reading the response body'];
+            return [HttpResponse::OUTCOME_TIMEOUT, 0, 'Timed out reading ' . $this->reading];
         }
         $this->windowBytes += strlen($data);
         $elapsed = $now - $this->windowStart;
@@ -205,31 +298,12 @@ final class BodyReader
     }
 
     /**
-     * One line, line ending included; null at the end of the connection.
-     *
-     * @return string|array{0: string, 1: int, 2: string}|null
-     */
-    private function line()
-    {
-        StreamTransport::arm($this->socket, $this->deadline, $this->lowSpeedTime);
-        $line = fgets($this->socket, self::MAX_LINE);
-        if (!is_string($line)) {
-            return StreamTransport::timedOut($this->socket) ? [HttpResponse::OUTCOME_TIMEOUT, 0, 'Timed out reading the response body'] : null;
-        }
-        if (substr($line, -1) !== "\n") {
-            return [HttpResponse::OUTCOME_NETWORK, 0, 'Malformed chunked body: line too long or unterminated'];
-        }
-
-        return $line;
-    }
-
-    /**
      * Hands body bytes to the collector.
      *
      * @return array{0: string, 1: int, 2: string}|null
      */
-    private function deliver(string $raw): ?array
+    private function deliver(string $data): ?array
     {
-        return $this->collector->bodyChunk($raw) ? null : [HttpResponse::OUTCOME_OTHER, 0, 'Aborted'];
+        return $this->collector->bodyChunk($data) ? null : [HttpResponse::OUTCOME_OTHER, 0, 'Aborted'];
     }
 }

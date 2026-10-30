@@ -24,11 +24,6 @@ namespace Mfonte\ProxyCdn\Origin;
 final class StreamTransport implements HttpClient
 {
     /**
-     * Bytes a header line may have.
-     */
-    private const MAX_LINE = 16384;
-
-    /**
      * @var HttpClientOptions
      */
     private $options;
@@ -230,22 +225,17 @@ final class StreamTransport implements HttpClient
      */
     private function readResponse($socket, ResponseCollector $collector, float $deadline): ?array
     {
-        $lowSpeedTime = (float) $this->options->getLowSpeedTime();
+        $reader = new ResponseReader($socket, $collector, $deadline, $this->options->getLowSpeedLimit(), (float) $this->options->getLowSpeedTime());
         $received = false;
         while (true) {
-            self::arm($socket, $deadline, $lowSpeedTime);
-            $line = fgets($socket, self::MAX_LINE);
-            if (!is_string($line)) {
-                if (self::timedOut($socket)) {
-                    return [HttpResponse::OUTCOME_TIMEOUT, 0, 'Timed out waiting for the response'];
-                }
-
+            $line = $reader->line();
+            if (is_array($line)) {
+                return $line;
+            }
+            if ($line === null) {
                 return $received
                     ? [HttpResponse::OUTCOME_NETWORK, 0, 'The connection was closed in the response header block']
                     : [HttpResponse::OUTCOME_CONNECT, 0, 'Empty reply from server'];
-            }
-            if (microtime(true) > $deadline) {
-                return [HttpResponse::OUTCOME_TIMEOUT, 0, 'Timed out reading the response header block'];
             }
             if (substr($line, -1) !== "\n") {
                 return [HttpResponse::OUTCOME_OTHER, 0, 'A response header line is too long or unterminated'];
@@ -268,7 +258,6 @@ final class StreamTransport implements HttpClient
             return null;
         }
 
-        $reader = new BodyReader($socket, $collector, $deadline, $this->options->getLowSpeedLimit(), $lowSpeedTime);
         $transferEncoding = strtolower((string) $collector->getHeader('transfer-encoding'));
         $length = $collector->getHeader('content-length');
         if (strpos($transferEncoding, 'chunked') !== false) {
@@ -286,7 +275,7 @@ final class StreamTransport implements HttpClient
      * Sets the timeout of the next blocking read or write: the low speed
      * time, or less when the deadline is closer.
      *
-     * @internal for BodyReader
+     * @internal for ResponseReader
      *
      * @param resource $socket
      */
@@ -300,7 +289,7 @@ final class StreamTransport implements HttpClient
     /**
      * Whether the last read or write on $socket timed out.
      *
-     * @internal for BodyReader
+     * @internal for ResponseReader
      *
      * @param resource $socket
      */

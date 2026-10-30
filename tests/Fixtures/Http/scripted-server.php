@@ -36,6 +36,10 @@ declare(strict_types=1);
  *                              304 when If-None-Match or If-Modified-Since match
  *   /early-hints               103 Early Hints, then 200 "final"
  *   /repeated-headers          two Vary fields and two X-Repeated fields
+ *   /trickle/<part>            one byte every [every] ms (default 200) for [for] ms
+ *                              (default 5000) inside a line, then the rest of a 200:
+ *                              part header (a header field), chunk (a chunk size
+ *                              line) or trailer (a trailer field)
  *   /close                     closes the connection without answering
  *   /garbage                   answers a line that is not HTTP, then closes
  */
@@ -245,6 +249,9 @@ function handle($stream, string $head, int $connection, int $index, string $stat
 
             return false;
 
+        case 'trickle':
+            return trickle($stream, $segments[1] ?? 'header', $query);
+
         case 'close':
             return false;
 
@@ -326,6 +333,39 @@ function bytes($stream, int $size, array $query, bool $acceptsGzip, bool $keepAl
     }
 
     return $keepAlive;
+}
+
+/**
+ * Answers /trickle/<part>: a 200 that sends one byte at a time inside a
+ * line of $part.
+ *
+ * @param resource            $stream
+ * @param array<mixed, mixed> $query
+ */
+function trickle($stream, string $part, array $query): bool
+{
+    $chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n";
+    $parts = [
+        'header' => ["HTTP/1.1 200 OK\r\nX-Slow: ", "\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"],
+        'chunk' => [$chunked . '2;slow=', "\r\nok\r\n0\r\n\r\n"],
+        'trailer' => [$chunked . "0\r\nX-Slow: ", "\r\n\r\n"],
+    ];
+    list($start, $end) = $parts[$part] ?? $parts['header'];
+    $every = isset($query['every']) && is_string($query['every']) ? max(1, (int) $query['every']) : 200;
+    $for = isset($query['for']) && is_string($query['for']) ? (int) $query['for'] : 5000;
+
+    if (!writeAll($stream, $start)) {
+        return false;
+    }
+    for ($until = microtime(true) + $for / 1000; microtime(true) < $until;) {
+        usleep($every * 1000);
+        if (!writeAll($stream, 'a')) {
+            return false;
+        }
+    }
+    writeAll($stream, $end);
+
+    return false;
 }
 
 /**

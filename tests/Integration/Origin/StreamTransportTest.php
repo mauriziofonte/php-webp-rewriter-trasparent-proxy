@@ -4,24 +4,24 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Integration\Origin;
 
-use Mfonte\ProxyCdn\Origin\BodyReader;
 use Mfonte\ProxyCdn\Origin\HttpClient;
 use Mfonte\ProxyCdn\Origin\HttpClientOptions;
 use Mfonte\ProxyCdn\Origin\HttpRequest;
 use Mfonte\ProxyCdn\Origin\HttpResponse;
 use Mfonte\ProxyCdn\Origin\ResponseCollector;
+use Mfonte\ProxyCdn\Origin\ResponseReader;
 use Mfonte\ProxyCdn\Origin\StreamTransport;
 use PHPUnit\Framework\Attributes\CoversClass;
 
 /**
  * The transport contract for StreamTransport, the fallback without ext-curl.
  *
- * @covers \Mfonte\ProxyCdn\Origin\BodyReader
  * @covers \Mfonte\ProxyCdn\Origin\ResponseCollector
+ * @covers \Mfonte\ProxyCdn\Origin\ResponseReader
  * @covers \Mfonte\ProxyCdn\Origin\StreamTransport
  */
-#[CoversClass(BodyReader::class)]
 #[CoversClass(ResponseCollector::class)]
+#[CoversClass(ResponseReader::class)]
 #[CoversClass(StreamTransport::class)]
 final class StreamTransportTest extends TransportContractTestCase
 {

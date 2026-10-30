@@ -533,6 +533,61 @@ abstract class TransportContractTestCase extends TestCase
         $this->assertNoBodyFileLeft();
     }
 
+    /**
+     * Bytes that trickle in inside a line, five a second, pass a low speed
+     * limit of one byte a second: the deadline still ends the transfer
+     * (finding 1 of the PRX-4 review).
+     *
+     * @dataProvider provideTrickledParts
+     */
+    #[DataProvider('provideTrickledParts')]
+    public function testATrickledLineEndsAtTheDeadline(string $part): void
+    {
+        $client = $this->createClient($this->options()->withTimeouts(1.0, 1.2)->withLowSpeedLimit(1, 30));
+
+        $startedAt = microtime(true);
+        $response = $client->send(new HttpRequest($this->url('/trickle/' . $part . '?for=6000')));
+        $elapsed = microtime(true) - $startedAt;
+
+        self::assertSame(HttpResponse::OUTCOME_TIMEOUT, $response->getOutcome(), $response->getError());
+        self::assertLessThan(2.5, $elapsed);
+        self::assertNull($response->getBody());
+        $this->assertNoBodyFileLeft();
+    }
+
+    /**
+     * The same bytes are under a low speed limit of 1000 bytes a second,
+     * which ends the transfer long before the deadline.
+     *
+     * @dataProvider provideTrickledParts
+     */
+    #[DataProvider('provideTrickledParts')]
+    public function testATrickledLineHitsTheLowSpeedLimit(string $part): void
+    {
+        $client = $this->createClient($this->options()->withTimeouts(1.0, 30.0)->withLowSpeedLimit(1000, 1));
+
+        $startedAt = microtime(true);
+        $response = $client->send(new HttpRequest($this->url('/trickle/' . $part . '?for=6000')));
+        $elapsed = microtime(true) - $startedAt;
+
+        self::assertSame(HttpResponse::OUTCOME_TIMEOUT, $response->getOutcome(), $response->getError());
+        self::assertLessThan(4.0, $elapsed);
+        self::assertNull($response->getBody());
+        $this->assertNoBodyFileLeft();
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function provideTrickledParts(): array
+    {
+        return [
+            'header field' => ['header'],
+            'chunk size line' => ['chunk'],
+            'trailer field' => ['trailer'],
+        ];
+    }
+
     public function testInterimResponsesAreSkipped(): void
     {
         $response = $this->send($this->url('/early-hints'));
