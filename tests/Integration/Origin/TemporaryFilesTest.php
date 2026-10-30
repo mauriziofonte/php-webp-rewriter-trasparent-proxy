@@ -96,6 +96,7 @@ final class TemporaryFilesTest extends TestCase
         }
         mkdir($this->directory->path('server'));
         mkdir($this->directory->path('bodies'));
+        $report = $this->directory->path('report');
         $server = ScriptedServer::start($this->directory->path('server'));
 
         try {
@@ -107,6 +108,7 @@ final class TemporaryFilesTest extends TestCase
                 $transport,
                 $server->getBaseUrl() . '/bytes/20971520',
                 $this->directory->path('bodies'),
+                $report,
             ]));
             $output = [];
             exec($command . ' 2>&1', $output, $status);
@@ -114,9 +116,11 @@ final class TemporaryFilesTest extends TestCase
             $server->stop();
         }
 
-        self::assertNotSame(0, $status, implode("\n", $output));
-        self::assertStringContainsString('last error: Allowed memory size', implode("\n", $output));
-        self::assertSame(['.', '..'], scandir($this->directory->path('bodies')), 'the body file is deleted');
+        $process = sprintf("exit status %d, output:\n%s", $status, implode("\n", $output));
+        self::assertNotSame(0, $status, $process);
+        self::assertFileExists($report, 'the shutdown functions ran; ' . $process);
+        self::assertStringStartsWith('Allowed memory size', (string) file_get_contents($report), $process);
+        self::assertSame(['.', '..'], scandir($this->directory->path('bodies')), 'the body file is deleted; ' . $process);
     }
 
     /**
