@@ -281,7 +281,8 @@ final class Config
     }
 
     /**
-     * UPSTREAM_TIMEOUT: seconds an origin fetch may take in total.
+     * UPSTREAM_TIMEOUT: seconds an origin fetch may take in total, apart
+     * from a host name lookup that stalls in the system resolver.
      */
     public function getUpstreamTimeout(): int
     {

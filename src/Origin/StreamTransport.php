@@ -20,7 +20,9 @@ namespace Mfonte\ProxyCdn\Origin;
  *
  * Its limits: one connection per request ("Connection: close"), HTTP/1.1
  * only, no proxy, the addresses of a host name tried one after the other
- * rather than raced, and TLS 1.3 from PHP 7.4 on.
+ * rather than raced, and TLS 1.3 from PHP 7.4 on. As with CurlTransport,
+ * the lookup of a host name blocks in the system resolver, beyond the
+ * timeouts when the resolver stalls (see HttpClientOptions::withTimeouts()).
  */
 final class StreamTransport implements HttpClient
 {

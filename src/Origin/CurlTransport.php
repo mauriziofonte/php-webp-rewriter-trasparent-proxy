@@ -15,7 +15,9 @@ namespace Mfonte\ProxyCdn\Origin;
  *   and later, transfers of MultiClient wait for a connection they can
  *   multiplex (CURLOPT_PIPEWAIT).
  * - TCP_NODELAY is set, and IPv4 and IPv6 are both used (libcurl races
- *   them).
+ *   them). libcurl gives up a host name lookup at the timeouts, but waits
+ *   for its resolver thread to end before it returns, so a stalled
+ *   resolver delays the failure (see HttpClientOptions::withTimeouts()).
  * - libcurl does not decode content codings: ResponseCollector asks for
  *   gzip and inflates it, so that a gzip stream cut short inside complete
  *   HTTP framing is a truncated body, which libcurl would not report.

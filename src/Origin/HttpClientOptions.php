@@ -107,6 +107,10 @@ final class HttpClientOptions
     }
 
     /**
+     * Neither timeout bounds the lookup of a host name that stalls: the
+     * transports wait for the system resolver, which its own timeout and
+     * attempts bound (resolv.conf; 5 seconds and 2 attempts by default).
+     *
      * @param float $connectTimeout seconds the connection may take, more than 0
      * @param float $timeout        seconds the whole request may take, at least $connectTimeout
      *
