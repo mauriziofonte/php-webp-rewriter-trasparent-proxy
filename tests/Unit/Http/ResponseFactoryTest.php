@@ -75,7 +75,6 @@ final class ResponseFactoryTest extends TestCase
     public function testWithoutPathTheRayIdIsRandom(): void
     {
         $first = (string) (new ResponseFactory(600, 30))->error(null, ResponseFactory::ERROR_REFUSED)->getContent();
-        usleep(10);
         $second = (string) (new ResponseFactory(600, 30))->error(null, ResponseFactory::ERROR_REFUSED)->getContent();
 
         self::assertMatchesRegularExpression('/\nRay ID: [0-9a-f]{32}\z/', $first);

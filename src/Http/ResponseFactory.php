@@ -220,7 +220,9 @@ final class ResponseFactory
     private static function errorBody(?string $path, int $error): string
     {
         $message = self::MESSAGES[$error] ?? 'Unknown error';
-        $rayId = md5($path ?? (string) microtime(true));
+        // 2.x hashed microtime(true), whose string form changes only every 100 microseconds: two errors close
+        // together got the same "random" Ray ID. 16 random bytes keep the 32 hexadecimal digits of the format.
+        $rayId = $path === null ? bin2hex(random_bytes(16)) : md5($path);
 
         return "The request could not be processed.\nError code: " . $message . ".\nRay ID: " . $rayId;
     }
