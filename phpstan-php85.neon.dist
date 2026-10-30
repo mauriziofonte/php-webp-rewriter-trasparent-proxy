@@ -4,3 +4,11 @@ includes:
 
 parameters:
     phpVersion: 80500
+    # Without the PHP 7.2 declaration of curl_share_init_persistent().
+    scanFiles!:
+        - tools/phpstan/stubs/phpunit-attributes.stub
+    typeAliases:
+        CurlHandleOrResource: '\CurlHandle'
+        CurlMultiHandleOrResource: '\CurlMultiHandle'
+        CurlShareHandleOrResource: '\CurlShareHandle|\CurlSharePersistentHandle'
+        InflateContextOrResource: '\InflateContext'

@@ -30,6 +30,15 @@ parameters:
     # checked even when vendor/ holds PHPUnit 8.5 or 9.6 (see the file).
     scanFiles:
         - tools/phpstan/stubs/phpunit-attributes.stub
+        - tools/phpstan/stubs/php85-curl.stub
+    # The handles of ext-curl and ext-zlib are resources on PHP 7 and objects
+    # on PHP 8. The docblocks name them through these aliases, which
+    # phpstan-php85.neon.dist redefines as the PHP 8 classes.
+    typeAliases:
+        CurlHandleOrResource: 'resource'
+        CurlMultiHandleOrResource: 'resource'
+        CurlShareHandleOrResource: 'resource'
+        InflateContextOrResource: 'resource'
 
 services:
     # PHPStan 2 parses the files it does not analyse (vendor/) with the grammar
