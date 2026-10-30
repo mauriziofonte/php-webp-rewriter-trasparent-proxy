@@ -217,7 +217,8 @@ final class ResponseCollectorTest extends TestCase
 
     /**
      * Bytes after the end of the gzip stream are ignored wherever they
-     * fall: in the chunk that ends the stream or in later ones.
+     * fall: in the chunk that ends the stream, at the start of the next
+     * one, or later.
      *
      * @dataProvider bytesAfterTheStream
      */
@@ -246,13 +247,64 @@ final class ResponseCollectorTest extends TestCase
     {
         $member = (string) gzencode(str_repeat('second member', 100));
         $garbage = str_repeat('garbage after the stream ', 200);
+        $streamLength = strlen((string) gzencode(str_repeat('decoded!', 1000)));
 
         return [
             'a second member, one chunk' => [$member, 1 << 20],
             'a second member, small chunks' => [$member, 100],
+            'a second member, in the next chunk' => [$member, $streamLength],
             'garbage, one chunk' => [$garbage, 1 << 20],
             'garbage, small chunks' => [$garbage, 100],
+            'garbage, in the next chunk' => [$garbage, $streamLength],
         ];
+    }
+
+    /**
+     * An origin that sends bytes forever after the end of the gzip stream
+     * does not hold the transfer until the timeout: the body is complete.
+     */
+    public function testTheTransferEndsSoonAfterTheGzipStream(): void
+    {
+        $collector = $this->collector();
+        $stream = (string) gzencode(str_repeat('decoded!', 1000));
+
+        $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Encoding: gzip', 'Transfer-Encoding: chunked']);
+        self::assertTrue($collector->bodyChunk($stream));
+        $after = 0;
+        while ($collector->bodyChunk(str_repeat('x', 4096))) {
+            $after += 4096;
+            self::assertLessThanOrEqual(ResponseCollector::DISCARD_LIMIT, $after);
+        }
+        $response = $collector->finish(HttpResponse::OUTCOME_OTHER, 23, 'Failure writing output', self::URL, 0.0);
+
+        self::assertSame(HttpResponse::OUTCOME_SUCCESS, $response->getOutcome());
+        self::assertSame('', $response->getError());
+        $body = $response->getBody();
+        self::assertNotNull($body);
+        self::assertSame(str_repeat('decoded!', 1000), $body->getContents());
+    }
+
+    /**
+     * Empty stored blocks inflate to nothing: without a limit on the
+     * encoded size, they would keep the transfer going until the timeout.
+     */
+    public function testAGzipBodyOfEmptyBlocksIsTooLarge(): void
+    {
+        $collector = $this->collector((new HttpClientOptions())->withMaxBodySize(1024));
+        $header = "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03";
+        $emptyBlocks = str_repeat("\x00\x00\x00\xff\xff", 1000);
+
+        $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Encoding: gzip', 'Transfer-Encoding: chunked']);
+        self::assertTrue($collector->bodyChunk($header));
+        $encoded = strlen($header);
+        while ($collector->bodyChunk($emptyBlocks)) {
+            $encoded += strlen($emptyBlocks);
+            self::assertLessThanOrEqual(1024 + ResponseCollector::DISCARD_LIMIT, $encoded);
+        }
+        $response = $collector->finish(HttpResponse::OUTCOME_OTHER, 23, 'Failure writing output', self::URL, 0.0);
+
+        self::assertSame(HttpResponse::OUTCOME_TOO_LARGE, $response->getOutcome());
+        self::assertSame([], $this->temporaryFiles());
     }
 
     public function testAnEmptyGzipBodyIsAnEmptyBody(): void

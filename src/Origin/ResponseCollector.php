@@ -19,8 +19,10 @@ namespace Mfonte\ProxyCdn\Origin;
  *   inflated here when requestsGzip() asked for it, any other content
  *   coding is then refused, and a gzip stream that does not end with the
  *   body is a truncated body; bytes after the end of the gzip stream (a
- *   second member, trailing garbage) are ignored, as browsers do;
- * - decoded bytes are written to the file until the maximum size is reached.
+ *   second member, trailing garbage) are ignored, as browsers do, and the
+ *   transfer ends after DISCARD_LIMIT of them, the body being complete;
+ * - decoded bytes are written to the file until the maximum size is reached,
+ *   and a gzip body may exceed that size only by the overhead of its format.
  *
  * headerLine() and bodyChunk() return false when the transfer must be
  * aborted; finish() then reports why, whatever error the transport saw.
@@ -30,8 +32,9 @@ namespace Mfonte\ProxyCdn\Origin;
 final class ResponseCollector
 {
     /**
-     * Bytes of a discarded body that are read, so that an HTTP/1.1
-     * connection can be reused, before the transfer is aborted instead.
+     * Bytes of a discarded body, or after the end of a gzip stream, that
+     * are read, so that an HTTP/1.1 connection can be reused, before the
+     * transfer is aborted instead.
      */
     public const DISCARD_LIMIT = 65536;
 
@@ -54,6 +57,8 @@ final class ResponseCollector
     private const ABORT_FILE = 3;
 
     private const ABORT_PROTOCOL = 4;
+
+    private const ABORT_COMPLETE = 5;
 
     /**
      * Compressed bytes inflated at once: a compression bomb then expands to
@@ -97,6 +102,23 @@ final class ResponseCollector
      * @var int
      */
     private $encodedBytes = 0;
+
+    /**
+     * Encoded bytes a gzip body may have: the maximum size, plus one byte
+     * in 8192 (a stored deflate block adds 5 bytes to at most 65535), plus
+     * DISCARD_LIMIT for the gzip header. Beyond it, empty blocks could keep
+     * a transfer going without storing anything.
+     *
+     * @var int
+     */
+    private $maxEncodedBytes;
+
+    /**
+     * Bytes received after the end of the gzip stream.
+     *
+     * @var int
+     */
+    private $afterStream = 0;
 
     /**
      * @var int
@@ -163,6 +185,8 @@ final class ResponseCollector
         $this->isHead = $request->getMethod() === HttpRequest::METHOD_HEAD;
         $this->followRedirects = $options->shouldFollowRedirects();
         $this->maxBodySize = $options->getMaxBodySize();
+        $overhead = intdiv($this->maxBodySize, 8192) + self::DISCARD_LIMIT;
+        $this->maxEncodedBytes = $this->maxBodySize > PHP_INT_MAX - $overhead ? PHP_INT_MAX : $this->maxBodySize + $overhead;
         $this->temporaryDirectory = $options->getTemporaryDirectory();
         $this->requestsGzip = $options->isCompressionEnabled() && $request->getHeader('accept-encoding') === null
             && function_exists('inflate_init');
@@ -257,14 +281,20 @@ final class ResponseCollector
         }
 
         $length = strlen($data);
-        $this->encodedBytes += $length;
         for ($offset = 0; $offset < $length; $offset += self::INFLATE_SLICE) {
             if (inflate_get_status($this->inflate) === ZLIB_STREAM_END) {
                 // inflate_add() ignores the rest of a slice after the end
                 // of the stream, but would start a new one on the next.
-                break;
+                $this->afterStream += $length - $offset;
+
+                return $this->afterStream <= self::DISCARD_LIMIT || $this->abort(self::ABORT_COMPLETE, '');
             }
-            $decoded = @inflate_add($this->inflate, (string) substr($data, $offset, self::INFLATE_SLICE), ZLIB_SYNC_FLUSH);
+            $slice = (string) substr($data, $offset, self::INFLATE_SLICE);
+            $this->encodedBytes += strlen($slice);
+            if ($this->encodedBytes > $this->maxEncodedBytes) {
+                return $this->abort(self::ABORT_TOO_LARGE, 'The compressed response body exceeds ' . $this->maxEncodedBytes . ' bytes');
+            }
+            $decoded = @inflate_add($this->inflate, $slice, ZLIB_SYNC_FLUSH);
             if (!is_string($decoded)) {
                 return $this->abort(self::ABORT_PROTOCOL, 'The compressed body is corrupt');
             }
@@ -346,8 +376,9 @@ final class ResponseCollector
             $this->file = null;
         }
 
-        if ($this->abort === self::ABORT_DISCARDED) {
-            // The body was not needed: the status is the answer.
+        if ($this->abort === self::ABORT_DISCARDED || $this->abort === self::ABORT_COMPLETE) {
+            // The body was not needed, or is complete: the status is the
+            // answer, whatever error ending the transfer early caused.
             $failure = null;
         } elseif ($this->abort !== self::ABORT_NONE) {
             $this->deleteFile();
