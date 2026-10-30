@@ -515,6 +515,7 @@ final class ResponseCollector
             $file = @fopen($path, 'xb');
             if (is_resource($file)) {
                 @chmod($path, 0600);
+                TemporaryFiles::track($path);
                 $this->path = $path;
                 $this->file = $file;
 
@@ -560,7 +561,7 @@ final class ResponseCollector
     private function deleteFile(): void
     {
         if ($this->path !== null) {
-            @unlink($this->path);
+            TemporaryFiles::delete($this->path);
             $this->path = null;
         }
     }

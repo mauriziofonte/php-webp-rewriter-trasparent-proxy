@@ -314,7 +314,8 @@ final class Config
 
     /**
      * UPSTREAM_MAX_SIZE: bytes an origin body may have once decoded; a
-     * larger one is not fetched (finding P-17).
+     * larger one is not fetched (finding P-17). At most
+     * ConfigValidator::MAX_UPSTREAM_MAX_SIZE.
      */
     public function getUpstreamMaxSize(): int
     {

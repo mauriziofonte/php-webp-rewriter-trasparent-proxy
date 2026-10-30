@@ -8,8 +8,9 @@ namespace Mfonte\ProxyCdn\Origin;
  * The body of a response, streamed by the transport to a temporary file.
  *
  * The object owns the file: it is deleted when the object is destroyed,
- * unless moveTo() has moved it elsewhere first. Keep the object, or move
- * the file, for as long as the body is needed.
+ * unless moveTo() has moved it elsewhere first, and at the latest when the
+ * PHP request ends, even on a fatal error (see TemporaryFiles). Keep the
+ * object, or move the file, for as long as the body is needed.
  */
 final class ResponseBody
 {
@@ -84,6 +85,7 @@ final class ResponseBody
         if (!$this->owned || !@rename($this->path, $target)) {
             return false;
         }
+        TemporaryFiles::forget($this->path);
         $this->path = $target;
         $this->owned = false;
 
@@ -98,7 +100,7 @@ final class ResponseBody
     {
         if ($this->owned) {
             $this->owned = false;
-            @unlink($this->path);
+            TemporaryFiles::delete($this->path);
         }
     }
 }

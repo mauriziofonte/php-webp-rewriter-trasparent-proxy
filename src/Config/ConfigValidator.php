@@ -25,6 +25,13 @@ final class ConfigValidator
     private const SENSITIVE_EXTENSIONS = ['html', 'htm', 'php', 'xml', 'json'];
 
     /**
+     * The largest UPSTREAM_MAX_SIZE, 256 MiB: until bodies are streamed to
+     * the cache (PRX-7), the kernel holds an origin body in memory as a
+     * string (finding 4 of the PRX-4 review).
+     */
+    public const MAX_UPSTREAM_MAX_SIZE = 268435456;
+
+    /**
      * Inclusive ranges of the integer keys.
      */
     private const INTEGER_RANGES = [
@@ -33,7 +40,7 @@ final class ConfigValidator
         'NETWORK_ERROR_TTL' => [0, 3600],
         'UPSTREAM_TIMEOUT' => [1, 300],
         'UPSTREAM_CONNECT_TIMEOUT' => [1, 60],
-        'UPSTREAM_MAX_SIZE' => [1, PHP_INT_MAX],
+        'UPSTREAM_MAX_SIZE' => [1, self::MAX_UPSTREAM_MAX_SIZE],
     ];
 
     private const BOOLEAN_KEYS = ['DEBUG', 'UPSTREAM_VERIFY_TLS', 'UPSTREAM_FOLLOW_REDIRECTS'];

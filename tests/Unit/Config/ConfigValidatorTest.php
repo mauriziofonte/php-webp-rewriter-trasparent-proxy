@@ -112,7 +112,8 @@ final class ConfigValidatorTest extends TestCase
                 ['UPSTREAM_FOLLOW_REDIRECTS' => '2'],
                 "UPSTREAM_FOLLOW_REDIRECTS must be one of: true, false, 1, 0 (got: '2')",
             ],
-            'max size zero' => [['UPSTREAM_MAX_SIZE' => '0'], 'UPSTREAM_MAX_SIZE must be between 1 and ' . PHP_INT_MAX . ' (got: 0)'],
+            'max size zero' => [['UPSTREAM_MAX_SIZE' => '0'], 'UPSTREAM_MAX_SIZE must be between 1 and 268435456 (got: 0)'],
+            'max size above 256 MiB' => [['UPSTREAM_MAX_SIZE' => '268435457'], 'UPSTREAM_MAX_SIZE must be between 1 and 268435456 (got: 268435457)'],
             'max size with a unit' => [['UPSTREAM_MAX_SIZE' => '64M'], "UPSTREAM_MAX_SIZE must be a non-negative integer (got: '64M')"],
             'User-Agent with a line feed' => [
                 ['UPSTREAM_USER_AGENT' => "agent\nX-Injected: 1"],
@@ -189,6 +190,7 @@ final class ConfigValidatorTest extends TestCase
             'origin server with IPv6' => [['SOURCE_ORIGIN_SERVER' => '[2001:db8::1]:8443']],
             'origin server name' => [['SOURCE_ORIGIN_SERVER' => 'origin.internal:8080']],
             'smallest max size' => [['UPSTREAM_MAX_SIZE' => '1']],
+            'largest max size' => [['UPSTREAM_MAX_SIZE' => '268435456']],
             'custom User-Agent' => [['UPSTREAM_USER_AGENT' => 'my-cdn/1.0 (+https://cdn.example.test)']],
         ];
     }
