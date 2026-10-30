@@ -1,22 +1,26 @@
-# Ignore everything, including sub-directories...
-*
-!*/
-
-# ...but keep these specific files (rooted paths so the whitelist does not
-# match homonymous files under vendor/, e.g. vendor/*/composer.json).
-!/.gitignore
-!/.env.example
-!/LICENSE
-!/README.md
-!/bootstrap.php
-!/composer.json
-!/public/.htaccess
-!/public/index.php
-!/helpers/functions.php
-!/scripts/check-env.php
-
-# Re-ignore vendor (it gets re-created by composer install).
+# Dependencies. No lock files are committed: a single composer.lock cannot
+# serve every supported PHP version (7.2 to 8.5), so CI resolves lowest and
+# highest dependencies on each one.
 /vendor/
+/tools/*/vendor/
+composer.lock
 
-# Runtime artifact: the rendered config cache. Never commit it.
+# Test and static analysis caches
+.phpunit.cache/
+.phpunit.result.cache
+.php-cs-fixer.cache
+
+# Runtime configuration: .env holds deployment secrets, .cached.env.php is the
+# compiled configuration rendered from it.
+/.env
 /.cached.env.php
+
+# Runtime logs
+/logs/
+
+# Cache entries: the proxy stores fetched assets inside public/ so that the
+# web server can serve hits directly. Only the front controller and the
+# server configuration are part of the repository.
+/public/*
+!/public/index.php
+!/public/.htaccess
