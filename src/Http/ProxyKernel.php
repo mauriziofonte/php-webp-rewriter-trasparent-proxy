@@ -25,7 +25,7 @@ use Symfony\Component\HttpFoundation\Response;
  * 1. OPTIONS gets the CORS preflight answer; a path with "/.." and a
  *    path whose extension is not cacheable get an error;
  * 2. "purge=1" or "purge_all=1" in the query string removes the entry first
- *    (anonymously: finding P-1);
+ *    (anonymously: finding L-7);
  * 3. a fresh 404 marker or an open circuit breaker answers without asking
  *    the origin;
  * 4. a raster whose WEBP sibling exists is served as WEBP to clients that

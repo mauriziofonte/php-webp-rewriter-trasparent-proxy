@@ -242,7 +242,7 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
-     * Anyone can purge (finding P-1, resolved by PRX-5).
+     * Anyone can purge (finding L-7, resolved by PRX-5).
      */
     public function testPurgeRemovesTheEntryAndItsMarkers(): void
     {
