@@ -74,9 +74,9 @@
       "@analyse",
       "@test"
     ],
-    "check-env": "@php scripts/check-env.php",
-    "post-install-cmd": "@php scripts/check-env.php --informational",
-    "post-update-cmd": "@php scripts/check-env.php --informational"
+    "check-env": "@php bin/proxy-cdn check-env",
+    "post-install-cmd": "@php bin/proxy-cdn check-env --informational",
+    "post-update-cmd": "@php bin/proxy-cdn check-env --informational"
   },
   "scripts-descriptions": {
     "test": "Run the PHPUnit test suite.",
@@ -85,6 +85,6 @@
     "cs:fix": "Fix coding style violations in place (needs tools/php-cs-fixer).",
     "taint": "Run the Psalm taint analysis on src/ (needs tools/psalm).",
     "ci": "Run cs:check, analyse and test, in this order.",
-    "check-env": "Validate the .env configuration and exit non-zero on any error."
+    "check-env": "Validate the configuration (environment and .env) and exit non-zero on any error."
   }
 }

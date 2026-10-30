@@ -9,19 +9,19 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
- * The Composer install hooks run scripts/check-env.php with --informational,
+ * The Composer install hooks run "bin/proxy-cdn check-env --informational",
  * so that "composer install" never fails because the application is not
  * configured yet (finding P-20), while "composer check-env" keeps failing on
  * every configuration error.
  *
- * The script is copied into a temporary project and run in a clean
+ * The binary is copied into a temporary project and run in a clean
  * environment, so that a developer's .env or exported variables never
  * influence the result.
  *
  * @coversNothing
  */
 #[CoversNothing]
-final class CheckEnvScriptTest extends TestCase
+final class CheckEnvBinaryTest extends TestCase
 {
     /**
      * @var string
@@ -35,23 +35,23 @@ final class CheckEnvScriptTest extends TestCase
         $root = dirname(__DIR__, 3);
         $this->project = sys_get_temp_dir() . '/proxy-cdn-check-env-' . bin2hex(random_bytes(6));
 
-        self::assertTrue(mkdir($this->project . '/scripts', 0777, true));
+        self::assertTrue(mkdir($this->project . '/bin', 0777, true));
         self::assertTrue(mkdir($this->project . '/vendor'));
-        self::assertTrue(copy($root . '/scripts/check-env.php', $this->project . '/scripts/check-env.php'));
+        self::assertTrue(copy($root . '/bin/proxy-cdn', $this->project . '/bin/proxy-cdn'));
         self::assertNotFalse(file_put_contents(
             $this->project . '/vendor/autoload.php',
-            "<?php\n\nrequire " . var_export($root . '/vendor/autoload.php', true) . ";\n"
+            "<?php\n\nreturn require " . var_export($root . '/vendor/autoload.php', true) . ";\n"
         ));
     }
 
     protected function tear_down(): void
     {
-        foreach (['/scripts/check-env.php', '/vendor/autoload.php', '/.env'] as $file) {
+        foreach (['/bin/proxy-cdn', '/vendor/autoload.php', '/.env'] as $file) {
             if (is_file($this->project . $file)) {
                 unlink($this->project . $file);
             }
         }
-        foreach (['/scripts', '/vendor', ''] as $directory) {
+        foreach (['/bin', '/vendor', ''] as $directory) {
             if (is_dir($this->project . $directory)) {
                 rmdir($this->project . $directory);
             }
@@ -62,7 +62,7 @@ final class CheckEnvScriptTest extends TestCase
 
     public function testInformationalRunSucceedsWithoutEnvFile(): void
     {
-        list($exitCode, $output) = $this->runScript(['--informational']);
+        list($exitCode, $output) = $this->runBinary(['--informational']);
 
         self::assertSame(0, $exitCode, $output);
         self::assertStringContainsString('no .env file yet', $output);
@@ -71,7 +71,7 @@ final class CheckEnvScriptTest extends TestCase
 
     public function testExplicitRunFailsWithoutEnvFile(): void
     {
-        list($exitCode, $output) = $this->runScript([]);
+        list($exitCode, $output) = $this->runBinary([]);
 
         self::assertSame(1, $exitCode, $output);
         self::assertStringContainsString('Environment check failed', $output);
@@ -100,7 +100,7 @@ final class CheckEnvScriptTest extends TestCase
     {
         $this->writeEnv($env);
 
-        list($exitCode, $output) = $this->runScript(['--informational']);
+        list($exitCode, $output) = $this->runBinary(['--informational']);
 
         self::assertSame(0, $exitCode, $output);
         self::assertStringContainsString($expectedError, $output);
@@ -114,7 +114,7 @@ final class CheckEnvScriptTest extends TestCase
     {
         $this->writeEnv($env);
 
-        list($exitCode, $output) = $this->runScript([]);
+        list($exitCode, $output) = $this->runBinary([]);
 
         self::assertSame(1, $exitCode, $output);
         self::assertStringContainsString($expectedError, $output);
@@ -129,10 +129,61 @@ final class CheckEnvScriptTest extends TestCase
             . "UPSTREAM_VERIFY_TLS=true\n"
         );
 
-        list($exitCode, $output) = $this->runScript([]);
+        list($exitCode, $output) = $this->runBinary([]);
 
         self::assertSame(0, $exitCode, $output);
         self::assertStringContainsString('Environment check passed', $output);
+    }
+
+    /**
+     * The environment is read first, and is enough without .env.
+     */
+    public function testTheEnvironmentAloneIsAValidConfiguration(): void
+    {
+        list($exitCode, $output) = $this->runBinary([], [
+            'SOURCE_ORIGIN' => 'https://origin.example.test',
+            'CACHEABLE_EXTENSIONS' => 'css',
+            'UPSTREAM_VERIFY_TLS' => 'true',
+        ]);
+
+        self::assertSame(0, $exitCode, $output);
+        self::assertStringContainsString('Environment check passed', $output);
+    }
+
+    public function testTheEnvironmentWinsOverTheEnvFile(): void
+    {
+        $this->writeEnv("SOURCE_ORIGIN=\"not a url\"\nCACHEABLE_EXTENSIONS=\"css\"\nUPSTREAM_VERIFY_TLS=true\n");
+
+        list($exitCode, $output) = $this->runBinary([], ['SOURCE_ORIGIN' => 'https://origin.example.test']);
+
+        self::assertSame(0, $exitCode, $output);
+    }
+
+    /**
+     * @return array<string, array{list<string>, int}>
+     */
+    public static function provideRunsWithoutDependencies(): array
+    {
+        return [
+            'informational' => [['--informational'], 0],
+            'explicit' => [[], 1],
+        ];
+    }
+
+    /**
+     * @dataProvider provideRunsWithoutDependencies
+     *
+     * @param list<string> $arguments
+     */
+    #[DataProvider('provideRunsWithoutDependencies')]
+    public function testMissingDependenciesAreReported(array $arguments, int $expectedExitCode): void
+    {
+        self::assertTrue(unlink($this->project . '/vendor/autoload.php'));
+
+        list($exitCode, $output) = $this->runBinary($arguments);
+
+        self::assertSame($expectedExitCode, $exitCode, $output);
+        self::assertStringContainsString('Dependencies are missing. Run: composer install', $output);
     }
 
     private function writeEnv(string $contents): void
@@ -141,16 +192,18 @@ final class CheckEnvScriptTest extends TestCase
     }
 
     /**
-     * Runs the copied script with PHP_BINARY in an environment that only
-     * carries PATH, and returns its exit code and combined output.
+     * Runs "bin/proxy-cdn check-env" of the temporary project with
+     * PHP_BINARY in an environment that only carries PATH and $environment,
+     * and returns its exit code and combined output.
      *
-     * @param list<string> $arguments
+     * @param list<string>          $arguments
+     * @param array<string, string> $environment
      *
      * @return array{int, string}
      */
-    private function runScript(array $arguments): array
+    private function runBinary(array $arguments, array $environment = []): array
     {
-        $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($this->project . '/scripts/check-env.php');
+        $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($this->project . '/bin/proxy-cdn') . ' check-env';
         foreach ($arguments as $argument) {
             $command .= ' ' . escapeshellarg($argument);
         }
@@ -161,7 +214,7 @@ final class CheckEnvScriptTest extends TestCase
             [1 => ['pipe', 'w']],
             $pipes,
             $this->project,
-            ['PATH' => is_string($path) ? $path : '/usr/bin:/bin']
+            array_merge(['PATH' => is_string($path) ? $path : '/usr/bin:/bin'], $environment)
         );
         self::assertIsResource($process);
 
