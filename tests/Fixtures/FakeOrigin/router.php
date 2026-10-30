@@ -10,7 +10,8 @@ declare(strict_types=1);
  * - POST /__api/convert imitates the 1.x conversion API: it answers with the
  *   uploaded image, prefixed with "API-WEBP:", as base64 in the 1.x JSON shape;
  *   with a rule, it answers the rule's status and {"message": <body>}, or an
- *   HTML page when the rule has no body;
+ *   HTML page when the rule has no body; a rule with status 200 and a body
+ *   answers that body as it is;
  * - any other path serves the file of the same (decoded) name below
  *   FAKE_ORIGIN_DOCROOT with Content-Type, Content-Length, ETag,
  *   Last-Modified and Vary, plus headers that a proxy must not forward
@@ -77,6 +78,11 @@ if ($path === '/__api/convert') {
         return true;
     }
     header('Content-Type: application/json');
+    if (isset($rule['body']) && is_string($rule['body'])) {
+        echo $rule['body'];
+
+        return true;
+    }
     $images = $_FILES['images'] ?? null;
     $uploads = is_array($images) && isset($images['tmp_name']) && is_array($images['tmp_name']) ? $images['tmp_name'] : [];
     $upload = $uploads[0] ?? null;
