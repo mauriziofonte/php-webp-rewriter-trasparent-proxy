@@ -116,7 +116,7 @@ final class ConfigLoaderTest extends TestCase
         self::assertFalse($config->isDebug());
         self::assertNull($config->getSourceOriginServer());
         self::assertSame('UTF-8', $config->getCharset());
-        self::assertNull($config->getTimezone());
+        self::assertSame('UTC', $config->getTimezone());
         self::assertSame('en_US', $config->getLocale());
         self::assertSame(86400, $config->getCacheExpiry());
         self::assertSame(300, $config->getNegativeCacheTtl());

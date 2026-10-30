@@ -34,10 +34,7 @@
   "autoload": {
     "psr-4": {
       "Mfonte\\ProxyCdn\\": "src/"
-    },
-    "files": [
-      "helpers/functions.php"
-    ]
+    }
   },
   "autoload-dev": {
     "psr-4": {

@@ -79,15 +79,13 @@ The one thing this project does that is genuinely cumbersome to replicate with o
 
 PHP **7.2.5** or later (required by `symfony/http-foundation ^5.4`). The application source targets PHP 7.x syntax only; `match`, arrow functions and PHP-8-only string helpers are not used.
 
-### The cached `.env`
+### The compiled configuration
 
-The first request after a fresh install materializes `.env` into a small PHP file named `.cached.env.php` in the project root. This file is an implementation detail of the boot sequence; it avoids re-parsing `.env` on every request and is written atomically (tmp + rename).
-
-If you change `.env`, delete `.cached.env.php` manually to force a re-render.
+The first request after a fresh install compiles the configuration into a small PHP file named `.config.cache.php` in the project root, written atomically (tmp + rename), so that `.env` is not parsed and validated on every request. The file is recompiled automatically on the next request whenever `.env` or a configuration variable of the environment changes; there is nothing to delete by hand. If the project root is not writable, the configuration is simply read on every request.
 
 ## Configuration
 
-All settings live in `.env`. Defaults come from [.env.example](.env.example).
+Every setting is read from the environment first and from `.env` second: a variable set (and not empty) in the environment of PHP wins over the same key in `.env`, and `.env` is optional when the environment carries the whole configuration. An empty value or the literal `null` means "not set". Defaults come from [.env.example](.env.example). The values are validated when the proxy starts, with the same rules as `composer check-env`; an invalid configuration answers every request with a 404 `ENV_FILE_LOAD_ERR` and is logged to `logs/proxy.log`.
 
 | Key                               | Type      | Default                   | Description                                                                                                                                                     |
 |-----------------------------------|-----------|---------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -207,22 +205,17 @@ A bare `*/*` is intentionally NOT treated as webp support, because old UAs send 
 
 Errors and relevant events are written to `logs/proxy.log` (created lazily, `0755`, outside the DocumentRoot and also blocked by an `.htaccess` 403 in case the VirtualHost is mispointed).
 
-Log format:
-
-``` text
-[<ISO-8601>] <LEVEL> <message> key=value key=value ...
-```
+Log format: one JSON object per line (JSON Lines), with the fields `timestamp` (RFC 3339 with microseconds), `level` (PSR-3 level), `channel` (`proxy-cdn`), `message` and `context`.
 
 Levels:
 
-- **ERROR** - upstream fetch failures (with `reason`, `curl_errno`, `response_code`), conversion failures, cache write failures.
-- **WARN** - (reserved for future use).
-- **INFO** - purges, upstream 404s, cache operations. Only written when `DEBUG=true`.
+- **error** - upstream fetch failures (with `reason`, `curl_errno`, `response_code`), conversion failures, an invalid configuration.
+- **info** - purges, upstream 404s. Only written when `DEBUG=true`.
 
 Example entry:
 
 ``` text
-[2025-03-14T12:34:56+00:00] ERROR upstream fetch failed url=https://origin.example.com/hero.jpg reason=timeout curl_errno=28 curl_error=Operation timed out after 30000 ms response_code=0
+{"timestamp":"2025-03-14T12:34:56.123456+00:00","level":"error","channel":"proxy-cdn","message":"upstream fetch failed","context":{"url":"https://origin.example.com/hero.jpg","reason":"timeout","curl_errno":28,"curl_error":"Operation timed out after 30000 ms","response_code":0}}
 ```
 
 For production, rotate `logs/proxy.log` with a standard tool:
@@ -292,7 +285,7 @@ Read these before putting the proxy on the public Internet.
 - **`UPSTREAM_FOLLOW_REDIRECTS` defaults to `false`.** A compromised origin that returns a 30x to an internal host would otherwise become an SSRF pivot. Enable redirects only when the origin legitimately uses them.
 - **`CACHEABLE_EXTENSIONS` can leak sessions.** If you add `html`, `htm`, `xml`, `json` or `php` to the list and the origin ever serves authenticated content on those paths (private profile pages, signed JSON APIs, etc.), the proxy will cache that content (captured without the client's cookies and with no user context) and serve it indiscriminately. The `check-env` step (`bin/proxy-cdn check-env`) emits a warning when a sensitive extension appears in the list.
 - **Purge is unauthenticated** (see above).
-- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, project-internal directories (`vendor/`, `helpers/`, `scripts/`, `logs/`, `.git/`), the internal QS-bucket layout (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and negative-cache markers (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply.
+- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, project-internal directories (`vendor/`, `src/`, `bin/`, `logs/`, `.git/`), the internal QS-bucket layout (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and negative-cache markers (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply.
 - **HSTS** is enabled with `max-age=31536000` only by default. The wider `includeSubDomains` / `preload` variants are commented out in `.htaccess` because they affect sibling hostnames on the same eTLD+1. Enable them only when you understand the blast radius.
 
 ## Troubleshooting
@@ -300,7 +293,6 @@ Read these before putting the proxy on the public Internet.
 | Symptom                                     | Likely cause                                                                                                                                                                              |
 |---------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `cwebp binary not available in PATH`        | `IMAGE_CONVERSION_MODE=native` but `cwebp` is missing. Install it or switch to `api` / `none`.                                                                                            |
-| New values in `.env` have no effect         | You did not delete `.cached.env.php`.                                                                                                                                                     |
 | 404s for assets that do exist on the origin | A `.404` marker is still warm. Wait `NEGATIVE_CACHE_TTL` seconds or hit the URL with `?purge=1`.                                                                                          |
 | 503 with `Retry-After: 30`                  | A `.netfail` marker is warm (origin was unreachable recently). Either wait or re-check the origin and hit with `?purge=1`.                                                                |
 | 500 `Image conversion failed`               | Origin returned something cURL accepted as 200 but `cwebp` refused. Inspect `public/<path>` and `logs/proxy.log`.                                                                         |

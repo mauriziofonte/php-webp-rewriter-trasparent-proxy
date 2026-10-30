@@ -19,7 +19,7 @@ final class ProxyServer
     /**
      * Entries copied from the project root when they exist.
      */
-    private const COPIED_ENTRIES = ['bootstrap.php', 'helpers', 'bin', 'public/index.php', 'public/.htaccess', 'composer.json'];
+    private const COPIED_ENTRIES = ['bin', 'public/index.php', 'public/.htaccess', 'composer.json'];
 
     /**
      * @var BuiltinServer

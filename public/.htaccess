@@ -23,10 +23,11 @@ Options -Indexes -MultiViews
 
 ErrorDocument 403 "Access Forbidden"
 
-# Deny direct HTTP access to project metadata, private cache files and the
-# scratch tmp files written by atomicWrite() in the microsecond window
-# between tempnam() and rename().
-<FilesMatch "^(\.(ht.*|git.*|env.*|cached\.env\.php|mftpcdn\..*)|composer\.(json|lock)|(README|readme)\.md|LICENSE|license)$">
+# Deny direct HTTP access to project metadata, the compiled configuration
+# (.config.cache.php, and .cached.env.php left by 2.x) and the scratch tmp
+# files written by FilesystemStorage in the microsecond window between
+# tempnam() and rename().
+<FilesMatch "^(\.(ht.*|git.*|env.*|cached\.env\.php|config\.cache\.php|mftpcdn\..*)|composer\.(json|lock)|(README|readme)\.md|LICENSE|license)$">
     Require all denied
 </FilesMatch>
 
@@ -54,8 +55,8 @@ ErrorDocument 403 "Access Forbidden"
     # mispoints the DocumentRoot at the project root instead of ./public.
     RewriteRule ^(.*/)?\.git(/.*)?$     - [R=403,L]
     RewriteRule ^(.*/)?vendor(/.*)?$    - [R=403,L]
-    RewriteRule ^(.*/)?helpers(/.*)?$   - [R=403,L]
-    RewriteRule ^(.*/)?scripts(/.*)?$   - [R=403,L]
+    RewriteRule ^(.*/)?src(/.*)?$       - [R=403,L]
+    RewriteRule ^(.*/)?bin(/.*)?$       - [R=403,L]
     RewriteRule ^(.*/)?logs(/.*)?$      - [R=403,L]
 
     # Refuse direct reads of the QS-bucket cache. The bucketing layout

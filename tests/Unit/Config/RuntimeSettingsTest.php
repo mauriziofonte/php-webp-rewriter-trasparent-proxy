@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Unit\Config;
 
+use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Config\RuntimeSettings;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -109,7 +110,10 @@ final class RuntimeSettingsTest extends TestCase
     {
         date_default_timezone_set('Asia/Tokyo');
 
-        (new RuntimeSettings())->apply(TestConfig::create(['TIMEZONE' => null]));
+        $values = TestConfig::create()->toArray();
+        $values['TIMEZONE'] = null;
+
+        (new RuntimeSettings())->apply(Config::fromArray($values));
 
         self::assertSame('Asia/Tokyo', date_default_timezone_get());
     }

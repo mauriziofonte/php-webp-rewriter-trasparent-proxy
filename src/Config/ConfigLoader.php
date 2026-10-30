@@ -53,6 +53,7 @@ final class ConfigLoader
     private const DEFAULTS = [
         'DEBUG' => 'false',
         'CHARSET' => 'UTF-8',
+        'TIMEZONE' => 'UTC',
         'LOCALE' => 'en_US',
         'CACHE_EXPIRY' => '86400',
         'NEGATIVE_CACHE_TTL' => '300',
@@ -167,7 +168,7 @@ final class ConfigLoader
             'SOURCE_ORIGIN' => rtrim($value('SOURCE_ORIGIN'), '/'),
             'SOURCE_ORIGIN_SERVER' => $optional('SOURCE_ORIGIN_SERVER'),
             'CHARSET' => $value('CHARSET'),
-            'TIMEZONE' => $optional('TIMEZONE'),
+            'TIMEZONE' => $value('TIMEZONE'),
             'LOCALE' => $value('LOCALE'),
             'CACHEABLE_EXTENSIONS' => ConfigValidator::extensionList($optional('CACHEABLE_EXTENSIONS')),
             'CACHE_EXPIRY' => (int) $value('CACHE_EXPIRY'),

@@ -8,17 +8,18 @@ composer.lock
 /.phpunit.result.cache
 /.php-cs-fixer.cache
 
-# Runtime configuration: .env holds deployment secrets, .cached.env.php is the
-# compiled configuration rendered from it.
+# Runtime configuration: .env holds deployment secrets, .config.cache.php is
+# the compiled configuration (.cached.env.php is the one of 2.x).
 /.env
+/.config.cache.php
 /.cached.env.php
 
 # Runtime logs
 /logs/
 
-# Temporary files of atomicWrite() (helpers/functions.php), left behind when
-# a write is interrupted between tempnam() and rename(), for example next to
-# .cached.env.php in the project root.
+# Temporary files of FilesystemStorage::write(), left behind when a write is
+# interrupted between tempnam() and rename(), for example next to
+# .config.cache.php in the project root.
 .mftpcdn.*
 
 # Cache entries: the proxy stores fetched assets inside public/ so that the
