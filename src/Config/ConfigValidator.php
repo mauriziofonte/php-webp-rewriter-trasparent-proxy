@@ -131,9 +131,11 @@ final class ConfigValidator
         }
 
         if (($values['SOURCE_ORIGIN_SERVER'] ?? null) !== null) {
-            $warnings[] = "NOTE: SOURCE_ORIGIN_SERVER is set. cURL will bypass DNS and\n"
-                . "talk directly to the pinned IP:port. This intentionally bypasses any\n"
-                . 'CDN / WAF that may sit in front of the origin hostname.';
+            $warnings[] = "NOTE: SOURCE_ORIGIN_SERVER is set. Origin requests connect to that\n"
+                . "address (an IP or a host name, with an optional port) instead of the\n"
+                . "address of the origin host name, which they keep for the Host header\n"
+                . "and TLS. This intentionally bypasses any CDN / WAF that may sit in\n"
+                . 'front of the origin hostname.';
         }
 
         if (self::booleanOf($values['UPSTREAM_VERIFY_TLS'] ?? 'false') !== true) {
