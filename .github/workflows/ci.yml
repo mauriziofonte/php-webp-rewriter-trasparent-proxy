@@ -78,11 +78,20 @@ jobs:
 
       # Lowest versions of the runtime dependencies; test tooling (PHPUnit and
       # the polyfills) always takes the highest version for the running PHP.
+      # Composer 2.9+ would silently skip a floor that has an advisory and
+      # resolve the next release instead, so blocking is turned off here and
+      # the audit below fails when a floor needs raising.
       - name: Install dependencies (lowest)
         if: matrix.deps == 'lowest'
+        env:
+          COMPOSER_NO_SECURITY_BLOCKING: '1'
         run: |
           composer update --prefer-lowest --prefer-stable --no-progress
           composer update phpunit/phpunit yoast/phpunit-polyfills --with-all-dependencies --no-progress
+
+      - name: Audit dependencies (lowest)
+        if: matrix.deps == 'lowest'
+        run: composer audit
 
       - name: Install dependencies (highest)
         if: matrix.deps == 'highest'
