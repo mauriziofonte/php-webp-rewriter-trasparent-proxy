@@ -195,3 +195,41 @@ jobs:
             ${{ runner.temp }}/harness/*/logs/
           if-no-files-found: ignore
           retention-days: 7
+
+  laravel:
+    name: Laravel 13 (PHP 8.4)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+          tools: composer:v2
+
+      # A fresh Laravel 13 application requires this checkout through a path
+      # repository and mounts ProxyKernel::handle() on a catch-all route; the
+      # script then fetches an asset of a fake origin through it. The install
+      # step is also the check that the proxy resolves next to Laravel 13.
+      - name: Mount the kernel in a Laravel 13 route
+        env:
+          LARAVEL_CONSTRAINT: ^13.0
+          LARAVEL_WORKDIR: ${{ runner.temp }}/laravel
+        run: tests/Integration/laravel/run.sh
+
+      - name: Upload the Laravel logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: laravel-logs
+          path: |
+            ${{ runner.temp }}/laravel/*.log
+            ${{ runner.temp }}/laravel/app/storage/logs/
+          if-no-files-found: ignore
+          retention-days: 7
