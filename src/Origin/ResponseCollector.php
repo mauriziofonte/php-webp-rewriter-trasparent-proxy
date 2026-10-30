@@ -18,7 +18,8 @@ namespace Mfonte\ProxyCdn\Origin;
  * - body chunks arrive as received, transfer coding removed; a gzip body is
  *   inflated here when requestsGzip() asked for it, any other content
  *   coding is then refused, and a gzip stream that does not end with the
- *   body is a truncated body;
+ *   body is a truncated body; bytes after the end of the gzip stream (a
+ *   second member, trailing garbage) are ignored, as browsers do;
  * - decoded bytes are written to the file until the maximum size is reached.
  *
  * headerLine() and bodyChunk() return false when the transfer must be
@@ -258,6 +259,11 @@ final class ResponseCollector
         $length = strlen($data);
         $this->encodedBytes += $length;
         for ($offset = 0; $offset < $length; $offset += self::INFLATE_SLICE) {
+            if (inflate_get_status($this->inflate) === ZLIB_STREAM_END) {
+                // inflate_add() ignores the rest of a slice after the end
+                // of the stream, but would start a new one on the next.
+                break;
+            }
             $decoded = @inflate_add($this->inflate, (string) substr($data, $offset, self::INFLATE_SLICE), ZLIB_SYNC_FLUSH);
             if (!is_string($decoded)) {
                 return $this->abort(self::ABORT_PROTOCOL, 'The compressed body is corrupt');

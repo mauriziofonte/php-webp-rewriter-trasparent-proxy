@@ -10,6 +10,7 @@ use Mfonte\ProxyCdn\Origin\HttpResponse;
 use Mfonte\ProxyCdn\Origin\ResponseCollector;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -212,6 +213,46 @@ final class ResponseCollectorTest extends TestCase
         self::assertSame(200, $response->getStatus());
         self::assertNull($response->getBody());
         self::assertSame([], $this->temporaryFiles());
+    }
+
+    /**
+     * Bytes after the end of the gzip stream are ignored wherever they
+     * fall: in the chunk that ends the stream or in later ones.
+     *
+     * @dataProvider bytesAfterTheStream
+     */
+    #[DataProvider('bytesAfterTheStream')]
+    public function testBytesAfterTheGzipStreamAreIgnored(string $after, int $chunkSize): void
+    {
+        $collector = $this->collector();
+        $encoded = (string) gzencode(str_repeat('decoded!', 1000)) . $after;
+
+        $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Length: ' . strlen($encoded), 'Content-Encoding: gzip']);
+        for ($offset = 0; $offset < strlen($encoded); $offset += $chunkSize) {
+            self::assertTrue($collector->bodyChunk((string) substr($encoded, $offset, $chunkSize)));
+        }
+        $response = $collector->finish(null, 0, '', self::URL, 0.0);
+
+        self::assertSame(HttpResponse::OUTCOME_SUCCESS, $response->getOutcome());
+        $body = $response->getBody();
+        self::assertNotNull($body);
+        self::assertSame(str_repeat('decoded!', 1000), $body->getContents());
+    }
+
+    /**
+     * @return array<string, array{string, int}>
+     */
+    public static function bytesAfterTheStream(): array
+    {
+        $member = (string) gzencode(str_repeat('second member', 100));
+        $garbage = str_repeat('garbage after the stream ', 200);
+
+        return [
+            'a second member, one chunk' => [$member, 1 << 20],
+            'a second member, small chunks' => [$member, 100],
+            'garbage, one chunk' => [$garbage, 1 << 20],
+            'garbage, small chunks' => [$garbage, 100],
+        ];
     }
 
     public function testAnEmptyGzipBodyIsAnEmptyBody(): void
