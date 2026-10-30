@@ -35,11 +35,6 @@ final class ResponseCollector
      */
     public const MAX_HEADER_BYTES = 102400;
 
-    /**
-     * Statuses a transport follows when redirects are enabled.
-     */
-    public const REDIRECT_STATUSES = [301, 302, 303, 307, 308];
-
     private const ABORT_NONE = 0;
 
     private const ABORT_TOO_LARGE = 1;
@@ -247,12 +242,13 @@ final class ResponseCollector
 
     /**
      * Whether the last complete header block is a redirect the transport
-     * is expected to follow.
+     * is expected to follow: with redirects enabled, a 3xx other than 304
+     * that has a Location, as libcurl follows them.
      */
     public function isFollowingRedirect(): bool
     {
-        return !$this->final && $this->status !== 0 && $this->followRedirects
-            && in_array($this->status, self::REDIRECT_STATUSES, true) && isset($this->headers['location']);
+        return !$this->final && $this->followRedirects && $this->status >= 300 && $this->status < 400
+            && $this->status !== 304 && isset($this->headers['location']);
     }
 
     /**

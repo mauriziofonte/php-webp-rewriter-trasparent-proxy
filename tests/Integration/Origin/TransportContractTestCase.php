@@ -227,6 +227,38 @@ abstract class TransportContractTestCase extends TestCase
         self::assertNull($response->getHeader('location'));
     }
 
+    /**
+     * Every 3xx but 304 with a Location is followed, as libcurl does.
+     *
+     * @dataProvider provideRedirectStatuses
+     */
+    #[DataProvider('provideRedirectStatuses')]
+    public function testEveryRedirectStatusIsFollowed(int $status): void
+    {
+        $client = $this->createClient($this->options()->withRedirects(true, 5));
+
+        $response = $client->send(new HttpRequest($this->url('/redirect-to?code=' . $status . '&location=/echo')));
+
+        self::assertSame(HttpResponse::OUTCOME_SUCCESS, $response->getOutcome());
+        self::assertSame($this->url('/echo'), $response->getEffectiveUrl());
+    }
+
+    /**
+     * @return array<string, array{int}>
+     */
+    public static function provideRedirectStatuses(): array
+    {
+        return [
+            'status 300' => [300],
+            'status 301' => [301],
+            'status 302' => [302],
+            'status 303' => [303],
+            'status 305' => [305],
+            'status 307' => [307],
+            'status 308' => [308],
+        ];
+    }
+
     public function testARedirectIsReturnedWhenNotFollowed(): void
     {
         $before = count(self::server()->getRequests());
