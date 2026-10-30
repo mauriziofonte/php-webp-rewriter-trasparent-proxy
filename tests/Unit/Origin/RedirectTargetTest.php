@@ -46,6 +46,8 @@ final class RedirectTargetTest extends TestCase
             'javascript scheme' => ['javascript:alert(1)', null],
             'empty' => ['', null],
             'line feed' => ["/c.png\nX: y", null],
+            'tab' => ["/c\t.png", null],
+            'DEL' => ["/c\x7F.png", null],
             'no host' => ['http:///c.png', null],
         ];
     }

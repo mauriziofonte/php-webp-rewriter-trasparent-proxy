@@ -12,13 +12,23 @@ use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
  *
  * Header names are kept in lower case, the form HTTP/2 requires and HTTP/1.1
  * accepts. Names must be HTTP tokens and values must not contain CR, LF or
- * NUL, so that no value can inject a header field or a second request.
+ * NUL, so that no value can inject a header field or a second request; the
+ * URL must not contain spaces or control characters.
  */
 final class HttpRequest
 {
     public const METHOD_GET = 'GET';
 
     public const METHOD_HEAD = 'HEAD';
+
+    /**
+     * The characters a URL must not contain, which could end or alter the
+     * request line: spaces and the ASCII control characters (finding 6 of
+     * the PRX-4 review).
+     *
+     * @internal for RedirectTarget
+     */
+    public const URL_FORBIDDEN = '/[\x00-\x20\x7F]/';
 
     /**
      * @var string
@@ -159,7 +169,7 @@ final class HttpRequest
         if ($url === '' || !is_string($scheme) || !in_array(strtolower($scheme), ['http', 'https'], true) || !is_string($host) || $host === '') {
             throw new InvalidArgumentException('The URL must be an absolute http or https URL');
         }
-        if (strpbrk($url, "\r\n\0 ") !== false) {
+        if (preg_match(self::URL_FORBIDDEN, $url) === 1) {
             throw new InvalidArgumentException('The URL must not contain spaces or control characters');
         }
 

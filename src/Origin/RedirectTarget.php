@@ -63,7 +63,7 @@ final class RedirectTarget
     public static function resolve(string $base, string $location): ?string
     {
         $location = trim($location);
-        if ($location === '' || strpbrk($location, "\r\n\0 ") !== false) {
+        if ($location === '' || preg_match(HttpRequest::URL_FORBIDDEN, $location) === 1) {
             return null;
         }
 
