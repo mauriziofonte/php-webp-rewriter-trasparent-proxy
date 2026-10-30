@@ -84,11 +84,53 @@ final class StrictErrorHandlerTest extends TestCase
      * @dataProvider provideDeprecationSeverities
      */
     #[DataProvider('provideDeprecationSeverities')]
-    public function testDeprecationsRaisedInsideVendorAreIgnored(int $severity): void
+    public function testDeprecationsRaisedInsideVendorAreRecordedNotThrown(int $severity): void
     {
         $handler = new StrictErrorHandler(self::VENDOR . '/');
+        $file = self::VENDOR . '/symfony/console/Application.php';
 
-        self::assertTrue($handler($severity, 'Deprecated', self::VENDOR . '/symfony/console/Application.php', 1));
+        self::assertTrue($handler($severity, 'Deprecated', $file, 1));
+        self::assertTrue($handler($severity, 'Deprecated', $file, 1));
+        self::assertTrue($handler($severity, 'Also deprecated', $file, 2));
+
+        self::assertSame(
+            [
+                'Deprecated in ' . $file . ':1' => 2,
+                'Also deprecated in ' . $file . ':2' => 1,
+            ],
+            $handler->getVendorDeprecations()
+        );
+    }
+
+    public function testTheReportListsEachVendorDeprecationOnceWithItsCount(): void
+    {
+        $handler = new StrictErrorHandler(self::VENDOR);
+        $file = self::VENDOR . '/vlucas/phpdotenv/src/Dotenv.php';
+        $handler(E_DEPRECATED, 'Old API', $file, 7);
+        $handler(E_DEPRECATED, 'Old API', $file, 7);
+
+        self::assertSame(
+            PHP_EOL . '1 distinct deprecation(s) raised inside vendor/ (not fatal):' . PHP_EOL
+            . '  [2x] Old API in ' . $file . ':7' . PHP_EOL,
+            $this->report($handler)
+        );
+    }
+
+    public function testTheReportIsSilentWithoutVendorDeprecations(): void
+    {
+        self::assertSame('', $this->report(new StrictErrorHandler(self::VENDOR)));
+    }
+
+    public function testInstallMakesTheHandlerTheCurrentOne(): void
+    {
+        $handler = StrictErrorHandler::install(self::VENDOR);
+        $current = set_error_handler(static function (): bool {
+            return false;
+        });
+        restore_error_handler();
+        restore_error_handler();
+
+        self::assertSame($handler, $current);
     }
 
     public function testErrorsExcludedFromErrorReportingAreLeftToPhp(): void
@@ -105,5 +147,17 @@ final class StrictErrorHandlerTest extends TestCase
         $this->expectExceptionMessage('Raised from tests/');
 
         trigger_error('Raised from tests/', E_USER_DEPRECATED);
+    }
+
+    private function report(StrictErrorHandler $handler): string
+    {
+        $stream = fopen('php://memory', 'w+b');
+        self::assertIsResource($stream);
+        $handler->reportVendorDeprecations($stream);
+        rewind($stream);
+        $contents = stream_get_contents($stream);
+        fclose($stream);
+
+        return is_string($contents) ? $contents : '';
     }
 }
