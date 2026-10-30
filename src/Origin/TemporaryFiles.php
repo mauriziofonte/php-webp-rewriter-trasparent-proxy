@@ -15,17 +15,21 @@ namespace Mfonte\ProxyCdn\Origin;
  * its owner's destructor already ensured on a normal end. A process killed
  * by a signal (SIGKILL, or SIGTERM without a handler) runs no shutdown
  * function: its files, each up to the maximum size, stay in the temporary
- * directory until they are swept by age. Shutdown functions run before the
- * destructors of the objects still alive, so deleting is idempotent and
- * quiet: an owner whose file is gone does not unlink it again, which would
- * raise a warning that a strict error handler turns into an exception
- * thrown from a destructor.
+ * directory until something else removes them. The system's cleaner of
+ * old temporary files (systemd-tmpfiles, tmpreaper) covers the system
+ * temporary directory, not a configured one. Shutdown functions run
+ * before the destructors of the objects still alive, so deleting is
+ * idempotent and quiet: an owner whose file is gone does not unlink it
+ * again, which would raise a warning that a strict error handler turns
+ * into an exception thrown from a destructor.
  *
  * The registry is static, the one exception to the rule against static
- * mutable state: a shutdown function is process-wide, so the files of
- * every client and transport of the process must be reachable from it,
- * and a registry injected into each of them would be kept alive by its
- * own shutdown function until the end of the process anyway.
+ * mutable state: a shutdown function belongs to the request (the process,
+ * for the CLI), not to an object, so the files of every client and
+ * transport of the request must be reachable from it, and a registry
+ * injected into each of them would be kept alive by its own shutdown
+ * function until the end of the request anyway. Like every static
+ * property, it starts empty in each request.
  *
  * @internal used by ResponseCollector and ResponseBody
  */
