@@ -186,6 +186,28 @@ final class CheckEnvBinaryTest extends TestCase
         self::assertStringContainsString('Dependencies are missing. Run: composer install', $output);
     }
 
+    /**
+     * Composer's platform check throws when vendor/ was resolved for another
+     * PHP version; the install hooks must still succeed.
+     *
+     * @dataProvider provideRunsWithoutDependencies
+     *
+     * @param list<string> $arguments
+     */
+    #[DataProvider('provideRunsWithoutDependencies')]
+    public function testUnloadableDependenciesAreReported(array $arguments, int $expectedExitCode): void
+    {
+        self::assertNotFalse(file_put_contents(
+            $this->project . '/vendor/autoload.php',
+            "<?php\n\nthrow new \\RuntimeException('Composer detected issues in your platform: PHP too old');\n"
+        ));
+
+        list($exitCode, $output) = $this->runBinary($arguments);
+
+        self::assertSame($expectedExitCode, $exitCode, $output);
+        self::assertStringContainsString('The dependencies cannot be loaded: Composer detected issues in your platform: PHP too old', $output);
+    }
+
     private function writeEnv(string $contents): void
     {
         self::assertNotFalse(file_put_contents($this->project . '/.env', $contents));
