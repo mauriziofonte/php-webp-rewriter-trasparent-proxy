@@ -131,3 +131,46 @@ jobs:
 
       - name: Taint analysis (Psalm)
         run: composer taint
+
+  integration:
+    name: Integration (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.2', '8.1', '8.5']
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+
+      # The harness mounts vendor/ into the PHP-FPM containers, so it is
+      # resolved here for the PHP version under test.
+      - name: Install dependencies (highest, no dev)
+        run: composer update --no-dev --no-progress
+
+      - name: Smoke test on Apache and nginx with PHP-FPM
+        env:
+          HARNESS_PHP: ${{ matrix.php }}
+          HARNESS_WORKDIR: ${{ runner.temp }}/harness
+        run: tests/Integration/docker/run.sh --php "$HARNESS_PHP"
+
+      - name: Upload the harness logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: integration-logs-php-${{ matrix.php }}
+          path: |
+            ${{ runner.temp }}/harness/compose.log
+            ${{ runner.temp }}/harness/*/logs/
+          if-no-files-found: ignore
+          retention-days: 7

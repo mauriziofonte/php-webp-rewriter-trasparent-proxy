@@ -1,0 +1,68 @@
+# Integration harness: the proxy behind Apache + PHP-FPM and behind
+# nginx + PHP-FPM, both fetching from a fake origin. Start it through run.sh,
+# which prepares HARNESS_WORKDIR (one copy of the application per stack, so
+# the two caches stay apart) and exports the variables below.
+#
+# Only official images, configured through read-only mounts: nothing is
+# installed or built at runtime. vendor/ comes from the host checkout and must
+# have been installed for HARNESS_PHP_VERSION beforehand.
+
+name: proxycdn-harness
+
+x-fpm: &fpm
+  image: php:${HARNESS_PHP_VERSION:?set by run.sh}-fpm
+  # FPM runs as the owner of HARNESS_WORKDIR so that it can write the cache
+  # and the host can clean it up afterwards.
+  user: ${HARNESS_UID:?set by run.sh}:${HARNESS_GID:?set by run.sh}
+
+services:
+  origin:
+    image: nginx:1.29.8
+    volumes:
+      - ./origin/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./origin/origin.js:/etc/nginx/njs/origin.js:ro
+      - ../../Fixtures/origin:/srv/origin:ro
+    ports:
+      - 127.0.0.1::80
+
+  fpm-apache:
+    <<: *fpm
+    volumes:
+      - ${HARNESS_WORKDIR:?set by run.sh}/apache/app:/app
+      - ../../../vendor:/app/vendor:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/apache/logs:/var/log/harness
+      - ./php-fpm/zz-harness.conf:/usr/local/etc/php-fpm.d/zz-harness.conf:ro
+      - ./php-fpm/harness.ini:/usr/local/etc/php/conf.d/zz-harness.ini:ro
+    depends_on:
+      - origin
+
+  apache:
+    image: httpd:2.4.69
+    volumes:
+      - ./apache/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/apache/app:/app:ro
+    ports:
+      - 127.0.0.1::80
+    depends_on:
+      - fpm-apache
+
+  fpm-nginx:
+    <<: *fpm
+    volumes:
+      - ${HARNESS_WORKDIR:?set by run.sh}/nginx/app:/app
+      - ../../../vendor:/app/vendor:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/nginx/logs:/var/log/harness
+      - ./php-fpm/zz-harness.conf:/usr/local/etc/php-fpm.d/zz-harness.conf:ro
+      - ./php-fpm/harness.ini:/usr/local/etc/php/conf.d/zz-harness.ini:ro
+    depends_on:
+      - origin
+
+  nginx:
+    image: nginx:1.29.8
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/nginx/app:/app:ro
+    ports:
+      - 127.0.0.1::80
+    depends_on:
+      - fpm-nginx
