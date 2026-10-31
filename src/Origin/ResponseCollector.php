@@ -22,7 +22,8 @@ namespace Mfonte\ProxyCdn\Origin;
  *   second member, trailing garbage) are ignored, as browsers do, and the
  *   transfer ends after DISCARD_LIMIT of them, the body being complete;
  * - decoded bytes are written to the file until the maximum size is reached,
- *   and a gzip body may exceed that size only by the overhead of its format.
+ *   and a gzip body may exceed that size by the overhead of its format, up
+ *   to a sixteenth of it.
  *
  * headerLine() and bodyChunk() return false when the transfer must be
  * aborted; finish() then reports why, whatever error the transport saw.
@@ -104,10 +105,13 @@ final class ResponseCollector
     private $encodedBytes = 0;
 
     /**
-     * Encoded bytes a gzip body may have: the maximum size, plus one byte
-     * in 8192 (a stored deflate block adds 5 bytes to at most 65535), plus
-     * DISCARD_LIMIT for the gzip header. Beyond it, empty blocks could keep
-     * a transfer going without storing anything.
+     * Encoded bytes a gzip body may have: the maximum size, plus a
+     * sixteenth of it, plus DISCARD_LIMIT for the gzip header. A stored
+     * deflate block adds 5 bytes to at most 65535, and an origin that
+     * flushes its compressor adds about 10 bytes per flush on data that
+     * does not compress: a sixteenth leaves room for a flush every 160
+     * bytes. Beyond it, empty blocks could keep a transfer going without
+     * storing anything.
      *
      * @var int
      */
@@ -185,7 +189,7 @@ final class ResponseCollector
         $this->isHead = $request->getMethod() === HttpRequest::METHOD_HEAD;
         $this->followRedirects = $options->shouldFollowRedirects();
         $this->maxBodySize = $options->getMaxBodySize();
-        $overhead = intdiv($this->maxBodySize, 8192) + self::DISCARD_LIMIT;
+        $overhead = intdiv($this->maxBodySize, 16) + self::DISCARD_LIMIT;
         $this->maxEncodedBytes = $this->maxBodySize > PHP_INT_MAX - $overhead ? PHP_INT_MAX : $this->maxBodySize + $overhead;
         $this->temporaryDirectory = $options->getTemporaryDirectory();
         $this->requestsGzip = $options->isCompressionEnabled() && $request->getHeader('accept-encoding') === null
@@ -470,6 +474,7 @@ final class ResponseCollector
         $this->bytes = 0;
         $this->discarded = 0;
         $this->encodedBytes = 0;
+        $this->afterStream = 0;
         $this->inflate = null;
         $this->final = false;
         $this->headers = [];

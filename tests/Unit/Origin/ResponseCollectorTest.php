@@ -285,6 +285,37 @@ final class ResponseCollectorTest extends TestCase
     }
 
     /**
+     * An origin that flushes its compressor often adds about 10 bytes per
+     * flush to data that does not compress: a body of the maximum size
+     * still fits.
+     */
+    public function testAFlushedGzipBodyOfTheMaximumSizeFits(): void
+    {
+        $maxBodySize = 4 << 20;
+        $collector = $this->collector((new HttpClientOptions())->withMaxBodySize($maxBodySize));
+        $decoded = random_bytes($maxBodySize);
+        $deflate = deflate_init(ZLIB_ENCODING_GZIP);
+        self::assertNotFalse($deflate);
+        $encoded = '';
+        foreach (str_split($decoded, 256) as $piece) {
+            $encoded .= (string) deflate_add($deflate, $piece, ZLIB_SYNC_FLUSH);
+        }
+        $encoded .= (string) deflate_add($deflate, '', ZLIB_FINISH);
+        self::assertGreaterThan($maxBodySize + intdiv($maxBodySize, 64) + ResponseCollector::DISCARD_LIMIT, strlen($encoded));
+
+        $this->head($collector, 'HTTP/1.1 200 OK', ['Content-Length: ' . strlen($encoded), 'Content-Encoding: gzip']);
+        foreach (str_split($encoded, 16384) as $chunk) {
+            self::assertTrue($collector->bodyChunk($chunk));
+        }
+        $response = $collector->finish(null, 0, '', self::URL, 0.0);
+
+        self::assertSame(HttpResponse::OUTCOME_SUCCESS, $response->getOutcome(), $response->getError());
+        $body = $response->getBody();
+        self::assertNotNull($body);
+        self::assertSame($decoded, $body->getContents());
+    }
+
+    /**
      * Empty stored blocks inflate to nothing: without a limit on the
      * encoded size, they would keep the transfer going until the timeout.
      */
