@@ -6,22 +6,26 @@ namespace Mfonte\ProxyCdn\Origin;
 
 /**
  * The body files that exist right now, so that a fatal error cannot leave
- * them behind: destructors do not run after one (memory exhausted while a
- * body is read into a string, for one), shutdown functions do. The first
- * file registers deleteAll() as a shutdown function; a file is forgotten
- * when it is deleted or moved away.
+ * them behind: destructors do not run after one, shutdown functions do.
+ * The first file registers deleteAll() as a shutdown function; a file is
+ * forgotten when it is deleted or moved away.
  *
  * A body file therefore lives at most until PHP ends the request, which
- * its owner's destructor already ensured on a normal end. A process killed
- * by a signal (SIGKILL, or SIGTERM without a handler) runs no shutdown
- * function: its files, each up to the maximum size, stay in the temporary
- * directory until something else removes them. The system's cleaner of
- * old temporary files (systemd-tmpfiles, tmpreaper) covers the system
- * temporary directory, not a configured one. Shutdown functions run
- * before the destructors of the objects still alive, so deleting is
- * idempotent and quiet: an owner whose file is gone does not unlink it
- * again, which would raise a warning that a strict error handler turns
- * into an exception thrown from a destructor.
+ * its owner's destructor already ensured on a normal end, as long as PHP
+ * runs the shutdown functions. A process killed by a signal (SIGKILL, or
+ * SIGTERM without a handler) runs none, and neither do some PHP builds
+ * after memory exhaustion, the likeliest fatal error while a body is read
+ * into a string: the builds of PHP 7.2 to 8.1 that setup-php installs on
+ * GitHub's Ubuntu runners exit with status 1 there, while its builds of
+ * PHP 8.2 to 8.5 and the official php Docker images 7.2, 7.4, 8.1 and 8.5
+ * run them. The files of such a process, each up to the maximum size, stay
+ * in the temporary directory until something else removes them. The
+ * system's cleaner of old temporary files (systemd-tmpfiles, tmpreaper)
+ * covers the system temporary directory, not a configured one. Shutdown
+ * functions run before the destructors of the objects still alive, so
+ * deleting is idempotent and quiet: an owner whose file is gone does not
+ * unlink it again, which would raise a warning that a strict error handler
+ * turns into an exception thrown from a destructor.
  *
  * The registry is static, the one exception to the rule against static
  * mutable state: a shutdown function belongs to the request (the process,

@@ -16,7 +16,7 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
  * Body files do not outlive the PHP request, even when a fatal error
- * skips the destructors.
+ * skips the destructors, as long as PHP runs the shutdown functions.
  *
  * @covers \Mfonte\ProxyCdn\Origin\TemporaryFiles
  */
