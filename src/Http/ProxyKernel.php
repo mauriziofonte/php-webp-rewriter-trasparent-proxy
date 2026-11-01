@@ -41,14 +41,17 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    purge key of the origin (PurgeAuthenticator); the anonymous
  *    "?purge=1" and "?purge_all=1" of 2.x get a 401 that explains the
  *    change (risk L-7);
- * 3. a fresh 404 or 410 of the negative cache answers without asking the
+ * 3. a request for "X.webp" that the cache does not hold is answered from
+ *    a cached raster sibling "X.jpg", "X.png"... (risk L-4: 2.x redirected
+ *    raster URLs to their WEBP copy with a permanent 301);
+ * 4. a fresh 404 or 410 of the negative cache answers without asking the
  *    origin;
- * 4. the query string is reduced to the parameters of QueryStringPolicy,
+ * 5. the query string is reduced to the parameters of QueryStringPolicy,
  *    which key the entry and reach the origin as the client wrote them; an
  *    entry on disk is served from disk, as its AVIF or WEBP variant to the
  *    clients that accept it, with "Vary: Accept" (finding P-1: 2.x
  *    redirected every client to the WEBP copy);
- * 5. otherwise, unless the circuit breaker of the origin is open, the
+ * 6. otherwise, unless the circuit breaker of the origin is open, the
  *    asset is fetched from the origin (a failure is answered by its kind,
  *    see failure(), finding P-13), stored as the origin sent it, a raster
  *    is converted to WEBP when a converter is configured, and the asset is
@@ -316,8 +319,15 @@ final class ProxyKernel
             return $this->responses->error($path, ResponseFactory::ERROR_PURGE_UNAUTHORIZED);
         }
 
+        $legacy = $this->isLegacyWebpRequest($extension, $location) ? $this->legacySiblings($host, $path, $query) : [];
+        foreach ($legacy as $sibling) {
+            if ($this->storage->isFile($sibling[1]->getFile())) {
+                return $this->serveLegacy($request, $sibling[1], $sibling[0], ResponseFactory::CACHE_HIT);
+            }
+        }
+
         $remembered = $this->negativeCache->lookup($file);
-        if ($remembered !== null) {
+        if ($remembered !== null && $legacy === []) {
             return $this->responses->error($path, $remembered === 410 ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
         }
 
@@ -335,12 +345,18 @@ final class ProxyKernel
             return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
 
-        $fetched = $this->fetch($request, $origin, $path, $query);
-        if ($fetched->isSuccessful()) {
-            return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
+        if ($remembered === null) {
+            $fetched = $this->fetch($request, $origin, $path, $query);
+            if ($fetched->isSuccessful()) {
+                return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
+            }
+            if ($legacy === [] || !$fetched->isNotFound()) {
+                return $this->failure($origin, $path, $file, $fetched);
+            }
+            $this->negativeCache->remember($file, 404);
         }
 
-        return $this->failure($origin, $path, $file, $fetched);
+        return $this->fetchLegacy($request, $origin, $path, $query, $legacy);
     }
 
     /**
@@ -438,6 +454,93 @@ final class ProxyKernel
         }
 
         return $this->files->respond($request, $file, $extension, $cacheStatus, ['Accept']);
+    }
+
+    /**
+     * Whether a request for $location is for "X.webp" that the cache does
+     * not hold, to be resolved from a raster sibling (LEGACY_WEBP_URLS).
+     */
+    private function isLegacyWebpRequest(string $extension, CacheLocation $location): bool
+    {
+        return $extension === CacheLocation::FORMAT_WEBP
+            && $this->config->shouldResolveLegacyWebpUrls()
+            && !$this->storage->isFile($location->getFile());
+    }
+
+    /**
+     * The raster siblings of "X.webp": "X.jpg", "X.jpeg", "X.png", "X.gif"
+     * and "X.bmp", with their cache locations, the cacheable ones only.
+     *
+     * @return list<array{string, CacheLocation}>
+     */
+    private function legacySiblings(string $host, string $path, QueryString $query): array
+    {
+        $base = (string) substr($path, 0, -strlen('.' . CacheLocation::FORMAT_WEBP));
+        $siblings = [];
+        foreach (self::RASTER_EXTENSIONS as $extension) {
+            if ($this->config->isCacheableExtension($extension)) {
+                $siblings[] = [$extension, $this->keyResolver->resolve($host, $base . '.' . $extension, $query->getCanonical())];
+            }
+        }
+
+        return $siblings;
+    }
+
+    /**
+     * The answer to "X.webp" from the raster entry of $location: its WEBP
+     * variant, converted first when a converter is configured, or else the
+     * raster itself, typed as what it is (risk L-4: the browsers that
+     * cached a 301 of 2.x to "X.webp" keep asking for it, and the origin
+     * has no such file).
+     */
+    private function serveLegacy(Request $request, CacheLocation $location, string $extension, string $cacheStatus): Response
+    {
+        $webp = $location->getVariantFile(CacheLocation::FORMAT_WEBP);
+        if ($this->converter !== null && !$this->storage->isFile($webp)) {
+            $this->converter->convert($location->getFile(), $webp);
+        }
+        if ($this->storage->isFile($webp)) {
+            return $this->files->respond($request, $webp, CacheLocation::FORMAT_WEBP, $cacheStatus);
+        }
+
+        return $this->files->respond($request, $location->getFile(), $extension, $cacheStatus);
+    }
+
+    /**
+     * Fetches the raster siblings of "X.webp" from the origin, in order,
+     * until one exists, then stores and answers it; the 404 of "X.webp"
+     * when none does.
+     *
+     * @param list<array{string, CacheLocation}> $siblings
+     */
+    private function fetchLegacy(Request $request, string $origin, string $path, QueryString $query, array $siblings): Response
+    {
+        foreach ($siblings as $sibling) {
+            list($extension, $location) = $sibling;
+            $siblingPath = '/' . $location->getRelativePath();
+            if ($this->negativeCache->lookup($location->getFile()) !== null) {
+                continue;
+            }
+            $fetched = $this->fetch($request, $origin, $siblingPath, $query);
+            if ($fetched->isNotFound()) {
+                $this->negativeCache->remember($location->getFile(), 404);
+                continue;
+            }
+            if (!$fetched->isSuccessful()) {
+                return $this->failure($origin, $path, $location->getFile(), $fetched);
+            }
+            $error = $this->store($location, $extension, $fetched->getBody());
+            if ($error !== null) {
+                return $this->responses->error($path, $error);
+            }
+            $this->negativeCache->forget($location->getFile());
+            $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
+            $this->logger->info('legacy webp url', ['path' => $path, 'sibling' => $siblingPath]);
+
+            return $this->serveLegacy($request, $location, $extension, ResponseFactory::CACHE_MISS);
+        }
+
+        return $this->responses->error($path, ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
     }
 
     private function isRaster(string $extension): bool

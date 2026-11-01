@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
 use Mfonte\ProxyCdn\Http\ProxyKernel;
+use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
@@ -129,6 +130,103 @@ final class CacheLayoutTest extends TestCase
 
         self::assertSame('new', self::body($response));
         self::assertFileDoesNotExist($this->directory->path('_cache/cdn.example.test/.webp/css/a.css.webp'));
+    }
+
+    /**
+     * Risk L-4: "X.webp" from a 301 of 2.x is answered from the cached
+     * raster sibling, as its WEBP variant when there is one.
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testALegacyWebpUrlIsAnsweredFromTheCachedSiblingL4(): void
+    {
+        $this->write('images/a.jpg', 'JPEG');
+        $this->write('images/b.png', 'PNG');
+        $this->write('.webp/images/b.png.webp', 'WEBP-OF-B');
+
+        $a = $this->kernel()->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        $b = $this->kernel()->handle(Request::create('https://cdn.example.test/images/b.webp'));
+
+        self::assertSame('JPEG', self::body($a));
+        self::assertSame('image/jpeg', $a->headers->get('content-type'));
+        self::assertSame('WEBP-OF-B', self::body($b));
+        self::assertSame('image/webp', $b->headers->get('content-type'));
+        self::assertSame('HIT', $b->headers->get('x-cache-status'));
+        self::assertSame([], $this->origin->getRequests());
+    }
+
+    /**
+     * Risk L-4: when the origin has no "X.webp", its raster siblings are
+     * fetched, stored under their own URL and converted.
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testALegacyWebpUrlFetchesAndConvertsTheSiblingL4(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/images/a.png', 'PNG');
+        $converter = new FakeWebpConverter();
+
+        $first = $this->kernel([], $converter)->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        $second = $this->kernel([], $converter)->handle(Request::create('https://cdn.example.test/images/a.webp'));
+
+        self::assertSame('FAKE-WEBP:PNG', self::body($first));
+        self::assertSame('image/webp', $first->headers->get('content-type'));
+        self::assertSame('MISS', $first->headers->get('x-cache-status'));
+        self::assertSame('FAKE-WEBP:PNG', self::body($second));
+        self::assertSame('HIT', $second->headers->get('x-cache-status'));
+        self::assertSame([
+            self::ORIGIN . '/images/a.webp',
+            self::ORIGIN . '/images/a.jpg',
+            self::ORIGIN . '/images/a.jpeg',
+            self::ORIGIN . '/images/a.png',
+        ], $this->origin->getRequestedUrls());
+        self::assertFileExists($this->directory->path('_cache/cdn.example.test/images/a.png'));
+        self::assertFileDoesNotExist($this->directory->path('_cache/cdn.example.test/images/a.webp'));
+    }
+
+    public function testALegacyWebpUrlWithoutSiblingIsA404(): void
+    {
+        $first = $this->kernel()->handle(Request::create('https://cdn.example.test/images/none.webp'));
+        $count = count($this->origin->getRequests());
+        $second = $this->kernel()->handle(Request::create('https://cdn.example.test/images/none.webp'));
+
+        self::assertSame(404, $first->getStatusCode());
+        self::assertSame(404, $second->getStatusCode());
+        self::assertSame(6, $count, 'the URL and its five raster siblings');
+        self::assertCount(6, $this->origin->getRequests(), 'remembered by the negative cache');
+    }
+
+    public function testAnExistingWebpIsNeverReplacedByASibling(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/images/a.webp', 'REAL-WEBP');
+        $this->write('images/a.png', 'PNG');
+
+        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/images/a.webp'));
+
+        self::assertSame('PNG', self::body($response), 'the cached sibling answers first');
+        $this->kernel(['LEGACY_WEBP_URLS' => 'false'])->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        self::assertSame([self::ORIGIN . '/images/a.webp'], $this->origin->getRequestedUrls());
+    }
+
+    public function testLegacyResolutionCanBeTurnedOff(): void
+    {
+        $this->write('images/a.png', 'PNG');
+
+        $response = $this->kernel(['LEGACY_WEBP_URLS' => 'false'])->handle(Request::create('https://cdn.example.test/images/a.webp'));
+
+        self::assertSame(404, $response->getStatusCode());
+        self::assertSame([self::ORIGIN . '/images/a.webp'], $this->origin->getRequestedUrls());
+    }
+
+    public function testALegacySiblingFailureIsAnsweredByItsKind(): void
+    {
+        $this->origin->respond(self::ORIGIN . '/images/a.jpg', OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 500));
+
+        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/images/a.webp'));
+
+        self::assertSame(503, $response->getStatusCode());
     }
 
     /**
