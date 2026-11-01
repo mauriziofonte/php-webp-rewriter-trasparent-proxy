@@ -17,8 +17,9 @@ namespace Mfonte\ProxyCdn\Origin;
  *   origin.
  * - Half-open: once the open time is over, one request is let through as
  *   a probe (the others keep being refused while it runs, up to the open
- *   time again); its success closes the breaker, its failure opens it
- *   again at once.
+ *   time again); any answer of the origin but unavailability closes the
+ *   breaker (a 404 too: the origin is up), unavailability opens it again
+ *   at once.
  *
  * When the state cannot be read or written the breaker stays closed: the
  * proxy then behaves as without a breaker rather than refusing to serve.

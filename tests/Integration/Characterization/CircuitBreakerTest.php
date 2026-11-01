@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Tests\Integration\Characterization;
 
 use PHPUnit\Framework\Attributes\CoversNothing;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
@@ -98,6 +99,43 @@ final class CircuitBreakerTest extends CharacterizationTestCase
         self::assertSame(503, $next->getStatus());
         self::assertSame(3, $this->origin->countRequestsFor('/images/gradient.png'));
         self::assertSame(0, $this->origin->countRequestsFor('/js/app.js'));
+    }
+
+    /**
+     * @return array<string, array{int, string|null}>
+     */
+    public static function provideAvailableAnswers(): array
+    {
+        return [
+            'status 404' => [404, null],
+            'status 403' => [403, null],
+            'status 410' => [410, null],
+            'redirect' => [302, '/images/elsewhere.png'],
+        ];
+    }
+
+    /**
+     * A probe the origin answers with anything but unavailability closes
+     * the breaker: the origin is up, whatever it says of that path.
+     *
+     * @dataProvider provideAvailableAnswers
+     */
+    #[DataProvider('provideAvailableAnswers')]
+    public function testAProbeAnsweredByTheOriginClosesTheBreaker(int $status, ?string $location): void
+    {
+        $this->origin->setRule('/images/gradient.png', 503);
+        $this->get('/images/gradient.png');
+        $this->get('/images/gradient.png');
+        $this->origin->setRule('/images/gradient.png', $status, $location);
+        self::assertSame(503, $this->get('/js/app.js')->getStatus());
+
+        $this->shiftBreakerTimes(-31);
+        $probe = $this->get('/images/gradient.png');
+        $after = $this->get('/js/app.js');
+
+        self::assertSame($status, $probe->getStatus());
+        self::assertSame(200, $after->getStatus());
+        self::assertSame([], $this->breakerStates());
     }
 
     /**

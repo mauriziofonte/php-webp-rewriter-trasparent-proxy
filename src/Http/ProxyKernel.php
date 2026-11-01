@@ -371,11 +371,21 @@ final class ProxyKernel
      *   rewritten to the proxy, so that the client never leaves it; a
      *   redirect anywhere else, another 4xx or a body too large is a 502;
      * - only unavailability (5xx, 429, timeout, DNS, connection, TLS and
-     *   network failures) opens the breaker and answers 503.
+     *   network failures) opens the breaker and answers 503; any other
+     *   answer means the origin is up and closes it, so that a half-open
+     *   probe answered 404, 403, 410 or 3xx does not leave it open.
      */
     private function failure(string $path, string $file, OriginResponse $fetched): Response
     {
         $reason = $fetched->getFailureReason();
+        $origin = RedirectTarget::originOf($this->config->getSourceOrigin());
+        if (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429) {
+            $this->circuitBreaker->recordFailure($origin);
+
+            return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+        }
+        $this->circuitBreaker->reset($origin);
+
         if ($reason === OriginResponse::FAILURE_NOT_FOUND || $reason === OriginResponse::FAILURE_GONE) {
             $gone = $reason === OriginResponse::FAILURE_GONE;
             $this->negativeCache->remember($file, $gone ? 410 : 404);
@@ -391,11 +401,6 @@ final class ProxyKernel
             return $location === null
                 ? $this->responses->error($path, ResponseFactory::ERROR_BAD_GATEWAY)
                 : $this->responses->redirect($fetched->getStatus(), $location);
-        }
-        if (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429) {
-            $this->circuitBreaker->recordFailure(RedirectTarget::originOf($this->config->getSourceOrigin()));
-
-            return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
 
         return $this->responses->error($path, ResponseFactory::ERROR_BAD_GATEWAY);

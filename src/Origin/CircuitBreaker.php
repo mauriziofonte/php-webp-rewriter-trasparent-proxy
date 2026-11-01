@@ -26,7 +26,8 @@ interface CircuitBreaker
     public function recordFailure(string $origin): void;
 
     /**
-     * Closes the breaker of $origin after a successful fetch.
+     * Closes the breaker of $origin once the origin answered: a success,
+     * or any failure that does not mean it is unavailable.
      */
     public function reset(string $origin): void;
 }
