@@ -29,7 +29,7 @@ final class CircuitBreakerTest extends CharacterizationTestCase
         self::assertErrorResponse($response, 503, 'Upstream temporarily unavailable', '/images/gradient.png');
         self::assertSame('30', $response->getHeader('Retry-After'));
         self::assertFileExists($this->publicPath('images/gradient.png.netfail'));
-        self::assertFileDoesNotExist($this->publicPath('images/gradient.png.404'));
+        self::assertSame([], $this->negativeMarkers());
         self::assertFileDoesNotExist($this->publicPath('images/gradient.png'));
     }
 
@@ -132,8 +132,10 @@ final class CircuitBreakerTest extends CharacterizationTestCase
 
     public function testFreshNotFoundMarkerIsCheckedBeforeTheBreaker(): void
     {
+        $this->origin->setRule('/images/gradient.png', 404);
         $this->get('/images/gradient.png?v=1');
-        touch($this->bucketPath('v=1', 'images/gradient.png.404'));
+        $this->origin->removeRule('/images/gradient.png');
+        mkdir(dirname($this->bucketPath('v=1', 'images/gradient.png')), 0777, true);
         touch($this->bucketPath('v=1', 'images/gradient.png.netfail'));
 
         $response = $this->get('/images/gradient.png?v=1');

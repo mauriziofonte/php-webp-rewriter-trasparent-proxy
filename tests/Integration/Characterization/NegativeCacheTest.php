@@ -8,8 +8,8 @@ use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * The ".404" marker: an origin 404 is remembered for NEGATIVE_CACHE_TTL
- * seconds next to the would-be cache file.
+ * The negative cache: an origin 404 is remembered for NEGATIVE_CACHE_TTL
+ * seconds in var/negative/, outside the document root.
  *
  * @coversNothing
  *
@@ -24,7 +24,8 @@ final class NegativeCacheTest extends CharacterizationTestCase
         $response = $this->get('/images/missing.png');
 
         self::assertErrorResponse($response, 404, 'Cannot read remote origin file', '/images/missing.png');
-        self::assertFileExists($this->publicPath('images/missing.png.404'));
+        self::assertCount(1, $this->negativeMarkers());
+        self::assertFileDoesNotExist($this->publicPath('images/missing.png.404'));
         self::assertFileDoesNotExist($this->publicPath('images/missing.png'));
         self::assertFileDoesNotExist($this->publicPath('images/missing.png.netfail'));
     }
@@ -47,32 +48,65 @@ final class NegativeCacheTest extends CharacterizationTestCase
         self::assertSame(404, $this->get('/images/gradient.png')->getStatus());
         self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
 
-        self::age($this->publicPath('images/gradient.png.404'), 301);
+        $markers = $this->negativeMarkers();
+        self::assertCount(1, $markers);
+        self::age($markers[0], 301);
         $response = $this->get('/images/gradient.png');
 
         self::assertSame(200, $response->getStatus());
         self::assertSame('miss', $response->getHeader('X-Cache-Status'));
-        self::assertFileDoesNotExist($this->publicPath('images/gradient.png.404'));
+        self::assertSame([], $this->negativeMarkers());
         self::assertSame(2, $this->origin->countRequestsFor('/images/gradient.png'));
     }
 
-    public function testMarkerOfAQueryStringRequestLivesInItsBucket(): void
+    public function testMarkerOfAQueryStringRequestIsKeyedOnItsBucket(): void
     {
-        $this->get('/images/missing.png?v=3');
+        $this->origin->setRule('/images/gradient.png', 404);
+        $this->get('/images/gradient.png?v=3');
+        $this->origin->removeRule('/images/gradient.png');
 
-        self::assertFileExists($this->bucketPath('v=3', 'images/missing.png.404'));
-        self::assertSame(200, $this->get('/images/gradient.png?v=3')->getStatus());
+        self::assertCount(1, $this->negativeMarkers());
+        self::assertSame(404, $this->get('/images/gradient.png?v=3')->getStatus());
+        self::assertSame(200, $this->get('/images/gradient.png?v=4')->getStatus());
+        self::assertDirectoryDoesNotExist(dirname($this->bucketPath('v=3', 'images/gradient.png')));
     }
 
     /**
-     * Every path that does not exist creates its directories and a marker
-     * (finding P-5, resolved by PRX-5).
+     * A path that does not exist creates no directory and no file below
+     * public/, and the markers are bounded (finding P-5: 2.x created the
+     * directories of every such path, and a ".404" marker in them, so
+     * random paths filled the disk).
+     *
+     * @group regression
      */
-    public function testNotFoundCreatesDirectoriesForPathsThatDoNotExistP5(): void
+    #[Group('regression')]
+    public function testNotFoundCreatesNothingBelowTheDocumentRootP5(): void
     {
-        $this->get('/no/such/directory/file.png');
+        $before = self::tree($this->publicPath(''));
 
-        self::assertDirectoryExists($this->publicPath('no/such/directory'));
-        self::assertFileExists($this->publicPath('no/such/directory/file.png.404'));
+        $response = $this->get('/no/such/directory/file.png');
+        $this->get('/no/such/other/file.png?v=1');
+
+        self::assertSame(404, $response->getStatus());
+        self::assertDirectoryDoesNotExist($this->publicPath('no'));
+        self::assertSame($before, self::tree($this->publicPath('')));
+        self::assertCount(2, $this->negativeMarkers());
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function tree(string $directory): array
+    {
+        $paths = [];
+        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::SELF_FIRST);
+        foreach ($iterator as $file) {
+            if ($file instanceof \SplFileInfo) {
+                $paths[] = $file->getPathname();
+            }
+        }
+        sort($paths);
+
+        return $paths;
     }
 }

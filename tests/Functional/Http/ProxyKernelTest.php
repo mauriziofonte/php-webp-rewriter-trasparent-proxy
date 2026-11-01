@@ -249,7 +249,8 @@ final class ProxyKernelTest extends TestCase
         self::assertStringContainsString('Error code: Cannot read remote origin file.', (string) $first->getContent());
         self::assertSame(404, $second->getStatusCode());
         self::assertCount(1, $this->origin->getRequests());
-        self::assertFileExists($this->directory->path('missing.css.404'));
+        self::assertFileDoesNotExist($this->directory->path('missing.css.404'));
+        self::assertCount(1, glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/negative/*.neg')) ?: []);
     }
 
     public function testAnOriginFailureOpensTheBreaker(): void
@@ -281,15 +282,20 @@ final class ProxyKernelTest extends TestCase
 
     public function testASuccessClearsStaleMarkers(): void
     {
-        $this->directory->write('css/site.css.404', '');
+        $this->kernel()->handle(Request::create('https://cdn.example.test/css/gone.css'));
+        $markers = glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/negative/*.neg')) ?: [];
+        self::assertCount(1, $markers);
+        touch($markers[0], time() - 3600);
+        $this->origin->serve(self::ORIGIN . '/css/gone.css', self::CSS, ['content-type' => 'text/css']);
         $this->directory->write('css/site.css.netfail', '');
-        touch($this->directory->path('css/site.css.404'), time() - 3600);
         touch($this->directory->path('css/site.css.netfail'), time() - 3600);
 
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
+        $gone = $this->kernel()->handle(Request::create('https://cdn.example.test/css/gone.css'));
 
         self::assertSame(200, $response->getStatusCode());
-        self::assertFileDoesNotExist($this->directory->path('css/site.css.404'));
+        self::assertSame(200, $gone->getStatusCode());
+        self::assertFileDoesNotExist($markers[0]);
         self::assertFileDoesNotExist($this->directory->path('css/site.css.netfail'));
     }
 

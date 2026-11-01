@@ -67,14 +67,17 @@ final class PurgeTest extends CharacterizationTestCase
 
     public function testPurgeClearsBothMarkers(): void
     {
+        $this->origin->setRule('/images/gradient.png', 404);
+        $this->get('/images/gradient.png');
+        $this->origin->removeRule('/images/gradient.png');
+        self::assertCount(1, $this->negativeMarkers());
         mkdir($this->publicPath('images'));
-        touch($this->publicPath('images/gradient.png.404'));
         touch($this->publicPath('images/gradient.png.netfail'));
 
         $response = $this->get('/images/gradient.png?purge=1');
 
         self::assertSame(200, $response->getStatus());
-        self::assertFileDoesNotExist($this->publicPath('images/gradient.png.404'));
+        self::assertSame([], $this->negativeMarkers());
         self::assertFileDoesNotExist($this->publicPath('images/gradient.png.netfail'));
     }
 
@@ -124,7 +127,6 @@ final class PurgeTest extends CharacterizationTestCase
         $siblings = [];
         foreach (['webp', 'jpg', 'jpeg', 'gif', 'bmp'] as $extension) {
             $siblings[] = $this->publicPath('images/gradient.' . $extension);
-            $siblings[] = $this->publicPath('images/gradient.' . $extension . '.404');
             $siblings[] = $this->publicPath('images/gradient.' . $extension . '.netfail');
         }
         foreach ($siblings as $sibling) {

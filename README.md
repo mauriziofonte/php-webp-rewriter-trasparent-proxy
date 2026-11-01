@@ -181,11 +181,11 @@ Cons: on a QS-keyed hit, PHP runs (no pure-Apache fast path). For a static asset
 
 ## Negative caching and circuit breaker
 
-The proxy maintains two kinds of negative markers next to the cache file. Both are hidden from HTTP by a `FilesMatch "\.(404|netfail)$"` `Require all denied` rule in [public/.htaccess](public/.htaccess).
+The proxy remembers two kinds of failure. A `404` is remembered in `var/negative/` of the project, outside the document root: one flat directory of at most 4096 slot files (`<3 hex digits of the SHA-256 of the entry>.neg`), so a flood of random paths creates no directory and no file below `public/` (in 2.x every missing path created its directories and a `<path>.404` marker). Two entries that share a slot replace each other's marker, which only costs one more origin request. The `.netfail` marker of the circuit breaker lives next to the cache file and is hidden from HTTP by a `FilesMatch "\.(404|netfail)$"` `Require all denied` rule in [public/.htaccess](public/.htaccess).
 
 | Marker           | Armed when origin returns...                                                                                     | TTL                                  | HTTP status served to the client |
 |------------------|------------------------------------------------------------------------------------------------------------------|--------------------------------------|----------------------------------|
-| `<path>.404`     | A semantic `404 Not Found`                                                                                       | `NEGATIVE_CACHE_TTL` (default 300 s) | `404`                            |
+| `var/negative/`  | A semantic `404 Not Found`                                                                                       | `NEGATIVE_CACHE_TTL` (default 300 s) | `404`                            |
 | `<path>.netfail` | `5xx`, connection refused, DNS failure, TLS error, timeout, transfer stalled under the low-speed-limit threshold | `NETWORK_ERROR_TTL` (default 30 s)   | `503` + `Retry-After`            |
 
 Rationale:
@@ -245,9 +245,11 @@ For production, rotate `logs/proxy.log` with a standard tool:
 The proxy does not auto-clean stale negative markers or old cached files. Run maintenance via cron.
 
 ``` bash
-# Every hour: drop .404 / .netfail markers older than 1 day so that
-# resources which genuinely came back to life become retryable.
-0 * * * * find /srv/sites/cdn/public -name '*.404' -o -name '*.netfail' -mtime +1 -delete
+# Every hour: drop .netfail markers older than 1 day so that
+# resources which genuinely came back to life become retryable. The
+# negative cache in var/negative/ is bounded and needs no cleaning;
+# '*.404' files are markers left behind by 2.x.
+0 * * * * find /srv/sites/cdn/public \( -name '*.404' -o -name '*.netfail' \) -mtime +1 -delete
 
 # Every week: garbage-collect QS buckets not touched in the last 30 days.
 # The _qs/ layout is flat (one level of hash-dirs), so this is cheap.
@@ -293,7 +295,7 @@ Read these before putting the proxy on the public Internet.
 - **`UPSTREAM_FOLLOW_REDIRECTS` defaults to `false`.** A compromised origin that returns a 30x to an internal host would otherwise become an SSRF pivot. Enable redirects only when the origin legitimately uses them.
 - **`CACHEABLE_EXTENSIONS` can leak sessions.** If you add `html`, `htm`, `xml`, `json` or `php` to the list and the origin ever serves authenticated content on those paths (private profile pages, signed JSON APIs, etc.), the proxy will cache that content (captured without the client's cookies and with no user context) and serve it indiscriminately. The `check-env` step (`bin/proxy-cdn check-env`) emits a warning when a sensitive extension appears in the list.
 - **Purge is unauthenticated** (see above).
-- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, project-internal directories (`vendor/`, `src/`, `bin/`, `logs/`, `.git/`), the internal QS-bucket layout (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and negative-cache markers (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply.
+- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, project-internal directories (`vendor/`, `src/`, `bin/`, `logs/`, `.git/`, and `var/` at the root), the internal QS-bucket layout (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and negative-cache markers (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply.
 - **HSTS** is enabled with `max-age=31536000` only by default. The wider `includeSubDomains` / `preload` variants are commented out in `.htaccess` because they affect sibling hostnames on the same eTLD+1. Enable them only when you understand the blast radius.
 
 ## Troubleshooting
@@ -301,7 +303,7 @@ Read these before putting the proxy on the public Internet.
 | Symptom                                     | Likely cause                                                                                                                                                                              |
 |---------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `cwebp binary not available in PATH`        | `IMAGE_CONVERSION_MODE=native` but `cwebp` is missing. Install it or switch to `api` / `none`.                                                                                            |
-| 404s for assets that do exist on the origin | A `.404` marker is still warm. Wait `NEGATIVE_CACHE_TTL` seconds or hit the URL with `?purge=1`.                                                                                          |
+| 404s for assets that do exist on the origin | A negative-cache marker in `var/negative/` is still warm. Wait `NEGATIVE_CACHE_TTL` seconds or hit the URL with `?purge=1`.                                                                                          |
 | 503 with `Retry-After: 30`                  | A `.netfail` marker is warm (origin was unreachable recently). Either wait or re-check the origin and hit with `?purge=1`.                                                                |
 | 500 `Image conversion failed`               | Origin returned something cURL accepted as 200 but `cwebp` refused. Inspect `public/<path>` and `logs/proxy.log`.                                                                         |
 | All responses HTTP (no HTTPS redirect)      | `mod_rewrite` off or the VirtualHost is behind a TLS-terminating proxy that does not forward `X-Forwarded-Proto: https`.                                                                  |

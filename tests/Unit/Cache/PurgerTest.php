@@ -23,6 +23,11 @@ final class PurgerTest extends TestCase
     private $directory;
 
     /**
+     * @var NegativeCache
+     */
+    private $negativeCache;
+
+    /**
      * @var Purger
      */
     private $purger;
@@ -32,7 +37,8 @@ final class PurgerTest extends TestCase
         parent::set_up();
         $this->directory = new TemporaryDirectory();
         $storage = new FilesystemStorage();
-        $this->purger = new Purger($storage, new NegativeCache($storage, 300));
+        $this->negativeCache = new NegativeCache($storage, $this->directory->path('state'), 300);
+        $this->purger = new Purger($storage, $this->negativeCache);
     }
 
     protected function tear_down(): void
@@ -44,14 +50,17 @@ final class PurgerTest extends TestCase
     public function testPurgeRemovesTheEntryAndItsNotFoundMarker(): void
     {
         $file = $this->directory->write('img/a.png', 'png');
-        $this->directory->write('img/a.png.404', '');
+        $this->negativeCache->remember($file);
         $this->directory->write('img/a.png.netfail', '');
         $this->directory->write('img/a.webp', 'webp');
+        $this->negativeCache->remember($this->directory->path('img/a.webp'));
 
         $purged = $this->purger->purge($file, false);
 
         self::assertSame([$file], $purged);
         self::assertSame(['.', '..', 'a.png.netfail', 'a.webp'], scandir($this->directory->path('img')));
+        self::assertNull($this->negativeCache->lookup($file));
+        self::assertSame(404, $this->negativeCache->lookup($this->directory->path('img/a.webp')));
     }
 
     public function testAggressivePurgeRemovesTheSiblingsToo(): void
@@ -59,7 +68,7 @@ final class PurgerTest extends TestCase
         $file = $this->directory->write('img/a.png', 'png');
         foreach (['webp', 'jpg', 'jpeg', 'gif', 'bmp'] as $extension) {
             $this->directory->write('img/a.' . $extension, $extension);
-            $this->directory->write('img/a.' . $extension . '.404', '');
+            $this->negativeCache->remember($this->directory->path('img/a.' . $extension));
         }
         $this->directory->write('img/a.css', 'kept');
         $this->directory->write('img/b.webp', 'kept');
@@ -72,6 +81,9 @@ final class PurgerTest extends TestCase
         }
         self::assertSame(array_merge([$file], array_values(array_diff($siblings, [$file]))), $purged);
         self::assertSame(['.', '..', 'a.css', 'b.webp'], scandir($this->directory->path('img')));
+        foreach ($siblings as $sibling) {
+            self::assertNull($this->negativeCache->lookup($sibling));
+        }
     }
 
     public function testAggressivePurgeOfANameWithoutBaseHasNoSiblings(): void

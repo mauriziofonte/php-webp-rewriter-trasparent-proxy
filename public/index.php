@@ -55,7 +55,7 @@ try {
 (new RuntimeSettings())->apply($config);
 
 $logger = new JsonLogger($logFile, $config->isDebug() ? LogLevel::DEBUG : LogLevel::NOTICE);
-$negativeCache = new NegativeCache($storage, $config->getNegativeCacheTtl());
+$negativeCache = new NegativeCache($storage, $projectRoot . '/var/negative', $config->getNegativeCacheTtl());
 $responses = ResponseFactory::fromConfig($config);
 
 try {

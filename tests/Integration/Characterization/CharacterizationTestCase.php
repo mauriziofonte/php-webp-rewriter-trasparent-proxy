@@ -164,6 +164,18 @@ SH;
         return $this->publicPath('_qs/' . substr(hash('sha256', $canonicalQuery), 0, 16) . '/' . ltrim($relativePath, '/'));
     }
 
+    /**
+     * The slot files of the negative cache, in var/negative/ of the copy.
+     *
+     * @return list<string>
+     */
+    protected function negativeMarkers(): array
+    {
+        $files = glob($this->proxy->getProjectDirectory() . '/var/negative/*.neg');
+
+        return $files === false ? [] : $files;
+    }
+
     protected static function fixture(string $relativePath): string
     {
         $contents = file_get_contents(dirname(__DIR__, 2) . '/Fixtures/origin/' . ltrim($relativePath, '/'));

@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\Group;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -30,7 +31,7 @@ final class NegativeCacheTest extends TestCase
     {
         parent::set_up();
         $this->directory = new TemporaryDirectory();
-        $this->cache = new NegativeCache(new FilesystemStorage(), 300);
+        $this->cache = new NegativeCache(new FilesystemStorage(), $this->directory->path('state'), 300);
     }
 
     protected function tear_down(): void
@@ -41,62 +42,138 @@ final class NegativeCacheTest extends TestCase
 
     public function testNothingIsRememberedAtFirst(): void
     {
-        self::assertFalse($this->cache->isFresh($this->directory->path('a.png')));
+        self::assertNull($this->cache->lookup($this->directory->path('public/a.png')));
+        self::assertFalse($this->cache->isFresh($this->directory->path('public/a.png')));
     }
 
     /**
-     * Remembering creates the missing directories (finding P-5, resolved by
-     * PRX-5).
+     * Remembering writes one slot file in the state directory and nothing
+     * next to the entry (finding P-5: 2.x created the directories of every
+     * path that does not exist, and a marker in them).
+     *
+     * @group regression
      */
-    public function testRememberCreatesTheMarkerAndItsDirectoriesP5(): void
+    #[Group('regression')]
+    public function testRememberCreatesNoDirectoryNextToTheEntryP5(): void
     {
-        $file = $this->directory->path('x/y/a.png');
+        $file = $this->directory->path('public/x/y/a.png');
 
         $this->cache->remember($file);
 
-        self::assertFileExists($file . '.404');
         self::assertTrue($this->cache->isFresh($file));
+        self::assertSame(404, $this->cache->lookup($file));
+        self::assertDirectoryDoesNotExist($this->directory->path('public'));
+        self::assertSame([self::slotOf($file)], self::filesIn($this->directory->path('state')));
+    }
+
+    /**
+     * However many paths are asked for, at most 4096 slot files exist.
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testTheNumberOfMarkersIsBoundedP5(): void
+    {
+        for ($index = 0; $index < 5000; ++$index) {
+            $this->cache->remember($this->directory->path('public/missing-' . $index . '.png'));
+        }
+
+        $files = self::filesIn($this->directory->path('state'));
+        self::assertLessThanOrEqual(4096, count($files));
+        self::assertGreaterThan(2500, count($files));
+    }
+
+    public function testA410IsRemembered(): void
+    {
+        $file = $this->directory->path('public/a.png');
+
+        $this->cache->remember($file, 410);
+
+        self::assertSame(410, $this->cache->lookup($file));
+    }
+
+    public function testOtherStatusesAreNotRemembered(): void
+    {
+        $file = $this->directory->path('public/a.png');
+
+        $this->cache->remember($file, 500);
+
+        self::assertNull($this->cache->lookup($file));
+        self::assertDirectoryDoesNotExist($this->directory->path('state'));
     }
 
     public function testMarkerExpiresAfterTheTtl(): void
     {
-        $file = $this->directory->path('a.png');
+        $file = $this->directory->path('public/a.png');
         $this->cache->remember($file);
+        $slot = $this->directory->path('state/' . self::slotOf($file));
 
-        touch($file . '.404', time() - 299);
+        touch($slot, time() - 299);
         clearstatcache();
         self::assertTrue($this->cache->isFresh($file));
 
-        touch($file . '.404', time() - 300);
+        touch($slot, time() - 300);
         clearstatcache();
         self::assertFalse($this->cache->isFresh($file));
     }
 
     public function testForget(): void
     {
-        $file = $this->directory->path('a.png');
+        $file = $this->directory->path('public/a.png');
         $this->cache->remember($file);
 
         $this->cache->forget($file);
         $this->cache->forget($file);
 
-        self::assertFileDoesNotExist($file . '.404');
         self::assertFalse($this->cache->isFresh($file));
+        self::assertSame([], self::filesIn($this->directory->path('state')));
     }
 
-    public function testDirectoryNamedLikeAMarkerIsNotAMarker(): void
+    public function testAnotherEntryInTheSlotIsNeitherAnsweredNorForgotten(): void
     {
-        mkdir($this->directory->path('a.png.404'));
+        $file = $this->directory->path('public/a.png');
+        $other = $this->directory->path('public/b.png');
+        $this->cache->remember($file);
+        $slot = $this->directory->path('state/' . self::slotOf($file));
+        // The slot of $file holding the marker of $other.
+        file_put_contents($slot, '404 ' . hash('sha256', $other) . "\n");
 
-        self::assertFalse($this->cache->isFresh($this->directory->path('a.png')));
+        self::assertNull($this->cache->lookup($file));
+        $this->cache->forget($file);
+        self::assertFileExists($slot);
+    }
+
+    public function testACorruptSlotIsNotAMarker(): void
+    {
+        $file = $this->directory->path('public/a.png');
+        $this->cache->remember($file);
+        file_put_contents($this->directory->path('state/' . self::slotOf($file)), 'garbage');
+
+        self::assertNull($this->cache->lookup($file));
     }
 
     public function testZeroTtlNeverAnswersFromTheMarker(): void
     {
-        $cache = new NegativeCache(new FilesystemStorage(), 0);
-        $file = $this->directory->path('a.png');
+        $cache = new NegativeCache(new FilesystemStorage(), $this->directory->path('state'), 0);
+        $file = $this->directory->path('public/a.png');
         $cache->remember($file);
 
         self::assertFalse($cache->isFresh($file));
+    }
+
+    private static function slotOf(string $file): string
+    {
+        return substr(hash('sha256', $file), 0, 3) . '.neg';
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function filesIn(string $directory): array
+    {
+        $entries = scandir($directory);
+        self::assertIsArray($entries);
+
+        return array_values(array_diff($entries, ['.', '..']));
     }
 }

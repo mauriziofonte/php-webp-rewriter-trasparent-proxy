@@ -25,6 +25,13 @@ use Psr\Log\LoggerInterface;
  */
 final class TestKernel
 {
+    /**
+     * Directory below the cache directory that stands for var/ of the
+     * project: the kernel state (negative cache) lives there, and the test
+     * removes it with the cache directory.
+     */
+    public const STATE_DIRECTORY = '.var';
+
     public static function create(
         Config $config,
         string $cacheDirectory,
@@ -33,7 +40,7 @@ final class TestKernel
         LoggerInterface $logger
     ): ProxyKernel {
         $storage = new FilesystemStorage();
-        $negativeCache = new NegativeCache($storage, $config->getNegativeCacheTtl());
+        $negativeCache = new NegativeCache($storage, $cacheDirectory . '/' . self::STATE_DIRECTORY . '/negative', $config->getNegativeCacheTtl());
         $responses = ResponseFactory::fromConfig($config);
 
         return new ProxyKernel(

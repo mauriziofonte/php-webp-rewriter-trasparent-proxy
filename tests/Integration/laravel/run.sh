@@ -149,7 +149,7 @@ Route::get('/{path}', function (\Illuminate\Http\Request \$request) {
     ]);
     \$logger = app('log');
     \$storage = new \Mfonte\ProxyCdn\Cache\FilesystemStorage();
-    \$negativeCache = new \Mfonte\ProxyCdn\Cache\NegativeCache(\$storage, \$config->getNegativeCacheTtl());
+    \$negativeCache = new \Mfonte\ProxyCdn\Cache\NegativeCache(\$storage, storage_path('proxy-cdn-state/negative'), \$config->getNegativeCacheTtl());
     \$responses = \Mfonte\ProxyCdn\Http\ResponseFactory::fromConfig(\$config);
     \$kernel = new \Mfonte\ProxyCdn\Http\ProxyKernel(
         \$config,

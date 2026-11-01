@@ -14,8 +14,9 @@ composer.lock
 /.config.cache.php
 /.cached.env.php
 
-# Runtime logs
+# Runtime logs, and the state of the proxy (negative cache)
 /logs/
+/var/
 
 # Temporary files of FilesystemStorage::write(), left behind when a write is
 # interrupted between tempnam() and rename(), for example next to

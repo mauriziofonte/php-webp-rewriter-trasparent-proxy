@@ -58,6 +58,8 @@ ErrorDocument 403 "Access Forbidden"
     RewriteRule ^(.*/)?src(/.*)?$       - [R=403,L]
     RewriteRule ^(.*/)?bin(/.*)?$       - [R=403,L]
     RewriteRule ^(.*/)?logs(/.*)?$      - [R=403,L]
+    # The proxy state (negative cache) lives in var/ of the project root.
+    RewriteRule ^var(/.*)?$             - [R=403,L]
 
     # Refuse direct reads of the QS-bucket cache. The bucketing layout
     # (public/_qs/<sha256prefix>/) is an implementation detail; clients
