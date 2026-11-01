@@ -25,8 +25,8 @@ final class NegativeCacheTest extends CharacterizationTestCase
 
         self::assertErrorResponse($response, 404, 'Cannot read remote origin file', '/images/missing.png');
         self::assertCount(1, $this->negativeMarkers());
-        self::assertFileDoesNotExist($this->publicPath('images/missing.png.404'));
-        self::assertFileDoesNotExist($this->publicPath('images/missing.png'));
+        self::assertFileDoesNotExist($this->cachePath('images/missing.png.404'));
+        self::assertFileDoesNotExist($this->cachePath('images/missing.png'));
     }
 
     public function testFreshMarkerAnswersWithoutContactingTheOrigin(): void
@@ -53,7 +53,7 @@ final class NegativeCacheTest extends CharacterizationTestCase
         $response = $this->get('/images/gradient.png');
 
         self::assertSame(200, $response->getStatus());
-        self::assertSame('miss', $response->getHeader('X-Cache-Status'));
+        self::assertSame('MISS', $response->getHeader('X-Cache-Status'));
         self::assertSame([], $this->negativeMarkers());
         self::assertSame(2, $this->origin->countRequestsFor('/images/gradient.png'));
     }
@@ -87,7 +87,7 @@ final class NegativeCacheTest extends CharacterizationTestCase
         $this->get('/no/such/other/file.png?v=1');
 
         self::assertSame(404, $response->getStatus());
-        self::assertDirectoryDoesNotExist($this->publicPath('no'));
+        self::assertDirectoryDoesNotExist($this->cachePath('no'));
         self::assertSame($before, self::tree($this->publicPath('')));
         self::assertCount(2, $this->negativeMarkers());
     }

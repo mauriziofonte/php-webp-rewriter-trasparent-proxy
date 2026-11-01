@@ -26,7 +26,8 @@ use Psr\Log\LoggerInterface;
 final class ProxyKernelFactory
 {
     /**
-     * @param string             $publicDirectory the document root, where the cache entries are stored
+     * @param string             $publicDirectory the document root; the cache entries are stored in its
+     *                                            "_cache" directory (CacheKeyResolver::CACHE_DIRECTORY)
      * @param string             $stateDirectory  a writable directory outside the document root for the
      *                                            proxy state (var/ of the project)
      * @param WebpConverter|null $converter       null when no WebP variant is made
@@ -43,11 +44,12 @@ final class ProxyKernelFactory
         $storage = new FilesystemStorage();
         $negativeCache = new NegativeCache($storage, $stateDirectory . '/negative', $config->getNegativeCacheTtl());
         $responses = ResponseFactory::fromConfig($config);
+        $cacheDirectory = rtrim($publicDirectory, '/') . '/' . CacheKeyResolver::CACHE_DIRECTORY;
 
         return new ProxyKernel(
             $config,
             new PathSanitizer(),
-            new CacheKeyResolver($publicDirectory),
+            new CacheKeyResolver($cacheDirectory),
             QueryStringPolicy::fromConfig($config),
             new TrustedProxies($config->getTrustedProxies()),
             PurgeAuthenticator::fromConfig($config),

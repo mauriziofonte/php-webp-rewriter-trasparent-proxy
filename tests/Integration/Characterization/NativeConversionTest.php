@@ -37,11 +37,10 @@ final class NativeConversionTest extends CharacterizationTestCase
         self::assertSame('image/webp', $response->getHeader('Content-Type'));
         self::assertSame((string) strlen('FAKE-WEBP:' . $png), $response->getHeader('Content-Length'));
         self::assertSame('Accept', $response->getHeader('Vary'));
-        self::assertSame('miss', $response->getHeader('X-Cache-Status'));
-        // The validators of the original travel with the converted body.
-        self::assertSame('"' . md5($png) . '"', $response->getHeader('ETag'));
-        self::assertStringEqualsFile($this->publicPath('images/gradient.png'), $png);
-        self::assertStringEqualsFile($this->publicPath('images/gradient.webp'), 'FAKE-WEBP:' . $png);
+        self::assertSame('MISS', $response->getHeader('X-Cache-Status'));
+        self::assertSame(self::etagOf($this->cachePath('.webp/images/gradient.png.webp')), $response->getHeader('ETag'));
+        self::assertStringEqualsFile($this->cachePath('images/gradient.png'), $png);
+        self::assertStringEqualsFile($this->cachePath('.webp/images/gradient.png.webp'), 'FAKE-WEBP:' . $png);
     }
 
     public function testCwebpIsCalledOnAScratchFileThatIsRenamed(): void
@@ -50,12 +49,13 @@ final class NativeConversionTest extends CharacterizationTestCase
 
         $calls = $this->cwebpCalls();
         self::assertCount(1, $calls);
-        $source = $this->publicPath('images/gradient.png');
+        $source = $this->cachePath('images/gradient.png');
         self::assertMatchesRegularExpression(
-            '#^-quiet -m 4 ' . preg_quote($source, '#') . ' -o ' . preg_quote($this->publicPath('images/gradient.webp'), '#') . '\.tmp\.[0-9a-f]{8}$#',
+            '#^-quiet -m 4 ' . preg_quote($source, '#') . ' -o ' . preg_quote($this->cachePath('.webp/images/gradient.png.webp'), '#') . '\.tmp\.[0-9a-f]{8}$#',
             $calls[0]
         );
-        self::assertSame(['.', '..', 'gradient.png', 'gradient.webp'], scandir($this->publicPath('images')));
+        self::assertSame(['.', '..', 'gradient.png'], scandir($this->cachePath('images')));
+        self::assertSame(['.', '..', 'gradient.png.webp'], scandir($this->cachePath('.webp/images')));
     }
 
     public function testMissForOtherClientsServesTheOriginalAndConvertsEagerly(): void
@@ -66,8 +66,8 @@ final class NativeConversionTest extends CharacterizationTestCase
 
         self::assertSame($png, $response->getBody());
         self::assertSame('image/png', $response->getHeader('Content-Type'));
-        self::assertSame('Origin', $response->getHeader('Vary'));
-        self::assertFileExists($this->publicPath('images/gradient.webp'));
+        self::assertSame('Accept', $response->getHeader('Vary'), 'the variant depends on Accept (finding P-1)');
+        self::assertFileExists($this->cachePath('.webp/images/gradient.png.webp'));
     }
 
     /**
@@ -79,7 +79,7 @@ final class NativeConversionTest extends CharacterizationTestCase
 
         $response = $this->get('/images/gradient.png', self::ACCEPT_WEBP);
 
-        self::assertSame('hit', $response->getHeader('X-Cache-Status'));
+        self::assertSame('HIT', $response->getHeader('X-Cache-Status'));
         self::assertSame('image/webp', $response->getHeader('Content-Type'));
         self::assertSame('Accept', $response->getHeader('Vary'));
         self::assertSame('FAKE-WEBP:' . self::fixture('images/gradient.png'), $response->getBody());
@@ -89,13 +89,13 @@ final class NativeConversionTest extends CharacterizationTestCase
     public function testQueryStringHitConvertsLazilyWhenTheSiblingIsMissing(): void
     {
         $this->get('/images/gradient.png?v=1');
-        unlink($this->bucketPath('v=1', 'images/gradient.webp'));
+        unlink($this->bucketPath('v=1', '.webp/images/gradient.png.webp'));
 
         $response = $this->get('/images/gradient.png?v=1', self::ACCEPT_WEBP);
 
-        self::assertSame('hit', $response->getHeader('X-Cache-Status'));
+        self::assertSame('HIT', $response->getHeader('X-Cache-Status'));
         self::assertSame('image/webp', $response->getHeader('Content-Type'));
-        self::assertFileExists($this->bucketPath('v=1', 'images/gradient.webp'));
+        self::assertFileExists($this->bucketPath('v=1', '.webp/images/gradient.png.webp'));
         self::assertCount(2, $this->cwebpCalls());
         self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
     }
@@ -106,7 +106,7 @@ final class NativeConversionTest extends CharacterizationTestCase
 
         $response = $this->get('/images/gradient.png?v=1');
 
-        self::assertSame('hit', $response->getHeader('X-Cache-Status'));
+        self::assertSame('HIT', $response->getHeader('X-Cache-Status'));
         self::assertSame('image/png', $response->getHeader('Content-Type'));
         self::assertSame(self::fixture('images/gradient.png'), $response->getBody());
     }
@@ -125,8 +125,8 @@ final class NativeConversionTest extends CharacterizationTestCase
             "The request could not be processed.\nInternal server error: Image conversion failed: Conversion failed: output file not created.",
             $response->getBody()
         );
-        self::assertFileExists($this->publicPath('images/broken.png'));
-        self::assertFileDoesNotExist($this->publicPath('images/broken.webp'));
+        self::assertFileExists($this->cachePath('images/broken.png'));
+        self::assertFileDoesNotExist($this->cachePath('.webp/images/broken.png.webp'));
     }
 
     /**
@@ -142,7 +142,7 @@ final class NativeConversionTest extends CharacterizationTestCase
 
         foreach ([$first, $second] as $response) {
             self::assertSame(200, $response->getStatus());
-            self::assertSame('hit', $response->getHeader('X-Cache-Status'));
+            self::assertSame('HIT', $response->getHeader('X-Cache-Status'));
             self::assertSame('image/png', $response->getHeader('Content-Type'));
         }
         self::assertCount(3, $this->cwebpCalls());

@@ -35,8 +35,8 @@ final class CircuitBreakerTest extends CharacterizationTestCase
         self::assertSame(2, $this->origin->countRequestsFor('/images/gradient.png'));
         self::assertCount(1, $this->breakerStates());
         self::assertSame([], $this->negativeMarkers());
-        self::assertFileDoesNotExist($this->publicPath('images/gradient.png.netfail'));
-        self::assertFileDoesNotExist($this->publicPath('images/gradient.png'));
+        self::assertFileDoesNotExist($this->cachePath('images/gradient.png.netfail'));
+        self::assertFileDoesNotExist($this->cachePath('images/gradient.png'));
     }
 
     /**
@@ -63,8 +63,8 @@ final class CircuitBreakerTest extends CharacterizationTestCase
         self::assertErrorResponse($other, 503, 'Upstream temporarily unavailable', '/js/app.js');
         self::assertSame(0, $this->origin->countRequestsFor('/js/app.js'));
         self::assertSame(200, $cached->getStatus());
-        self::assertSame('hit', $cached->getHeader('X-Cache-Status'));
-        self::assertFileDoesNotExist($this->publicPath('js/app.js.netfail'));
+        self::assertSame('HIT', $cached->getHeader('X-Cache-Status'));
+        self::assertFileDoesNotExist($this->cachePath('js/app.js.netfail'));
     }
 
     public function testAnExpiredBreakerLetsAProbeThroughAndClosesOnSuccess(): void

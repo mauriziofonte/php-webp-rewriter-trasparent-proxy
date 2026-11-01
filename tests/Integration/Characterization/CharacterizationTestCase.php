@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Integration\Characterization;
 
+use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Tests\Fixtures\FakeOrigin\FakeOriginServer;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\ProxyServer;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\RawHttpResponse;
@@ -157,12 +158,21 @@ SH;
     }
 
     /**
-     * Directory of the query-string bucket that 2.x derives from a canonical
-     * query string: public/_qs/<first 16 hex digits of its SHA-256>/.
+     * Absolute path of the cache entry of a path without query string:
+     * public/_cache/127.0.0.1/<path>.
+     */
+    protected function cachePath(string $relativePath): string
+    {
+        return $this->publicPath('_cache/127.0.0.1/' . ltrim($relativePath, '/'));
+    }
+
+    /**
+     * Absolute path of the cache entry of a canonical query string:
+     * public/_cache/127.0.0.1/.q/<query>/<path>, or .qh/<hash>/<path>.
      */
     protected function bucketPath(string $canonicalQuery, string $relativePath): string
     {
-        return $this->publicPath('_qs/' . substr(hash('sha256', $canonicalQuery), 0, 16) . '/' . ltrim($relativePath, '/'));
+        return $this->cachePath(CacheKeyResolver::bucketOf($canonicalQuery) . '/' . ltrim($relativePath, '/'));
     }
 
     /**
@@ -175,6 +185,17 @@ SH;
         $files = glob($this->proxy->getProjectDirectory() . '/var/negative/*.neg');
 
         return $files === false ? [] : $files;
+    }
+
+    /**
+     * The entity tag nginx, and the proxy, give a file: "<mtime>-<size>" in
+     * hexadecimal.
+     */
+    protected static function etagOf(string $file): string
+    {
+        clearstatcache();
+
+        return sprintf('"%x-%x"', (int) filemtime($file), (int) filesize($file));
     }
 
     protected static function fixture(string $relativePath): string

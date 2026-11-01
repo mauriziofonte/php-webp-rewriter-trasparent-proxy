@@ -28,7 +28,8 @@ final class CacheWriteFailureTest extends CharacterizationTestCase
     #[Group('regression')]
     public function testCacheDirectoryFailureAnswers500P21(): void
     {
-        file_put_contents($this->publicPath('nested'), 'a file where a directory is needed');
+        mkdir($this->cachePath(''), 0777, true);
+        file_put_contents($this->cachePath('nested'), 'a file where a directory is needed');
 
         $response = $this->get('/nested/deep.css');
 
@@ -45,11 +46,11 @@ final class CacheWriteFailureTest extends CharacterizationTestCase
     #[Group('regression')]
     public function testCacheFileFailureAnswers500P21(): void
     {
-        mkdir($this->publicPath('css/site.css'), 0777, true);
+        mkdir($this->cachePath('css/site.css'), 0777, true);
 
         $response = $this->get('/css/site.css');
 
         self::assertErrorResponse($response, 500, 'Cannot create cache file', '/css/site.css');
-        self::assertSame(['.', '..', 'site.css'], scandir($this->publicPath('css')));
+        self::assertSame(['.', '..', 'site.css'], scandir($this->cachePath('css')));
     }
 }

@@ -77,10 +77,10 @@ final class ProxyKernelTest extends TestCase
         $response = $this->handle('https://cdn.example.test/js/app.js', [], self::ORIGIN . '/js/app.js', 'console.log(1);');
 
         self::assertSame(200, $response->getStatusCode());
-        self::assertSame('console.log(1);', $response->getContent());
-        self::assertSame('miss', $response->headers->get('x-cache-status'));
+        self::assertSame('console.log(1);', self::body($response));
+        self::assertSame('MISS', $response->headers->get('x-cache-status'));
         self::assertSame('max-age=31536000, must-revalidate, public', $response->headers->get('cache-control'));
-        self::assertSame('console.log(1);', file_get_contents($this->directory->path('js/app.js')));
+        self::assertSame('console.log(1);', file_get_contents($this->cachePath('js/app.js')));
         self::assertSame([self::ORIGIN . '/js/app.js'], $this->origin->getRequestedUrls());
     }
 
@@ -97,36 +97,39 @@ final class ProxyKernelTest extends TestCase
         $font = $this->kernel()->handle(Request::create('https://cdn.example.test/fonts/a.woff2'));
         $hit = $this->kernel()->handle(Request::create('https://cdn.example.test/css/a.css'));
 
-        self::assertSame('miss', $css->headers->get('x-cache-status'));
+        self::assertSame('MISS', $css->headers->get('x-cache-status'));
         self::assertSame('text/css', $css->headers->get('content-type'));
         self::assertSame('font/woff2', $font->headers->get('content-type'));
-        self::assertSame('hit', $hit->headers->get('x-cache-status'));
+        self::assertSame('HIT', $hit->headers->get('x-cache-status'));
         self::assertSame('text/css', $hit->headers->get('content-type'));
     }
 
-    public function testOnlyTheWhitelistedOriginHeadersAreForwarded(): void
+    /**
+     * No header of the origin reaches the client: the miss carries the
+     * headers a hit carries, its entity tag and Last-Modified those of the
+     * cache file, so that a client revalidates against the web server.
+     */
+    public function testNoOriginHeaderIsForwarded(): void
     {
         $this->origin->serve(self::ORIGIN . '/js/app.js', 'x', [
             'content-type' => 'application/javascript',
             'etag' => '"e"',
             'last-modified' => 'Tue, 01 Sep 2026 10:00:00 GMT',
             'vary' => 'Origin',
-            'accept-ranges' => 'bytes',
-            'content-disposition' => '',
-            'content-length' => '0',
+            'content-disposition' => 'attachment',
             'set-cookie' => 'session=secret',
             'x-origin-only' => 'yes',
         ]);
 
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'));
+        $file = $this->cachePath('js/app.js');
 
         self::assertSame('text/javascript', $response->headers->get('content-type'), 'the type of the extension');
-        self::assertSame('"e"', $response->headers->get('etag'));
-        self::assertSame('Tue, 01 Sep 2026 10:00:00 GMT', $response->headers->get('last-modified'));
-        self::assertSame('Origin', $response->headers->get('vary'));
-        self::assertSame('bytes', $response->headers->get('accept-ranges'));
-        self::assertFalse($response->headers->has('content-disposition'), 'empty values are dropped');
-        self::assertFalse($response->headers->has('content-length'), '"0" is dropped, as in 2.x');
+        self::assertSame(sprintf('"%x-%x"', filemtime($file), 1), $response->headers->get('etag'));
+        self::assertSame(gmdate('D, d M Y H:i:s', (int) filemtime($file)) . ' GMT', $response->headers->get('last-modified'));
+        self::assertFalse($response->headers->has('vary'));
+        self::assertSame('1', $response->headers->get('content-length'));
+        self::assertFalse($response->headers->has('content-disposition'));
         self::assertFalse($response->headers->has('set-cookie'));
         self::assertFalse($response->headers->has('x-origin-only'));
     }
@@ -148,7 +151,7 @@ final class ProxyKernelTest extends TestCase
         self::assertCount(1, $requests);
         self::assertSame(self::ORIGIN . '/js/app.js?ver=2&v=1', $requests[0]->getUrl());
         self::assertSame(['Referer' => 'http://cdn.example.test:8080'], $requests[0]->getHeaders());
-        self::assertFileExists($this->directory->path('_qs/' . substr(hash('sha256', 'v=1&ver=2'), 0, 16) . '/js/app.js'));
+        self::assertFileExists($this->cachePath('.q/v=1&ver=2/js/app.js'));
     }
 
     public function testTheRefererSchemeComesFromATrustedProxyOnly(): void
@@ -187,10 +190,10 @@ final class ProxyKernelTest extends TestCase
         $again = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
         $busted = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css?_=1700000000'));
 
-        self::assertSame('hit', $again->headers->get('x-cache-status'));
-        self::assertSame('hit', $busted->headers->get('x-cache-status'));
+        self::assertSame('HIT', $again->headers->get('x-cache-status'));
+        self::assertSame('HIT', $busted->headers->get('x-cache-status'));
         self::assertCount(1, $this->origin->getRequests());
-        self::assertDirectoryDoesNotExist($this->directory->path('_qs'));
+        self::assertDirectoryDoesNotExist($this->cachePath('.q'));
     }
 
     /**
@@ -205,8 +208,8 @@ final class ProxyKernelTest extends TestCase
         $old = $this->kernel()->handle(Request::create('https://cdn.example.test/css/app.css?id=old'));
         $new = $this->kernel()->handle(Request::create('https://cdn.example.test/css/app.css?id=new'));
 
-        self::assertSame('old build', $old->getContent());
-        self::assertSame('new build', $new->getContent());
+        self::assertSame('old build', self::body($old));
+        self::assertSame('new build', self::body($new));
         self::assertCount(2, $this->origin->getRequests());
     }
 
@@ -234,14 +237,14 @@ final class ProxyKernelTest extends TestCase
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1&purge=0'));
 
         self::assertSame(200, $response->getStatusCode());
-        self::assertSame('versioned', $response->getContent());
-        self::assertSame('hit', $response->headers->get('x-cache-status'));
+        self::assertSame('versioned', self::body($response));
+        self::assertSame('HIT', $response->headers->get('x-cache-status'));
         self::assertSame('text/javascript', $response->headers->get('content-type'));
         self::assertSame('9', $response->headers->get('content-length'));
-        self::assertSame('Accept', $response->headers->get('vary'));
+        self::assertFalse($response->headers->has('vary'));
         self::assertSame('max-age=31536000, must-revalidate, public', $response->headers->get('cache-control'));
         self::assertCount(1, $this->origin->getRequests());
-        self::assertFileExists($this->directory->path('_qs/' . substr(hash('sha256', 'v=1'), 0, 16) . '/js/app.js'));
+        self::assertFileExists($this->cachePath('.q/v=1/js/app.js'));
     }
 
     public function testOptionsGetsThePreflightAnswer(): void
@@ -297,7 +300,7 @@ final class ProxyKernelTest extends TestCase
         $response = $this->kernel()->handle($request);
 
         self::assertSame(400, $response->getStatusCode());
-        self::assertStringContainsString('Error code: Invalid Host header.', (string) $response->getContent());
+        self::assertStringContainsString('Error code: Invalid Host header.', self::body($response));
         self::assertSame([], $this->origin->getRequests());
         self::assertSame([], $this->logger->getRecords());
     }
@@ -307,9 +310,9 @@ final class ProxyKernelTest extends TestCase
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'HEAD'));
 
         self::assertSame(200, $response->getStatusCode());
-        self::assertSame('', $response->getContent());
+        self::assertSame('', self::body($response));
         self::assertSame((string) strlen(self::CSS), $response->headers->get('content-length'));
-        self::assertFileExists($this->directory->path('css/site.css'));
+        self::assertFileExists($this->cachePath('css/site.css'));
     }
 
     /**
@@ -323,7 +326,7 @@ final class ProxyKernelTest extends TestCase
         self::assertSame($status, $response->getStatusCode());
         self::assertSame(
             "The request could not be processed.\nError code: " . $code . ".\nRay ID: " . md5($path),
-            $response->getContent()
+            self::body($response)
         );
         self::assertSame('text/plain; charset=UTF-8', $response->headers->get('content-type'));
         self::assertSame([], $this->origin->getRequests());
@@ -347,10 +350,10 @@ final class ProxyKernelTest extends TestCase
         $second = $this->kernel()->handle(Request::create('https://cdn.example.test/missing.css'));
 
         self::assertSame(404, $first->getStatusCode());
-        self::assertStringContainsString('Error code: Cannot read remote origin file.', (string) $first->getContent());
+        self::assertStringContainsString('Error code: Cannot read remote origin file.', self::body($first));
         self::assertSame(404, $second->getStatusCode());
         self::assertCount(1, $this->origin->getRequests());
-        self::assertFileDoesNotExist($this->directory->path('missing.css.404'));
+        self::assertFileDoesNotExist($this->cachePath('missing.css.404'));
         self::assertCount(1, glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/negative/*.neg')) ?: []);
     }
 
@@ -365,7 +368,7 @@ final class ProxyKernelTest extends TestCase
     #[Group('regression')]
     public function testTheBreakerOpensForTheWholeOriginP14(): void
     {
-        $this->directory->write('css/cached.css', 'cached');
+        $this->writeCache('css/cached.css', 'cached');
         $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_TIMEOUT, 0, 28, 'timed out'));
 
         $first = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'));
@@ -374,11 +377,11 @@ final class ProxyKernelTest extends TestCase
 
         self::assertSame(503, $first->getStatusCode());
         self::assertSame('30', $first->headers->get('retry-after'));
-        self::assertStringContainsString('Error code: Upstream temporarily unavailable.', (string) $first->getContent());
+        self::assertStringContainsString('Error code: Upstream temporarily unavailable.', self::body($first));
         self::assertSame(503, $other->getStatusCode());
         self::assertSame(200, $cached->getStatusCode());
         self::assertSame(['https://origin.example.test/js/app.js'], $this->origin->getRequestedUrls());
-        self::assertFileDoesNotExist($this->directory->path('js/app.js.netfail'));
+        self::assertFileDoesNotExist($this->cachePath('js/app.js.netfail'));
     }
 
     public function testTheBreakerOpensAfterTheThreshold(): void
@@ -530,8 +533,8 @@ final class ProxyKernelTest extends TestCase
         self::assertSame(301, $response->getStatusCode());
         self::assertSame('/js/app.min.js?v=2', $response->headers->get('location'));
         self::assertStringContainsString('no-store', (string) $response->headers->get('cache-control'));
-        self::assertSame('', $response->getContent());
-        self::assertFileDoesNotExist($this->directory->path('js/app.js'));
+        self::assertSame('', self::body($response));
+        self::assertFileDoesNotExist($this->cachePath('js/app.js'));
         self::assertSame(200, $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'))->getStatusCode());
     }
 
@@ -556,7 +559,7 @@ final class ProxyKernelTest extends TestCase
         $second = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'));
 
         self::assertSame(410, $second->getStatusCode());
-        self::assertStringContainsString('Error code: Remote origin file is gone.', (string) $second->getContent());
+        self::assertStringContainsString('Error code: Remote origin file is gone.', self::body($second));
         self::assertCount(1, $this->origin->getRequests());
     }
 
@@ -595,18 +598,17 @@ final class ProxyKernelTest extends TestCase
             self::assertSame(401, $response->getStatusCode());
             self::assertSame('Bearer realm="proxy-cdn purge"', $response->headers->get('www-authenticate'));
             self::assertStringContainsString('no-store', (string) $response->headers->get('cache-control'));
-            self::assertStringContainsString('Error code: Purge requires a purge key.', (string) $response->getContent());
-            self::assertStringContainsString('Send "PURGE <url>" with "Authorization: Bearer <key>"', (string) $response->getContent());
+            self::assertStringContainsString('Error code: Purge requires a purge key.', self::body($response));
+            self::assertStringContainsString('Send "PURGE <url>" with "Authorization: Bearer <key>"', self::body($response));
         }
         self::assertCount(1, $this->origin->getRequests());
-        self::assertSame('old', $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'))->getContent());
+        self::assertSame('old', self::body($this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'))));
     }
 
     public function testPurgeWithAKeyRemovesTheEntry(): void
     {
         $this->origin->serve(self::ORIGIN . '/js/app.js?v=1', 'old');
         $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'));
-        $bucket = '_qs/' . substr(hash('sha256', 'v=1'), 0, 16);
         $this->logger = new MemoryLogger();
 
         $response = $this->purgingKernel()->handle(Request::create(
@@ -620,10 +622,10 @@ final class ProxyKernelTest extends TestCase
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('application/json', $response->headers->get('content-type'));
-        self::assertSame(['purged' => true, 'path' => '/js/app.js', 'query' => 'v=1', 'removed' => 1], json_decode((string) $response->getContent(), true));
-        self::assertFileDoesNotExist($this->directory->path($bucket . '/js/app.js'));
+        self::assertSame(['purged' => true, 'path' => '/js/app.js', 'query' => 'v=1', 'removed' => 1], json_decode(self::body($response), true));
+        self::assertFileDoesNotExist($this->cachePath('.q/v=1/js/app.js'));
         self::assertSame(
-            [['level' => 'notice', 'message' => 'purge', 'context' => ['path' => '/js/app.js', 'query' => 'v=1', 'removed' => 1, 'auth' => 'bearer', 'client' => '192.0.2.7']]],
+            [['level' => 'notice', 'message' => 'purge', 'context' => ['host' => 'cdn.example.test', 'path' => '/js/app.js', 'query' => 'v=1', 'removed' => 1, 'auth' => 'bearer', 'client' => '192.0.2.7']]],
             $this->logger->getRecords()
         );
         self::assertCount(1, $this->origin->getRequests());
@@ -631,7 +633,7 @@ final class ProxyKernelTest extends TestCase
 
     public function testPurgeWithoutAValidKeyIsRefused(): void
     {
-        $this->directory->write('css/site.css', 'cached');
+        $this->writeCache('css/site.css', 'cached');
 
         $anonymous = $this->purgingKernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'PURGE'));
         $wrong = $this->purgingKernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer wrong-secret-0123456789']));
@@ -640,29 +642,29 @@ final class ProxyKernelTest extends TestCase
         foreach ([$anonymous, $wrong, $disabled] as $response) {
             self::assertSame(401, $response->getStatusCode());
         }
-        self::assertFileExists($this->directory->path('css/site.css'));
+        self::assertFileExists($this->cachePath('css/site.css'));
         self::assertCount(3, $this->logger->recordsWithMessage('purge refused'));
     }
 
     public function testPurgeOfARasterRemovesItsWebpVariantOnly(): void
     {
-        $this->directory->write('images/logo.png', 'PNG');
-        $this->directory->write('images/logo.webp', 'WEBP');
-        $this->directory->write('images/logo.jpg', 'another URL');
+        $this->writeCache('images/logo.png', 'PNG');
+        $this->writeCache('.webp/images/logo.png.webp', 'WEBP');
+        $this->writeCache('images/logo.jpg', 'another URL');
 
         $response = $this->purgingKernel()->handle(Request::create('https://cdn.example.test/images/logo.png', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
 
-        $document = json_decode((string) $response->getContent(), true);
+        $document = json_decode(self::body($response), true);
         self::assertIsArray($document);
         self::assertSame(2, $document['removed'] ?? null);
-        self::assertFileDoesNotExist($this->directory->path('images/logo.png'));
-        self::assertFileDoesNotExist($this->directory->path('images/logo.webp'));
-        self::assertFileExists($this->directory->path('images/logo.jpg'));
+        self::assertFileDoesNotExist($this->cachePath('images/logo.png'));
+        self::assertFileDoesNotExist($this->cachePath('.webp/images/logo.png.webp'));
+        self::assertFileExists($this->cachePath('images/logo.jpg'));
     }
 
     public function testPurgeWithAnHmacSignatureRemovesTheEntry(): void
     {
-        $this->directory->write('css/site.css', 'cached');
+        $this->writeCache('css/site.css', 'cached');
         $timestamp = (string) time();
         $signature = hash_hmac('sha256', PurgeAuthenticator::signedMessage('cdn.example.test', '/css/site.css', $timestamp), self::PURGE_SECRET);
 
@@ -672,7 +674,7 @@ final class ProxyKernelTest extends TestCase
         ]));
 
         self::assertSame(200, $response->getStatusCode());
-        self::assertFileDoesNotExist($this->directory->path('css/site.css'));
+        self::assertFileDoesNotExist($this->cachePath('css/site.css'));
         self::assertSame('hmac', $this->logger->recordsWithMessage('purge')[0]['context']['auth'] ?? null);
     }
 
@@ -697,7 +699,7 @@ final class ProxyKernelTest extends TestCase
 
         $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
 
-        self::assertSame('hit', $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'))->headers->get('x-cache-status'));
+        self::assertSame('HIT', $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'))->headers->get('x-cache-status'));
     }
 
     /**
@@ -713,10 +715,10 @@ final class ProxyKernelTest extends TestCase
         $css = "a { background: url(/a.png); }\nb { background: url('/b.png'); }\nc { background: url(\"/c.png\"); }\nd { background: url(//cdn/d.png); }\n";
         $this->origin->serve(self::ORIGIN . '/css/rewrite.css', $css, ['content-length' => (string) strlen($css)]);
 
-        $response = $this->kernel()->handle(Request::create('https://attacker.example.test/css/rewrite.css'));
+        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/rewrite.css'));
 
-        self::assertSame($css, $response->getContent());
-        self::assertSame($css, file_get_contents($this->directory->path('css/rewrite.css')));
+        self::assertSame($css, self::body($response));
+        self::assertSame($css, file_get_contents($this->cachePath('css/rewrite.css')));
         self::assertSame((string) strlen($css), $response->headers->get('content-length'));
     }
 
@@ -726,34 +728,35 @@ final class ProxyKernelTest extends TestCase
 
         $response = $this->kernel($converter)->handle(self::webpRequest('https://cdn.example.test/images/logo.png'));
 
-        self::assertSame('FAKE-WEBP:PNG-BYTES', $response->getContent());
+        self::assertSame('FAKE-WEBP:PNG-BYTES', self::body($response));
         self::assertSame('image/webp', $response->headers->get('content-type'));
         self::assertSame('19', $response->headers->get('content-length'));
         self::assertSame('Accept', $response->headers->get('vary'));
-        self::assertSame('miss', $response->headers->get('x-cache-status'));
-        self::assertSame([$this->directory->path('images/logo.png')], $converter->getSources());
-        self::assertSame('PNG-BYTES', file_get_contents($this->directory->path('images/logo.png')));
+        self::assertSame('MISS', $response->headers->get('x-cache-status'));
+        self::assertSame([$this->cachePath('images/logo.png')], $converter->getSources());
+        self::assertSame('PNG-BYTES', file_get_contents($this->cachePath('images/logo.png')));
     }
 
     public function testOtherClientsGetTheOriginalAndTheSiblingIsStillWritten(): void
     {
         $response = $this->kernel(new FakeWebpConverter())->handle(Request::create('https://cdn.example.test/images/logo.png'));
 
-        self::assertSame('PNG-BYTES', $response->getContent());
+        self::assertSame('PNG-BYTES', self::body($response));
         self::assertSame('image/png', $response->headers->get('content-type'));
-        self::assertFalse($response->headers->has('vary'));
-        self::assertFileExists($this->directory->path('images/logo.webp'));
+        self::assertSame('Accept', $response->headers->get('vary'), 'finding P-1: the variant depends on Accept');
+        self::assertFileExists($this->cachePath('.webp/images/logo.png.webp'));
     }
 
     public function testAnExistingSiblingIsServedToWebpCapableClients(): void
     {
-        $this->directory->write('images/logo.webp', 'STORED-WEBP');
+        $this->writeCache('images/logo.png', 'STORED-PNG');
+        $this->writeCache('.webp/images/logo.png.webp', 'STORED-WEBP');
 
         $response = $this->kernel()->handle(self::webpRequest('https://cdn.example.test/images/logo.png'));
 
-        self::assertSame('STORED-WEBP', $response->getContent());
+        self::assertSame('STORED-WEBP', self::body($response));
         self::assertSame('image/webp', $response->headers->get('content-type'));
-        self::assertSame('hit', $response->headers->get('x-cache-status'));
+        self::assertSame('HIT', $response->headers->get('x-cache-status'));
         self::assertSame([], $this->origin->getRequests());
     }
 
@@ -765,8 +768,8 @@ final class ProxyKernelTest extends TestCase
 
         $response = $this->kernel($converter)->handle(self::webpRequest('https://cdn.example.test/images/logo.png?v=2'));
 
-        self::assertSame('FAKE-WEBP:PNG-V2', $response->getContent());
-        self::assertSame('hit', $response->headers->get('x-cache-status'));
+        self::assertSame('FAKE-WEBP:PNG-V2', self::body($response));
+        self::assertSame('HIT', $response->headers->get('x-cache-status'));
         self::assertCount(1, $converter->getSources());
         self::assertCount(1, $this->origin->getRequests());
     }
@@ -778,27 +781,27 @@ final class ProxyKernelTest extends TestCase
         $response = $this->kernel(new FakeWebpConverter())->handle(self::webpRequest('https://cdn.example.test/images/broken.png'));
 
         self::assertSame(500, $response->getStatusCode());
-        self::assertSame("The request could not be processed.\nInternal server error: Image conversion failed: Fake conversion failed.", $response->getContent());
+        self::assertSame("The request could not be processed.\nInternal server error: Image conversion failed: Fake conversion failed.", self::body($response));
     }
 
     public function testAnUncreatableDirectoryIsReported(): void
     {
-        $this->directory->write('css', 'a file where a directory is expected');
+        $this->writeCache('css', 'a file where a directory is expected');
 
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
 
         self::assertSame(500, $response->getStatusCode());
-        self::assertStringContainsString('Error code: Cannot create cache directory.', (string) $response->getContent());
+        self::assertStringContainsString('Error code: Cannot create cache directory.', self::body($response));
     }
 
     public function testAnUnwritableFileIsReported(): void
     {
-        $this->directory->write('css/site.css/occupied', 'a directory where the file is expected');
+        $this->writeCache('css/site.css/occupied', 'a directory where the file is expected');
 
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
 
         self::assertSame(500, $response->getStatusCode());
-        self::assertStringContainsString('Error code: Cannot create cache file.', (string) $response->getContent());
+        self::assertStringContainsString('Error code: Cannot create cache file.', self::body($response));
     }
 
     public function testTheResponseIsReturnedNotSent(): void
@@ -877,5 +880,32 @@ final class ProxyKernelTest extends TestCase
     private static function webpRequest(string $uri): Request
     {
         return Request::create($uri, 'GET', [], [], [], ['HTTP_ACCEPT' => 'image/avif,image/webp,*/*']);
+    }
+
+    /**
+     * Absolute path of a cache file of the host cdn.example.test.
+     */
+    private function cachePath(string $relativePath): string
+    {
+        return $this->directory->path('_cache/cdn.example.test/' . $relativePath);
+    }
+
+    /**
+     * Writes a cache file of the host cdn.example.test.
+     */
+    private function writeCache(string $relativePath, string $contents): string
+    {
+        return $this->directory->write('_cache/cdn.example.test/' . $relativePath, $contents);
+    }
+
+    /**
+     * The body of a response, streamed or not.
+     */
+    private static function body(Response $response): string
+    {
+        ob_start();
+        $response->sendContent();
+
+        return (string) ob_get_clean();
     }
 }

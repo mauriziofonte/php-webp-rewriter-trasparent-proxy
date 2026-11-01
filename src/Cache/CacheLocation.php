@@ -5,27 +5,47 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Cache;
 
 /**
- * Where the cache entry of one request lives on disk: the file, its
- * directory and the ".webp" sibling that holds its converted copy.
+ * Where the cache entry of one request and its siblings live on disk.
+ *
+ * With D the bucket directory of the entry (CacheKeyResolver) and P its
+ * relative path:
+ *
+ *     D/P                 the entry, as the origin sent it
+ *     D/.avif/P.avif      its AVIF variant (raster images)
+ *     D/.webp/P.webp      its WEBP variant (raster images)
+ *
+ * The variants keep the name of the entry and add the extension of their
+ * format, so that the web server types them by that extension. Every
+ * sibling lives in a directory whose name starts with ".", which no
+ * request path names.
  *
  * Immutable; built by CacheKeyResolver.
  */
 final class CacheLocation
 {
+    public const FORMAT_AVIF = 'avif';
+
+    public const FORMAT_WEBP = 'webp';
+
     /**
-     * @var string
+     * The formats a raster entry may have a variant in, by preference.
      */
-    private $file;
+    public const FORMATS = [self::FORMAT_AVIF, self::FORMAT_WEBP];
 
     /**
      * @var string
      */
-    private $directory;
+    private $hostDirectory;
 
     /**
      * @var string
      */
-    private $webpFile;
+    private $bucket;
+
+    /**
+     * @var string
+     */
+    private $path;
 
     /**
      * @var string
@@ -33,38 +53,81 @@ final class CacheLocation
     private $canonicalQuery;
 
     /**
-     * @param string $file           absolute path of the cache file
-     * @param string $directory      absolute path of its directory, with a trailing separator
-     * @param string $webpFile       absolute path of the ".webp" sibling
+     * @param string $hostDirectory  absolute path of the directory of the host
+     * @param string $bucket         CacheKeyResolver::bucketOf() of the query string, "" for none
+     * @param string $path           decoded request path, without the leading "/"
      * @param string $canonicalQuery canonical query string that keys the entry, empty for none
      */
-    public function __construct(string $file, string $directory, string $webpFile, string $canonicalQuery)
+    public function __construct(string $hostDirectory, string $bucket, string $path, string $canonicalQuery)
     {
-        $this->file = $file;
-        $this->directory = $directory;
-        $this->webpFile = $webpFile;
+        $this->hostDirectory = $hostDirectory;
+        $this->bucket = $bucket;
+        $this->path = $path;
         $this->canonicalQuery = $canonicalQuery;
     }
 
+    /**
+     * The entry.
+     */
     public function getFile(): string
     {
-        return $this->file;
+        return $this->bucketDirectory() . DIRECTORY_SEPARATOR . $this->path;
     }
 
     /**
-     * Directory of the file, with a trailing separator.
+     * Directory of the entry, with a trailing separator.
      */
     public function getDirectory(): string
     {
-        return $this->directory;
+        return rtrim(dirname($this->getFile()), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
     }
 
     /**
-     * The file with its extension replaced by ".webp".
+     * The variant of the entry in $format (one of FORMATS).
      */
-    public function getWebpFile(): string
+    public function getVariantFile(string $format): string
     {
-        return $this->webpFile;
+        return $this->siblingDirectory($format) . DIRECTORY_SEPARATOR . $this->path . '.' . $format;
+    }
+
+    /**
+     * Every file of the entry: the entry and its variants.
+     *
+     * @return list<string>
+     */
+    public function getFiles(): array
+    {
+        $files = [$this->getFile()];
+        foreach (self::FORMATS as $format) {
+            $files[] = $this->getVariantFile($format);
+        }
+
+        return $files;
+    }
+
+    /**
+     * The directory of the host.
+     */
+    public function getHostDirectory(): string
+    {
+        return $this->hostDirectory;
+    }
+
+    /**
+     * The bucket of the query string, relative to the host directory: ""
+     * for none (see CacheKeyResolver::bucketOf()).
+     */
+    public function getBucket(): string
+    {
+        return $this->bucket;
+    }
+
+    /**
+     * The decoded request path, without the leading "/".
+     */
+    public function getRelativePath(): string
+    {
+        return $this->path;
     }
 
     /**
@@ -77,11 +140,28 @@ final class CacheLocation
     }
 
     /**
-     * Whether the entry lives in a query-string bucket (_qs/<hash>/), which
-     * the web server never serves by itself.
+     * Whether the entry lives in a query-string bucket.
      */
     public function isQueryStringBucket(): bool
     {
-        return $this->canonicalQuery !== '';
+        return $this->bucket !== '';
+    }
+
+    /**
+     * A string that names the entry and nothing else, for locks.
+     */
+    public function getKey(): string
+    {
+        return $this->getFile();
+    }
+
+    private function bucketDirectory(): string
+    {
+        return $this->hostDirectory . ($this->bucket === '' ? '' : DIRECTORY_SEPARATOR . $this->bucket);
+    }
+
+    private function siblingDirectory(string $kind): string
+    {
+        return $this->bucketDirectory() . DIRECTORY_SEPARATOR . '.' . $kind;
     }
 }

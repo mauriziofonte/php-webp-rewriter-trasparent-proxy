@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Image;
 
 /**
- * Converts a cached raster image to its WEBP variant, at the path the
- * caller chooses: the cache layout names it (Cache\CacheLocation).
+ * Converts a cached raster image to its WEBP variant, at the path the cache
+ * layout gives it (Cache\CacheLocation::getVariantFile()).
  *
  * Only the interim 2.x converters implement it; PRX-8 replaces them, and
  * this interface, with the delegation to mfonte/secure-image-converter.

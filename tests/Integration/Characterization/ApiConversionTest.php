@@ -38,7 +38,7 @@ final class ApiConversionTest extends CharacterizationTestCase
         self::assertSame('API-WEBP:' . $png, $response->getBody());
         self::assertSame('image/webp', $response->getHeader('Content-Type'));
         self::assertSame('Accept', $response->getHeader('Vary'));
-        self::assertStringEqualsFile($this->publicPath('images/gradient.webp'), 'API-WEBP:' . $png);
+        self::assertStringEqualsFile($this->cachePath('.webp/images/gradient.png.webp'), 'API-WEBP:' . $png);
     }
 
     /**
@@ -76,8 +76,8 @@ final class ApiConversionTest extends CharacterizationTestCase
             "The request could not be processed.\nInternal server error: Image conversion failed: Backend exploded.",
             $response->getBody()
         );
-        self::assertFileExists($this->publicPath('images/gradient.png'));
-        self::assertFileDoesNotExist($this->publicPath('images/gradient.webp'));
+        self::assertFileExists($this->cachePath('images/gradient.png'));
+        self::assertFileDoesNotExist($this->cachePath('.webp/images/gradient.png.webp'));
     }
 
     public function testApiErrorWithoutMessageReportsTheStatus(): void

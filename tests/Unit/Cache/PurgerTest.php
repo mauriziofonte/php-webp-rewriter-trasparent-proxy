@@ -56,37 +56,40 @@ final class PurgerTest extends TestCase
 
     public function testPurgeRemovesTheEntryAndItsNegativeMarker(): void
     {
-        $location = $this->resolver->resolve('/img/a.css', '');
-        $file = $this->directory->write('public/img/a.css', 'css');
-        $this->directory->write('public/img/a.webp', 'an unrelated asset');
+        $location = $this->resolver->resolve('h', '/img/a.css', '');
+        $file = $this->directory->write('public/h/img/a.css', 'css');
+        $this->directory->write('public/h/img/a.webp', 'an unrelated asset');
         $this->negativeCache->remember($file);
 
-        self::assertSame([$file], $this->purger->purge($location, false));
-        self::assertSame(['.', '..', 'a.webp'], scandir($this->directory->path('public/img')));
+        self::assertSame([$file], $this->purger->purge($location));
+        self::assertSame(['.', '..', 'a.webp'], scandir($this->directory->path('public/h/img')));
         self::assertNull($this->negativeCache->lookup($file));
     }
 
-    public function testPurgeOfARasterRemovesItsWebpVariant(): void
+    public function testPurgeRemovesTheVariantsAndEncodings(): void
     {
-        $location = $this->resolver->resolve('/img/a.png', 'v=1');
-        $this->directory->write(substr($location->getFile(), strlen($this->directory->path()) + 1), 'png');
-        $this->directory->write(substr($location->getWebpFile(), strlen($this->directory->path()) + 1), 'webp');
-        $other = $this->directory->write('public/img/a.jpg', 'another URL');
+        $location = $this->resolver->resolve('h', '/img/a.png', 'v=1');
+        foreach ($location->getFiles() as $file) {
+            $this->directory->write(substr($file, strlen($this->directory->path()) + 1), 'x');
+        }
+        $other = $this->directory->write('public/h/.q/v=1/img/a.jpg', 'another URL');
 
-        $removed = $this->purger->purge($location, true);
+        $removed = $this->purger->purge($location);
 
-        self::assertSame([$location->getFile(), $location->getWebpFile()], $removed);
-        self::assertFileDoesNotExist($location->getWebpFile());
+        self::assertSame($location->getFiles(), $removed);
+        foreach ($location->getFiles() as $file) {
+            self::assertFileDoesNotExist($file);
+        }
         self::assertFileExists($other);
     }
 
     public function testPurgeOfAMissingEntryRemovesNothing(): void
     {
-        $location = $this->resolver->resolve('/img/missing.png', '');
+        $location = $this->resolver->resolve('h', '/img/missing.png', '');
         $this->negativeCache->remember($location->getFile());
 
-        self::assertSame([], $this->purger->purge($location, true));
+        self::assertSame([], $this->purger->purge($location));
         self::assertNull($this->negativeCache->lookup($location->getFile()));
-        self::assertDirectoryDoesNotExist($this->directory->path('public/img'));
+        self::assertDirectoryDoesNotExist($this->directory->path('public/h'));
     }
 }

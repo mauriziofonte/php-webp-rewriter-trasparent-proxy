@@ -24,9 +24,9 @@ use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
  * - an empty segment ("//"), a segment "." or "..", and any segment that
  *   starts with "." (hidden files such as ".htaccess", and "..name");
  * - a segment longer than 255 bytes, which no common filesystem stores;
- * - a first segment that is reserved for the cache layout ("_qs", the
- *   query-string buckets): a client could otherwise write the entry, or
- *   the 404 marker, of another URL.
+ * - a first segment that is reserved for the cache layout ("_cache", the
+ *   cache root, and "_qs", the query-string buckets of 2.x): a client
+ *   could otherwise read or write the entry of another host or URL.
  *
  * A trailing "/" is kept: the request then names no file, and the kernel
  * refuses it for its missing extension.
@@ -35,9 +35,9 @@ final class PathSanitizer
 {
     /**
      * First segments the cache layout reserves, compared without letter
-     * case (CacheKeyResolver::BUCKET_DIRECTORY).
+     * case.
      */
-    private const RESERVED_FIRST_SEGMENTS = [CacheKeyResolver::BUCKET_DIRECTORY];
+    private const RESERVED_FIRST_SEGMENTS = [CacheKeyResolver::CACHE_DIRECTORY, CacheKeyResolver::LEGACY_BUCKET_DIRECTORY];
 
     /**
      * Bytes a segment may have: NAME_MAX of Linux, macOS and the BSDs.

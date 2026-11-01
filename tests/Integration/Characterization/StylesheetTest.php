@@ -22,6 +22,11 @@ use PHPUnit\Framework\Attributes\Group;
 #[Group('characterization')]
 final class StylesheetTest extends CharacterizationTestCase
 {
+    protected function configuration(): array
+    {
+        return ['PROXY_HOSTS' => '"127.0.0.1,cdn.example.test,attacker.example.test"'] + parent::configuration();
+    }
+
     /**
      * The Host header of the request that caused the miss never reaches the
      * shared cache file or a later client (finding P-2).
@@ -34,12 +39,14 @@ final class StylesheetTest extends CharacterizationTestCase
         $original = self::fixture('css/site.css');
 
         $miss = $this->get('/css/site.css?v=1', ['Host' => 'attacker.example.test']);
+        $this->get('/css/site.css?v=1', ['Host' => 'cdn.example.test']);
         $hit = $this->get('/css/site.css?v=1', ['Host' => 'cdn.example.test']);
 
         self::assertSame($original, $miss->getBody());
-        self::assertSame('hit', $hit->getHeader('X-Cache-Status'));
+        self::assertSame('HIT', $hit->getHeader('X-Cache-Status'));
         self::assertSame($original, $hit->getBody());
-        self::assertStringEqualsFile($this->bucketPath('v=1', 'css/site.css'), $original);
+        self::assertStringEqualsFile($this->publicPath('_cache/cdn.example.test/.q/v=1/css/site.css'), $original);
+        self::assertStringEqualsFile($this->publicPath('_cache/attacker.example.test/.q/v=1/css/site.css'), $original);
         self::assertStringNotContainsString('attacker.example.test', $hit->getBody());
         self::assertSame('text/css;charset=UTF-8', $hit->getHeader('Content-Type'));
     }

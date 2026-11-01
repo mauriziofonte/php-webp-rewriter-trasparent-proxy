@@ -41,6 +41,6 @@ final class NativeConversionWithoutCwebpTest extends CharacterizationTestCase
             "The request could not be processed.\nInternal server error: Image conversion failed: cwebp binary not available in PATH.",
             $response->getBody()
         );
-        self::assertFileExists($this->publicPath('images/gradient.png'));
+        self::assertFileExists($this->cachePath('images/gradient.png'));
     }
 }

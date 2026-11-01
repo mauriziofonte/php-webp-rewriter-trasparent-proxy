@@ -74,6 +74,33 @@ final class MediaTypesTest extends TestCase
         self::assertSame($table, $declared);
     }
 
+    /**
+     * config/nginx/proxy-cdn-types.conf declares exactly the types of the
+     * table, for the same reason (finding P-23).
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testTheNginxConfigurationDeclaresTheSameTypesP23(): void
+    {
+        $types = (string) file_get_contents(dirname(__DIR__, 3) . '/config/nginx/proxy-cdn-types.conf');
+        self::assertSame(1, preg_match('/^types\s*\{\s*$(.*?)^\}/ms', $types, $block));
+
+        $declared = [];
+        preg_match_all('/^\s*(\S+)((?:\s+[a-z0-9]+)+);\s*$/m', $block[1], $lines, PREG_SET_ORDER);
+        foreach ($lines as $line) {
+            foreach (preg_split('/\s+/', trim($line[2])) ?: [] as $extension) {
+                self::assertArrayNotHasKey($extension, $declared, 'declared twice: ' . $extension);
+                $declared[$extension] = $line[1];
+            }
+        }
+        ksort($declared);
+        $table = MediaTypes::TYPES;
+        ksort($table);
+
+        self::assertSame($table, $declared);
+    }
+
     public function testEveryTypeIsLowerCaseAndWellFormed(): void
     {
         foreach (MediaTypes::TYPES as $extension => $type) {

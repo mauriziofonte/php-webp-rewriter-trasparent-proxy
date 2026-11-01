@@ -47,6 +47,6 @@ final class OriginConnectionTest extends CharacterizationTestCase
         self::assertSame(200, $response->getStatus());
         self::assertSame(self::fixture('images/gradient.png'), $response->getBody());
         self::assertSame('image/png', $response->getHeader('Content-Type'));
-        self::assertStringEqualsFile($this->publicPath('images/old.png'), self::fixture('images/gradient.png'));
+        self::assertStringEqualsFile($this->cachePath('images/old.png'), self::fixture('images/gradient.png'));
     }
 }

@@ -1,15 +1,16 @@
 # =============================================================================
-# PHP Transparent Proxy CDN - Apache configuration
+# PHP Proxy CDN - official Apache configuration (public/.htaccess)
 #
-# Serves cached static assets from disk and forwards everything else to
-# index.php (the transparent proxy).
+# Apache serves every cache hit itself, without PHP: the file of the host
+# and of the query string under public/_cache/ (Cache\CacheKeyResolver),
+# as its AVIF or WEBP variant when the client accepts it. Everything else reaches index.php: misses, query
+# strings that PHP must map, PURGE and OPTIONS.
 #
-# Design note: requests that carry a non-empty query string ALWAYS go
-# through index.php, because Apache cannot derive the QS-keyed cache path
-# on its own (the allowlisted parameters, sorted and hashed with SHA-256).
-# PHP reads the cache entry from disk and serves it; the extra PHP hop is
-# the price of correctness for cache-busted URLs. PURGE requests go there
-# too, to be authenticated.
+# Requirements:
+#   - DocumentRoot is public/, with "AllowOverride All";
+#   - mod_rewrite, mod_headers, mod_setenvif and mod_mime;
+#   - UseCanonicalName Off (the default): the cache directory is named
+#     after the Host header.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -48,7 +49,7 @@ ErrorDocument 403 "Access Forbidden"
     # TLS-terminating load balancer.
     RewriteCond %{HTTPS} off
     RewriteCond %{HTTP:X-Forwarded-Proto} !=https
-    RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,QSA,R=301]
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 
     # Entry point must always reach PHP.
     RewriteRule ^index\.php$ - [L]
@@ -61,69 +62,91 @@ ErrorDocument 403 "Access Forbidden"
     RewriteRule ^(.*/)?bin(/.*)?$       - [R=403,L]
     RewriteRule ^(.*/)?logs(/.*)?$      - [R=403,L]
 
-    # Refuse direct reads of the QS-bucket cache. The bucketing layout
-    # (public/_qs/<sha256prefix>/) is an implementation detail; clients
-    # MUST go through index.php so content negotiation stays applied.
-    RewriteRule ^(.*/)?_qs(/.*)?$       - [R=403,L]
+    # The cache is read through the rules below only, which apply the host
+    # allowlist and the negotiation; the buckets of 2.x are never served.
+    # A dot segment is never part of a path the proxy serves.
+    RewriteRule ^(_cache|_qs)(/|$)      - [R=403,L]
+    RewriteRule (^|/)\.                 - [R=403,L]
 
     # PURGE is answered by index.php, which checks the purge key (PURGE_KEYS);
     # the Authorization header reaches PHP-FPM and CGI through the environment.
-    # The anonymous ?purge=1 of 2.x reaches index.php through the query-string
-    # rule below and is answered 401. OPTIONS goes there too, so that every
-    # CORS preflight gets the answer of PHP, a cached file included.
+    # OPTIONS goes there too, so that every CORS preflight gets the answer of
+    # PHP, a cached file included.
     RewriteCond %{REQUEST_METHOD} ^(PURGE|OPTIONS)$
-    RewriteRule . index.php [L,QSA,E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+    RewriteRule ^ index.php [L,E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
-    # ALWAYS route to index.php when the request has a non-empty query
-    # string. index.php will canonicalize the QS, compute the per-QS cache
-    # path and either serve the cached copy or fetch it from the origin.
-    RewriteCond %{QUERY_STRING} .
-    RewriteRule . index.php [L,QSA,E=REMOTE_USER:%{HTTP:Authorization}]
+    # The cache directory of the request, in PCDN_D: _cache/<host> without
+    # query string, _cache/<host>/.q/<query> for a query string of plain
+    # characters (PHP stores the entry there when the query string is the
+    # canonical one). Only for GET and HEAD, and a host name in lower case;
+    # an unlisted host has no directory, and reaches PHP, which answers 421.
+    RewriteRule ^ - [E=PCDN_D:]
+    RewriteCond %{REQUEST_METHOD} ^(GET|HEAD)$
+    RewriteCond %{QUERY_STRING} ^$
+    RewriteCond %{HTTP_HOST} ^([a-z0-9-]+(\.[a-z0-9-]+)*)\.?(:[0-9]{1,5})?$
+    RewriteRule ^ - [E=PCDN_D:_cache/%1]
+    RewriteCond %{REQUEST_METHOD} ^(GET|HEAD)$
+    RewriteCond %{QUERY_STRING} ^([A-Za-z0-9_~-][A-Za-z0-9._~=&-]{0,199})$
+    RewriteCond %1|%{HTTP_HOST} ^([^|]+)\|([a-z0-9-]+(\.[a-z0-9-]+)*)\.?(:[0-9]{1,5})?$
+    RewriteRule ^ - [E=PCDN_D:_cache/%2/.q/%1]
 
-    # Cache miss for QS-less requests: forward to index.php.
-    RewriteCond %{REQUEST_FILENAME} !-f
-    RewriteCond %{REQUEST_FILENAME} !-d
-    RewriteRule . index.php [L,QSA,E=REMOTE_USER:%{HTTP:Authorization}]
+    # A hit: the first file that exists of the AVIF variant, the WEBP
+    # variant and the entry itself.
+    # The variants count when the client lists them by name
+    # without q=0 (Http\AcceptHeader). Paths of other characters than these
+    # reach PHP, which serves them too. [END] serves the file without a
+    # second pass through these rules.
+    RewriteCond %{ENV:PCDN_D} .
+    RewriteCond %{HTTP:Accept} (^|,)\s*image/avif\s*($|,|;(?![^,]*\bq\s*=\s*0(\.0*)?\s*($|,|;))) [NC,NV]
+    RewriteCond %{DOCUMENT_ROOT}/%{ENV:PCDN_D}/.avif/$1.avif -f
+    RewriteRule ^([A-Za-z0-9._~/-]+\.(?i:jpe?g|png|gif|bmp))$ %{ENV:PCDN_D}/.avif/$1.avif [END]
 
-    # Transparent WEBP for QS-less requests: if the client asked for a
-    # raster image and a .webp sibling exists on disk, 301-redirect.
-    # (QS-carrying requests are handled inside index.php via Accept
-    #  negotiation, so they do not need this redirect.)
-    RewriteCond %{REQUEST_URI} ^/(.+)\.(jpe?g|png|gif|bmp)$  [NC]
-    RewriteCond %{DOCUMENT_ROOT}/%1.webp  -f
-    RewriteRule ^(.+)\.(.+)$ /$1.webp [R=301,L]
+    RewriteCond %{ENV:PCDN_D} .
+    RewriteCond %{HTTP:Accept} (^|,)\s*image/webp\s*($|,|;(?![^,]*\bq\s*=\s*0(\.0*)?\s*($|,|;))) [NC,NV]
+    RewriteCond %{DOCUMENT_ROOT}/%{ENV:PCDN_D}/.webp/$1.webp -f
+    RewriteRule ^([A-Za-z0-9._~/-]+\.(?i:jpe?g|png|gif|bmp))$ %{ENV:PCDN_D}/.webp/$1.webp [END]
+
+    RewriteCond %{ENV:PCDN_D} .
+    RewriteCond %{DOCUMENT_ROOT}/%{ENV:PCDN_D}/$1 -f
+    RewriteRule ^([A-Za-z0-9._~/-]+\.[A-Za-z0-9]+)$ %{ENV:PCDN_D}/$1 [END]
+
+    # Everything else: index.php.
+    RewriteRule ^ index.php [L,E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 </IfModule>
 
 # -----------------------------------------------------------------------------
-# 3. Response headers and cache policy
+# 3. Response headers
+#
+# A hit carries the headers PHP sends with the files it serves
+# (Http\ResponseFactory::assetHeaders()), and only a hit: PHP sends its own,
+# and behind PHP-FPM a "Header set" next to a header from PHP sends it
+# twice. The rules above serve a hit from an internal redirect to /_cache/,
+# which these variables recognise.
 # -----------------------------------------------------------------------------
+<IfModule mod_setenvif.c>
+    SetEnvIf Request_URI "^/_cache/" PCDN_HIT
+    SetEnvIf Request_URI "\.(?i:jpe?g|png|gif|bmp)(\.avif|\.webp)?$" PCDN_RASTER
+    SetEnvIf Request_URI "\.(?i:svg)$" PCDN_SVG
+</IfModule>
+
 <IfModule mod_headers.c>
-    # Behind PHP-FPM (mod_proxy_fcgi) the headers PHP sends land in the
-    # table that "Header always" works on, while plain "Header set" adds a
-    # second copy next to them: "Access-Control-Allow-Origin: *, *", which
-    # browsers refuse. So every header PHP may send is written with
-    # "always": "setifempty" leaves PHP's value alone (the preflight answer,
-    # X-Cache-Status), "set" replaces it with the same value. Files served
-    # from disk get each header once either way.
-
-    # CORS: static assets are fetched cross-origin from the main site.
-    Header always setifempty Access-Control-Allow-Origin  "*"
-    Header always setifempty Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
-    Header always setifempty Access-Control-Max-Age       "86400"
-
-    # Strip server fingerprinting headers where possible.
+    # No server fingerprint, and no version (finding P-23).
     Header unset Server
     Header always unset X-Powered-By
+    Header always set X-Powered-By "MF Static Assets Cacher"
 
-    # Light hardening applicable to a static-asset CDN.
-    Header always set X-Content-Type-Options "nosniff"
-    Header always set Referrer-Policy "strict-origin-when-cross-origin"
-
+    # Cache-Control must carry the CACHE_EXPIRY of the proxy.
+    Header set Cache-Control "public, max-age=31536000, must-revalidate" env=PCDN_HIT
+    Header set X-Cache-Status "HIT" env=PCDN_HIT
+    Header set Access-Control-Allow-Origin "*" env=PCDN_HIT
+    Header set X-Content-Type-Options "nosniff" env=PCDN_HIT
+    Header unset Set-Cookie env=PCDN_HIT
     # An SVG opened from this origin is sandboxed and runs no script
     # (finding P-7): the policy of Http\ResponseFactory, which PHP sends.
-    <FilesMatch "\.(?i:svg)$">
-        Header always set Content-Security-Policy "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox"
-    </FilesMatch>
+    Header set Content-Security-Policy "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox" env=PCDN_SVG
+    Header merge Vary "Accept" env=PCDN_RASTER
+
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
 
     # HSTS. Default: host-only (no includeSubDomains / no preload) because
     # enabling them changes behavior of sibling hostnames. Uncomment the
@@ -132,13 +155,10 @@ ErrorDocument 403 "Access Forbidden"
     Header set Strict-Transport-Security "max-age=31536000" env=HTTPS
     # Header set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=HTTPS
     # Header set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" env=HTTPS
-
-    # Branding for cache-hit responses (files served directly by Apache),
-    # without a version number (finding P-23).
-    # PHP sends its own X-Cache-Status (miss or hit), which stays.
-    Header always set X-Powered-By  "MF Static Assets Cacher"
-    Header always setifempty X-Cache-Status "HIT"
 </IfModule>
+
+# ETag and Last-Modified of the files Apache serves.
+FileETag MTime Size
 
 <IfModule mod_mime.c>
     # The media types of Mfonte\ProxyCdn\Http\MediaTypes, which PHP uses for
@@ -170,51 +190,14 @@ ErrorDocument 403 "Access Forbidden"
     AddType audio/mpeg                         .mp3
 </IfModule>
 
-<IfModule mod_expires.c>
-    ExpiresActive On
-    ExpiresByType text/css                  "access plus 1 year"
-    ExpiresByType text/javascript           "access plus 1 year"
-    ExpiresByType application/json          "access plus 1 hour"
-    ExpiresByType image/svg+xml             "access plus 1 year"
-    ExpiresByType image/webp                "access plus 1 year"
-    ExpiresByType image/vnd.microsoft.icon  "access plus 1 year"
-    ExpiresByType image/bmp                 "access plus 1 year"
-    ExpiresByType image/gif                 "access plus 1 year"
-    ExpiresByType image/jpeg                "access plus 1 year"
-    ExpiresByType image/png                 "access plus 1 year"
-    ExpiresByType image/tiff                "access plus 1 year"
-    ExpiresByType font/ttf                  "access plus 1 year"
-    ExpiresByType font/collection           "access plus 1 year"
-    ExpiresByType font/otf                  "access plus 1 year"
-    ExpiresByType application/vnd.ms-fontobject "access plus 1 year"
-    ExpiresByType font/woff                 "access plus 1 year"
-    ExpiresByType font/woff2                "access plus 1 year"
-    ExpiresByType image/avif                "access plus 1 year"
-    ExpiresByType application/pdf           "access plus 1 month"
-</IfModule>
-
 # -----------------------------------------------------------------------------
 # 4. Compression
+#
+# mod_deflate compresses the text files.
 # -----------------------------------------------------------------------------
 <IfModule mod_deflate.c>
     AddOutputFilterByType DEFLATE text/css text/plain text/xml text/html
     AddOutputFilterByType DEFLATE text/javascript application/json application/xml
-    AddOutputFilterByType DEFLATE image/svg+xml image/bmp image/vnd.microsoft.icon
+    AddOutputFilterByType DEFLATE image/svg+xml image/vnd.microsoft.icon
     AddOutputFilterByType DEFLATE font/ttf font/collection font/otf application/vnd.ms-fontobject
 </IfModule>
-
-# -----------------------------------------------------------------------------
-# 5. ETag + Cache-Control for file-served responses
-#
-# NOTE: we deliberately use "must-revalidate" (not "immutable"). These URLs
-# are not fingerprinted: the same /foo/bar.jpg may correspond to different
-# bytes over time (after a PURGE or after the origin overwrites the file).
-# "immutable" would trap old bytes in browser caches for a full year.
-# -----------------------------------------------------------------------------
-<FilesMatch "\.(?i:css|js|json|svg|svgz|ico|bmp|gif|jpe?g|png|webp|tiff?|ttf|ttc|otf|eot|woff2?|pdf)$">
-    FileETag MTime Size
-    <IfModule mod_headers.c>
-        Header set Cache-Control "public, max-age=31536000, must-revalidate"
-        Header unset Set-Cookie
-    </IfModule>
-</FilesMatch>

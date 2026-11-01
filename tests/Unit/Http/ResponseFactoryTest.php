@@ -9,7 +9,6 @@ use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
-use Symfony\Component\HttpFoundation\Response;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -134,6 +133,14 @@ final class ResponseFactoryTest extends TestCase
         ];
     }
 
+    /**
+     * A host outside PROXY_HOSTS is misdirected (risk L-13).
+     */
+    public function testUnknownHost(): void
+    {
+        self::assertError(ResponseFactory::ERROR_UNKNOWN_HOST, 421, 'Unknown host');
+    }
+
     public function testWithoutPathTheRayIdIsRandom(): void
     {
         $first = (string) (new ResponseFactory(600, 30))->error(null, ResponseFactory::ERROR_REFUSED)->getContent();
@@ -179,104 +186,36 @@ final class ResponseFactoryTest extends TestCase
         self::assertSame("The request could not be processed.\nInternal server error: Unexpected error.", $response->getContent());
     }
 
-    public function testForwardedHeaders(): void
+    /**
+     * The headers of an asset, which the web server configurations send on
+     * a hit too: the type of the extension (finding P-23), X-Cache-Status
+     * (finding P-18), CORS and nosniff.
+     */
+    public function testAssetHeaders(): void
     {
-        $forwarded = (new ResponseFactory(600, 30))->forwardedHeaders([
-            'content-type' => 'image/png',
-            'content-length' => '0',
-            'etag' => '"e"',
-            'last-modified' => 'Tue, 01 Sep 2026 10:00:00 GMT',
-            'vary' => '',
-            'accept-ranges' => 'bytes',
-            'content-disposition' => 'inline',
-            'set-cookie' => 'session=secret',
-            'cache-control' => 'private',
-            'expires' => '0',
-            'Content-Language' => 'en',
-        ]);
+        $headers = (new ResponseFactory(600, 30))->assetHeaders('css', ResponseFactory::CACHE_MISS);
 
         self::assertSame([
-            'etag' => '"e"',
-            'last-modified' => 'Tue, 01 Sep 2026 10:00:00 GMT',
-            'accept-ranges' => 'bytes',
-            'content-disposition' => 'inline',
-        ], $forwarded);
-    }
-
-    public function testMiss(): void
-    {
-        $response = (new ResponseFactory(600, 30))->miss('body', ['content-type' => 'text/css', 'etag' => '"e"'], false, 'css');
-
-        self::assertSame(200, $response->getStatusCode());
-        self::assertSame('body', $response->getContent());
-        self::assertSame('text/css', $response->headers->get('content-type'));
-        self::assertSame('"e"', $response->headers->get('etag'));
-        self::assertSame('max-age=600, must-revalidate, public', $response->headers->get('cache-control'));
-        self::assertSame('miss', $response->headers->get('x-cache-status'));
-        self::assertFalse($response->headers->has('vary'));
-    }
-
-    public function testAWebpMissVariesOnAccept(): void
-    {
-        $response = (new ResponseFactory(600, 30))->miss('webp', ['vary' => 'Origin'], true, 'png');
-
-        self::assertSame('Accept', $response->headers->get('vary'));
-    }
-
-    public function testHit(): void
-    {
-        $response = (new ResponseFactory(600, 30))->hit('body', 'text/css', 4);
-
-        self::assertSame(200, $response->getStatusCode());
-        self::assertSame('body', $response->getContent());
-        self::assertSame('text/css', $response->headers->get('content-type'));
-        self::assertSame('4', $response->headers->get('content-length'));
-        self::assertSame('max-age=600, must-revalidate, public', $response->headers->get('cache-control'));
-        self::assertSame('hit', $response->headers->get('x-cache-status'));
-        self::assertSame('Accept', $response->headers->get('vary'));
-    }
-
-    /**
-     * @return array<string, array{Response}>
-     */
-    public static function provideSvgResponses(): array
-    {
-        $responses = new ResponseFactory(600, 30);
-
-        return [
-            'miss of an .svg path' => [$responses->miss('<svg/>', ['content-type' => 'text/plain'], false, 'svg')],
-            'hit' => [$responses->hit('<svg/>', 'image/svg+xml', 6)],
-        ];
+            'Content-Type' => 'text/css',
+            'Cache-Control' => 'public, max-age=600, must-revalidate',
+            'X-Cache-Status' => 'MISS',
+            'Access-Control-Allow-Origin' => '*',
+            'X-Content-Type-Options' => 'nosniff',
+        ], $headers);
     }
 
     /**
      * An SVG gets a Content-Security-Policy that sandboxes it and forbids
      * scripts (finding P-7).
-     *
-     * @dataProvider provideSvgResponses
      */
-    #[DataProvider('provideSvgResponses')]
-    public function testSvgResponsesAreSandboxedP7(Response $response): void
+    public function testSvgAssetsAreSandboxedP7(): void
     {
-        self::assertSame(ResponseFactory::SVG_CONTENT_SECURITY_POLICY, $response->headers->get('content-security-policy'));
+        $headers = (new ResponseFactory(600, 30))->assetHeaders('svg', ResponseFactory::CACHE_HIT);
+
+        self::assertSame(ResponseFactory::SVG_CONTENT_SECURITY_POLICY, $headers['Content-Security-Policy'] ?? null);
         self::assertStringEndsWith('; sandbox', ResponseFactory::SVG_CONTENT_SECURITY_POLICY);
         self::assertStringStartsWith("default-src 'none';", ResponseFactory::SVG_CONTENT_SECURITY_POLICY);
-        self::assertSame('nosniff', $response->headers->get('x-content-type-options'));
-    }
-
-    public function testOtherAssetsGetNosniffOnly(): void
-    {
-        $responses = new ResponseFactory(600, 30);
-
-        foreach ([$responses->miss('a', ['content-type' => 'text/css'], false, 'css'), $responses->hit('a', 'image/png', 1)] as $response) {
-            self::assertSame('nosniff', $response->headers->get('x-content-type-options'));
-            self::assertFalse($response->headers->has('content-security-policy'));
-        }
-    }
-
-    public function testHitWithoutSize(): void
-    {
-        self::assertFalse((new ResponseFactory(600, 30))->hit('body', 'text/css', null)->headers->has('content-length'));
+        self::assertSame('image/svg+xml', $headers['Content-Type']);
     }
 
     public function testFromConfig(): void

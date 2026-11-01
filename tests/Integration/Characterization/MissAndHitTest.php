@@ -29,15 +29,15 @@ final class MissAndHitTest extends CharacterizationTestCase
 
         self::assertSame(200, $response->getStatus());
         self::assertSame($png, $response->getBody());
-        self::assertSame('miss', $response->getHeader('X-Cache-Status'));
+        self::assertSame('MISS', $response->getHeader('X-Cache-Status'));
         self::assertSame('max-age=31536000, must-revalidate, public', $response->getHeader('Cache-Control'));
         self::assertSame('image/png', $response->getHeader('Content-Type'));
         self::assertSame((string) strlen($png), $response->getHeader('Content-Length'));
-        self::assertSame('"' . md5($png) . '"', $response->getHeader('ETag'));
-        self::assertSame('Tue, 01 Sep 2026 10:00:00 GMT', $response->getHeader('Last-Modified'));
-        self::assertSame('Origin', $response->getHeader('Vary'));
-        self::assertSame('bytes', $response->getHeader('Accept-Ranges'));
-        self::assertStringEqualsFile($this->publicPath('images/gradient.png'), $png);
+        // The validators of the cache file, which the web server sends on a hit too.
+        self::assertSame(self::etagOf($this->cachePath('images/gradient.png')), $response->getHeader('ETag'));
+        self::assertSame(gmdate('D, d M Y H:i:s', (int) filemtime($this->cachePath('images/gradient.png'))) . ' GMT', $response->getHeader('Last-Modified'));
+        self::assertSame('Accept', $response->getHeader('Vary'));
+        self::assertStringEqualsFile($this->cachePath('images/gradient.png'), $png);
         self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
     }
 
@@ -90,7 +90,7 @@ final class MissAndHitTest extends CharacterizationTestCase
 
         foreach ([$again, $busted, $tracked] as $response) {
             self::assertSame(200, $response->getStatus());
-            self::assertSame('hit', $response->getHeader('X-Cache-Status'));
+            self::assertSame('HIT', $response->getHeader('X-Cache-Status'));
         }
         self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
         self::assertDirectoryDoesNotExist($this->publicPath('_qs'));
@@ -103,20 +103,20 @@ final class MissAndHitTest extends CharacterizationTestCase
         $miss = $this->get('/images/gradient.png?v=1');
         $hit = $this->get('/images/gradient.png?v=1');
 
-        self::assertSame('miss', $miss->getHeader('X-Cache-Status'));
+        self::assertSame('MISS', $miss->getHeader('X-Cache-Status'));
         self::assertStringEqualsFile($this->bucketPath('v=1', 'images/gradient.png'), $png);
-        self::assertFileDoesNotExist($this->publicPath('images/gradient.png'));
+        self::assertFileDoesNotExist($this->cachePath('images/gradient.png'));
         self::assertSame('/images/gradient.png?v=1', $this->origin->getLastRequest()['uri']);
 
         self::assertSame(200, $hit->getStatus());
         self::assertSame($png, $hit->getBody());
-        self::assertSame('hit', $hit->getHeader('X-Cache-Status'));
+        self::assertSame('HIT', $hit->getHeader('X-Cache-Status'));
         self::assertSame('image/png', $hit->getHeader('Content-Type'));
         self::assertSame((string) strlen($png), $hit->getHeader('Content-Length'));
         self::assertSame('max-age=31536000, must-revalidate, public', $hit->getHeader('Cache-Control'));
         self::assertSame('Accept', $hit->getHeader('Vary'));
-        self::assertFalse($hit->hasHeader('ETag'));
-        self::assertFalse($hit->hasHeader('Last-Modified'));
+        self::assertSame(self::etagOf($this->bucketPath('v=1', 'images/gradient.png')), $hit->getHeader('ETag'));
+        self::assertTrue($hit->hasHeader('Last-Modified'));
         self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
     }
 
@@ -125,7 +125,7 @@ final class MissAndHitTest extends CharacterizationTestCase
         $this->get('/images/gradient.png?ver=2&v=1');
         $hit = $this->get('/images/gradient.png?v=1&utm_source=mail&ver=2');
 
-        self::assertSame('hit', $hit->getHeader('X-Cache-Status'));
+        self::assertSame('HIT', $hit->getHeader('X-Cache-Status'));
         self::assertFileExists($this->bucketPath('v=1&ver=2', 'images/gradient.png'));
         self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
         self::assertSame('/images/gradient.png?ver=2&v=1', $this->origin->getLastRequest()['uri']);
@@ -182,11 +182,11 @@ final class MissAndHitTest extends CharacterizationTestCase
         self::assertSame('/images/my%20file.png?v=1', $this->origin->getLastRequest()['uri']);
         self::assertFileExists($this->bucketPath('v=1', 'images/my file.png'));
         self::assertFileDoesNotExist($this->bucketPath('v=1', 'images/my%20file.png'));
-        self::assertSame('hit', $hit->getHeader('X-Cache-Status'));
+        self::assertSame('HIT', $hit->getHeader('X-Cache-Status'));
         self::assertCount(1, $this->origin->getRequests());
 
         $this->get('/images/my%20file.png');
-        self::assertFileExists($this->publicPath('images/my file.png'));
+        self::assertFileExists($this->cachePath('images/my file.png'));
     }
 
     /**
@@ -248,7 +248,7 @@ final class MissAndHitTest extends CharacterizationTestCase
         $hit = $this->get('/fonts/font.ttf?v=1');
 
         self::assertSame('font/ttf', $miss->getHeader('Content-Type'));
-        self::assertSame('hit', $hit->getHeader('X-Cache-Status'));
+        self::assertSame('HIT', $hit->getHeader('X-Cache-Status'));
         self::assertSame('font/ttf', $hit->getHeader('Content-Type'));
         self::assertSame(self::fixture('fonts/font.ttf'), $hit->getBody());
     }
@@ -319,7 +319,7 @@ final class MissAndHitTest extends CharacterizationTestCase
         self::assertErrorResponse($response, 405, 'Method not allowed', '/images/gradient.png');
         self::assertSame('GET, HEAD, OPTIONS', $response->getHeader('Allow'));
         self::assertSame([], $this->origin->getRequests());
-        self::assertFileDoesNotExist($this->publicPath('images/gradient.png'));
+        self::assertFileDoesNotExist($this->cachePath('images/gradient.png'));
     }
 
     public function testHeadAnswersTheHeadersOfTheGetWithoutBody(): void
@@ -329,7 +329,7 @@ final class MissAndHitTest extends CharacterizationTestCase
         $miss = $this->send('HEAD', '/images/gradient.png?v=1');
         $hit = $this->send('HEAD', '/images/gradient.png?v=1');
 
-        foreach (['miss' => $miss, 'hit' => $hit] as $status => $response) {
+        foreach (['MISS' => $miss, 'HIT' => $hit] as $status => $response) {
             self::assertSame(200, $response->getStatus());
             self::assertSame('', $response->getBody());
             self::assertSame($status, $response->getHeader('X-Cache-Status'));

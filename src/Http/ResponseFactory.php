@@ -62,6 +62,15 @@ final class ResponseFactory
     /** The Host header is not a valid host name ("Host: bad host"). */
     public const ERROR_BAD_HOST = 12;
 
+    /** The host is not in PROXY_HOSTS (risk L-13). */
+    public const ERROR_UNKNOWN_HOST = 13;
+
+    /** X-Cache-Status of a response served from the cache. */
+    public const CACHE_HIT = 'HIT';
+
+    /** X-Cache-Status of a response fetched from the origin. */
+    public const CACHE_MISS = 'MISS';
+
     /**
      * The realm of the WWW-Authenticate challenge of a refused purge.
      */
@@ -96,6 +105,7 @@ final class ResponseFactory
         self::ERROR_REFUSED => 400,
         self::ERROR_QUERY_NOT_ALLOWED => 400,
         self::ERROR_BAD_HOST => 400,
+        self::ERROR_UNKNOWN_HOST => 421,
         self::ERROR_PURGE_UNAUTHORIZED => 401,
         self::ERROR_NOT_CACHEABLE => 404,
         self::ERROR_ORIGIN_NOT_FOUND => 404,
@@ -127,6 +137,7 @@ final class ResponseFactory
         self::ERROR_ORIGIN_GONE => 'Remote origin file is gone',
         self::ERROR_BAD_GATEWAY => 'Bad response from the remote origin',
         self::ERROR_BAD_HOST => 'Invalid Host header',
+        self::ERROR_UNKNOWN_HOST => 'Unknown host',
     ];
 
     /**
@@ -136,20 +147,6 @@ final class ResponseFactory
         self::ERROR_PURGE_UNAUTHORIZED => 'The anonymous ?purge=1 and ?purge_all=1 of 2.x were removed in 3.0. '
             . 'Send "PURGE <url>" with "Authorization: Bearer <key>", or with the X-Purge-Timestamp and '
             . 'X-Purge-Signature headers, where the key is one of PURGE_KEYS for this origin (see the Purge section of the README).',
-    ];
-
-    /**
-     * Origin response headers forwarded to the client; every other header,
-     * Set-Cookie and Cache-Control included, is dropped, and Content-Type
-     * is the one of the extension (MediaTypes).
-     */
-    private const FORWARDED_HEADERS = [
-        'content-length',
-        'etag',
-        'last-modified',
-        'vary',
-        'accept-ranges',
-        'content-disposition',
     ];
 
     /**
@@ -312,78 +309,44 @@ final class ResponseFactory
     }
 
     /**
-     * The origin headers that are forwarded to the client: the allowed
-     * names only, without empty values (and, as in 2.x, without "0").
+     * The headers of an asset served from the cache or just fetched, the
+     * same the web server configurations send on a hit: the type of the
+     * extension (finding P-23: one table of media types, whatever the
+     * origin claims), the Cache-Control of CACHE_EXPIRY, X-Cache-Status
+     * (finding P-18: only on assets, with what really happened), CORS,
+     * nosniff, and the SVG policy for an SVG.
      *
-     * @param array<string, string> $originHeaders keyed by lower-case name
+     * @param string $extension   lower-case extension that types the body
+     * @param string $cacheStatus one of the CACHE_* constants
      *
      * @return array<string, string>
      */
-    public function forwardedHeaders(array $originHeaders): array
+    public function assetHeaders(string $extension, string $cacheStatus): array
     {
-        $forwarded = [];
-        foreach ($originHeaders as $name => $value) {
-            if (in_array($name, self::FORWARDED_HEADERS, true) && $value !== '' && $value !== '0') {
-                $forwarded[$name] = $value;
-            }
+        $headers = [
+            'Content-Type' => MediaTypes::of($extension),
+            'Cache-Control' => 'public, max-age=' . $this->cacheExpiry . ', must-revalidate',
+            'X-Cache-Status' => $cacheStatus,
+        ] + self::securityHeaders();
+        if (MediaTypes::of($extension) === 'image/svg+xml') {
+            $headers['Content-Security-Policy'] = self::SVG_CONTENT_SECURITY_POLICY;
         }
 
-        return $forwarded;
+        return $headers;
     }
 
     /**
-     * The response of a cache miss: the asset just fetched from the origin.
+     * The headers every asset carries, whoever serves it: the Apache and
+     * nginx configurations send the same ones on a hit.
      *
-     * @param string                $body      the asset, or its conversion
-     * @param array<string, string> $headers   forwarded headers, see forwardedHeaders()
-     * @param bool                  $webp      whether $body is the WEBP conversion, which adds "Vary: Accept"
-     * @param string                $extension lower-case extension of the request path
+     * @return array<string, string>
      */
-    public function miss(string $body, array $headers, bool $webp, string $extension): Response
+    public static function securityHeaders(): array
     {
-        $response = new Response();
-        $response->setStatusCode(200);
-        $response->headers->add($headers);
-        // The type of the extension, as for a hit, whatever the origin
-        // claims (finding P-23: one table of media types).
-        $response->headers->set('content-type', MediaTypes::of($webp ? 'webp' : $extension));
-        $response->setPublic();
-        $response->setMaxAge($this->cacheExpiry);
-        $response->headers->addCacheControlDirective('must-revalidate', true);
-        $response->headers->set('x-cache-status', 'miss');
-        if ($webp) {
-            $response->headers->set('vary', 'Accept');
-        }
-        $this->protect($response, $extension === 'svg');
-        $response->setContent($body);
-
-        return $response;
-    }
-
-    /**
-     * The response of a cache hit served by PHP.
-     *
-     * @param string   $body     the cached asset
-     * @param string   $mimeType its media type
-     * @param int|null $size     its size in bytes, for Content-Length; null to omit the header
-     */
-    public function hit(string $body, string $mimeType, ?int $size): Response
-    {
-        $response = new Response();
-        $response->setStatusCode(200);
-        $response->headers->set('content-type', $mimeType);
-        if ($size !== null) {
-            $response->headers->set('content-length', (string) $size);
-        }
-        $response->setPublic();
-        $response->setMaxAge($this->cacheExpiry);
-        $response->headers->addCacheControlDirective('must-revalidate', true);
-        $response->headers->set('x-cache-status', 'hit');
-        $response->headers->set('vary', 'Accept');
-        $this->protect($response, false);
-        $response->setContent($body);
-
-        return $response;
+        return [
+            'Access-Control-Allow-Origin' => '*',
+            'X-Content-Type-Options' => 'nosniff',
+        ];
     }
 
     /**

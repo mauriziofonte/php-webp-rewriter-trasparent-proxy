@@ -4,9 +4,11 @@
 # and behind nginx + PHP-FPM (compose.yaml), checks the fake origin, then runs
 # a smoke test on each stack: the HTTP client negotiates HTTP/2 with the
 # origin over TLS from PHP-FPM, the first request is fetched from the origin
-# through PHP-FPM, the second is served from the cache by the web server
-# without reaching PHP-FPM or the origin, and each response, preflights
-# included, carries its CORS headers once.
+# through PHP-FPM, and every later one is served from the cache by the web
+# server without reaching PHP-FPM (its access log stays unchanged) or the
+# origin: the entry, its WEBP and AVIF variants and the entry of a query
+# string, each with the headers PHP sends, once. PURGE, OPTIONS and
+# unlisted hosts reach PHP.
 #
 # Usage: tests/Integration/docker/run.sh [--php <version>] [--stack apache|nginx|all] [--keep]
 #
@@ -222,7 +224,7 @@ expect() {
 origin="http://127.0.0.1:$(port_of origin)"
 origin_ready() { curl -fsS "$origin/__origin/stats"; }
 fpm_ready() { compose exec -T "fpm-$1" php -r 'exit(@fsockopen("127.0.0.1", 9000) ? 0 : 1);'; }
-web_ready() { [ "$(status_of "$1/.htaccess")" = 403 ]; }
+web_ready() { [ "$(status_of -H 'X-Forwarded-Proto: https' "$1/.htaccess")" = 403 ]; }
 
 wait_for "origin is up" 30 origin_ready
 for s in "${stacks[@]}"; do
@@ -283,21 +285,56 @@ cors_once() {
     done
 }
 
-# fetch <url> <output prefix>: prints the status, keeps headers and body.
+# fetch <url> <output prefix> [curl option]...: prints the status, keeps
+# headers and body.
 fetch() {
-    curl -sS -H 'X-Forwarded-Proto: https' -D "$2.headers" -o "$2.body" -w '%{http_code}' "$1"
+    local url="$1" output="$2"
+    shift 2
+    curl -sS -H 'X-Forwarded-Proto: https' "$@" -D "$output.headers" -o "$output.body" -w '%{http_code}' "$url"
+}
+
+# header_of <name> <headers file>: the values of a header, comma-joined.
+header_of() { grep -i "^$1:" "$2" | cut -d: -f2- | sed 's/^ *//' | tr -d '\r' | paste -sd, - || true; }
+
+# varies_on <label> <headers file> <field>: Vary lists the field once.
+varies_on() {
+    expect "$1" "$(header_of Vary "$2" | tr ',' '\n' | tr -d ' ' | grep -ci "^$3\$" || true)" 1
+}
+
+# fpm_quiet <label> <fpm log> <lines before>: PHP-FPM received no request
+# since <lines before>. PHP-FPM writes its access log after the response:
+# leave it time to do so before concluding that a request never reached it.
+fpm_quiet() {
+    sleep 1
+    expect "$1 without PHP-FPM" "$(lines_of "$2")" "$3"
+}
+
+# hit_headers <label> <headers file>: the headers PHP sends with an asset,
+# each once, on a file the web server served.
+hit_headers() {
+    cors_once "$1" "$2" Access-Control-Allow-Origin X-Content-Type-Options \
+        X-Cache-Status Cache-Control
+    expect "$1: nosniff" "$(header_of X-Content-Type-Options "$2")" nosniff
+    case "$(header_of X-Powered-By "$2")" in
+        *[0-9]*) die "$1: X-Powered-By carries a version: $(header_of X-Powered-By "$2")" ;;
+    esac
+    pass "$1: no version in X-Powered-By"
 }
 
 smoke() {
-    local s="$1" base fpm_log lines
+    local s="$1" base fpm_log lines app css svg redirect
     base="http://127.0.0.1:$(port_of "$s")"
     fpm_log="$workdir/$s/logs/php-fpm-access.log"
+    app="$workdir/$s/app/public/_cache/127.0.0.1"
     log "Smoke test: $s + PHP-FPM $php_version"
     origin_reset
 
-    expect "$s: plain HTTP is redirected to https" \
-        "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$base$asset")" \
-        "301 https://${base#http://}$asset"
+    # Apache keeps the port of the Host header, nginx drops it.
+    redirect="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$base$asset")"
+    case "$redirect" in
+        "301 https://127.0.0.1$asset" | "301 https://${base#http://}$asset") pass "$s: plain HTTP is redirected to https" ;;
+        *) die "$s: plain HTTP is redirected to https: got '$redirect'" ;;
+    esac
     expect "$s: vendor/ is refused" "$(status_of -H 'X-Forwarded-Proto: https' "$base/vendor/autoload.php")" 403
 
     lines="$(lines_of "$fpm_log")"
@@ -305,34 +342,77 @@ smoke() {
     cmp -s "$workdir/$s/first.body" "$fixture" || die "$s: the first response differs from the origin file"
     expect "$s: first request fetched from the origin" "$(origin_count "$asset")" 1
     wait_for "$s: first request went through PHP-FPM" 10 has_lines "$fpm_log" $((lines + 1))
-    [ -f "$workdir/$s/app/public$asset" ] || die "$s: no cache entry at public$asset"
-    pass "$s: cache entry written to public$asset"
+    [ -f "$app$asset" ] || die "$s: no cache entry at public/_cache/127.0.0.1$asset"
+    pass "$s: cache entry written to public/_cache/127.0.0.1$asset"
 
+    lines="$(lines_of "$fpm_log")"
     expect "$s: second request" "$(fetch "$base$asset" "$workdir/$s/second")" 200
     cmp -s "$workdir/$s/second.body" "$fixture" || die "$s: the second response differs from the origin file"
     expect "$s: second request served without the origin" "$(origin_count "$asset")" 1
-    # PHP-FPM writes its access log after the response: leave it time to do
-    # so before concluding that the second request never reached it.
-    sleep 1
-    expect "$s: second request served without PHP-FPM" "$(lines_of "$fpm_log")" $((lines + 1))
+    fpm_quiet "$s: second request served" "$fpm_log" "$lines"
 
-    cors_once "$s: miss" "$workdir/$s/first.headers" Access-Control-Allow-Origin
-    if [ "$s" = apache ]; then
-        # The harness nginx adds no CORS header to the files it serves: the
-        # nginx configuration that does arrives with PRX-6.
-        cors_once "$s: miss" "$workdir/$s/first.headers" Access-Control-Max-Age
-        cors_once "$s: hit" "$workdir/$s/second.headers" Access-Control-Allow-Origin Access-Control-Max-Age
-    fi
-
-    expect "$s: the first request is a miss" "$(cache_status "$workdir/$s/first.headers")" miss
+    cors_once "$s: miss" "$workdir/$s/first.headers" Access-Control-Allow-Origin X-Cache-Status
+    hit_headers "$s: hit" "$workdir/$s/second.headers"
+    expect "$s: the first request is a miss" "$(cache_status "$workdir/$s/first.headers")" MISS
     expect "$s: the second request is a hit" "$(cache_status "$workdir/$s/second.headers")" HIT
+    varies_on "$s: a hit varies on Accept" "$workdir/$s/second.headers" Accept
 
+    # Variants: the web server chooses them from Accept. Conversion is off
+    # in the harness, so the test writes them itself.
+    mkdir -p "$app/.webp/images" "$app/.avif/images"
+    printf 'webp variant' >"$app/.webp$asset.webp"
+    lines="$(lines_of "$fpm_log")"
+    expect "$s: WEBP variant" "$(fetch "$base$asset" "$workdir/$s/webp" -H 'Accept: image/avif;q=0, image/webp')" 200
+    expect "$s: WEBP variant body" "$(cat "$workdir/$s/webp.body")" "webp variant"
+    expect "$s: WEBP variant type" "$(header_of Content-Type "$workdir/$s/webp.headers")" image/webp
+    printf 'avif variant' >"$app/.avif$asset.avif"
+    expect "$s: AVIF variant" "$(fetch "$base$asset" "$workdir/$s/avif" -H 'Accept: image/avif,image/webp,*/*')" 200
+    expect "$s: AVIF variant body" "$(cat "$workdir/$s/avif.body")" "avif variant"
+    varies_on "$s: AVIF variant varies on Accept" "$workdir/$s/avif.headers" Accept
+    hit_headers "$s: AVIF variant" "$workdir/$s/avif.headers"
+    expect "$s: no variant without Accept" "$(fetch "$base$asset" "$workdir/$s/plain" -H 'Accept: */*')" 200
+    cmp -s "$workdir/$s/plain.body" "$fixture" || die "$s: the plain hit differs from the origin file"
+    fpm_quiet "$s: variants served" "$fpm_log" "$lines"
+
+    # Query string: the canonical one is a directory the web server finds.
+    expect "$s: query string, first request" "$(fetch "$base$asset?v=3" "$workdir/$s/query1")" 200
+    expect "$s: query string, first request is a miss" "$(cache_status "$workdir/$s/query1.headers")" MISS
+    [ -f "$app/.q/v=3$asset" ] || die "$s: no cache entry at .q/v=3$asset"
+    lines="$(lines_of "$fpm_log")"
+    expect "$s: query string, second request" "$(fetch "$base$asset?v=3" "$workdir/$s/query2")" 200
+    expect "$s: query string, second request is a hit" "$(cache_status "$workdir/$s/query2.headers")" HIT
+    fpm_quiet "$s: query string hit served" "$fpm_log" "$lines"
+    expect "$s: query string fetched from the origin once" "$(origin_count "$asset")" 2
+
+    # SVG: the policy of PHP, once.
+    svg=/images/logo.svg
+    expect "$s: SVG, first request" "$(fetch "$base$svg" "$workdir/$s/svg1")" 200
+    lines="$(lines_of "$fpm_log")"
+    expect "$s: SVG, second request" "$(fetch "$base$svg" "$workdir/$s/svg2")" 200
+    fpm_quiet "$s: SVG hit served" "$fpm_log" "$lines"
+    cors_once "$s: SVG miss" "$workdir/$s/svg1.headers" Content-Security-Policy
+    cors_once "$s: SVG hit" "$workdir/$s/svg2.headers" Content-Security-Policy
+    expect "$s: SVG hit policy" "$(header_of Content-Security-Policy "$workdir/$s/svg2.headers")" \
+        "$(header_of Content-Security-Policy "$workdir/$s/svg1.headers")"
+
+    # What must reach PHP even for a cached file.
+    lines="$(lines_of "$fpm_log")"
+    expect "$s: PURGE of a cached file reaches PHP" \
+        "$(status_of -X PURGE -H 'X-Forwarded-Proto: https' "$base$asset")" 401
     expect "$s: preflight of a cached file" "$(preflight "$base$asset" "$workdir/$s/options-hit")" 204
     cors_once "$s: preflight of a cached file" "$workdir/$s/options-hit.headers" \
         Access-Control-Allow-Origin Access-Control-Allow-Methods Access-Control-Max-Age
+    expect "$s: unlisted host" "$(status_of -H 'X-Forwarded-Proto: https' -H 'Host: other.example' "$base$asset")" 421
+    wait_for "$s: PURGE, OPTIONS and the unlisted host reached PHP-FPM" 10 has_lines "$fpm_log" $((lines + 3))
     expect "$s: preflight of a missing file" "$(preflight "$base/images/missing.png" "$workdir/$s/options-miss")" 204
     cors_once "$s: preflight of a missing file" "$workdir/$s/options-miss.headers" \
         Access-Control-Allow-Origin Access-Control-Allow-Methods Access-Control-Max-Age
+    expect "$s: missing file" "$(fetch "$base/images/missing.png" "$workdir/$s/missing")" 404
+    expect "$s: an error carries no cache status" "$(cache_status "$workdir/$s/missing.headers")" ""
+    case "$(status_of -H 'X-Forwarded-Proto: https' "$base/_cache/127.0.0.1$asset")" in
+        200) die "$s: the cache directory is readable directly" ;;
+        *) pass "$s: the cache directory is not readable directly" ;;
+    esac
 }
 
 # The transports from PHP-FPM against the TLS port of the origin: curl

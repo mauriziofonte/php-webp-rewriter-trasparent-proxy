@@ -52,7 +52,7 @@ final class AnyQueryParameterTest extends CharacterizationTestCase
         self::assertSame(200, $response->getStatus());
         self::assertSame('/images/gradient.png?' . $sent, $this->origin->getLastRequest()['uri']);
         self::assertFileExists($this->bucketPath($canonical, 'images/gradient.png'));
-        self::assertSame('hit', $hit->getHeader('X-Cache-Status'));
+        self::assertSame('HIT', $hit->getHeader('X-Cache-Status'));
         self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
     }
 
@@ -61,7 +61,7 @@ final class AnyQueryParameterTest extends CharacterizationTestCase
         $this->get('/images/gradient.png?b=2&a=1');
         $hit = $this->get('/images/gradient.png?a=1&b=2');
 
-        self::assertSame('hit', $hit->getHeader('X-Cache-Status'));
+        self::assertSame('HIT', $hit->getHeader('X-Cache-Status'));
         self::assertFileExists($this->bucketPath('a=1&b=2', 'images/gradient.png'));
         self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
     }

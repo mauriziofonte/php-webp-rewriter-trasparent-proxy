@@ -18,43 +18,54 @@ use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Origin\OriginRequest;
 use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Origin\RedirectTarget;
+use Mfonte\ProxyCdn\Security\HostAllowlist;
 use Mfonte\ProxyCdn\Security\PathSanitizer;
 use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\Exception\SuspiciousOperationException;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * Turns a request for an asset into a response: from the cache, or from the
- * origin, storing what it fetches. The flow is the one of 2.x:
+ * origin, storing what it fetches.
  *
- * 1. OPTIONS gets the CORS preflight answer, methods other than GET and
- *    HEAD get 405; the path is decoded by PathSanitizer, and a refused
- *    path or a path whose extension is not cacheable gets an error; HEAD
- *    gets the headers of the GET;
- * 2. PURGE removes the entry when the request proves a purge key of the
- *    origin (PurgeAuthenticator); the anonymous "?purge=1" and
- *    "?purge_all=1" of 2.x get a 401 that explains the change (risk L-7);
+ * 1. The Host header must name a host of PROXY_HOSTS (HostAllowlist, risk
+ *    L-13), which selects the origin and the cache directory; OPTIONS gets
+ *    the CORS preflight answer, methods other than GET and HEAD get 405;
+ *    the path is decoded by PathSanitizer, and a refused path or a path
+ *    whose extension is not cacheable gets an error; HEAD gets the headers
+ *    of the GET;
+ * 2. PURGE removes the entry and its siblings when the request proves a
+ *    purge key of the origin (PurgeAuthenticator); the anonymous
+ *    "?purge=1" and "?purge_all=1" of 2.x get a 401 that explains the
+ *    change (risk L-7);
  * 3. a fresh 404 or 410 of the negative cache answers without asking the
  *    origin;
  * 4. the query string is reduced to the parameters of QueryStringPolicy,
- *    which key the entry and reach the origin as the client wrote them;
- *    a raster whose WEBP sibling exists is served as WEBP to clients that
- *    accept it; an entry on disk is served from disk;
+ *    which key the entry and reach the origin as the client wrote them; an
+ *    entry on disk is served from disk, as its AVIF or WEBP variant to the
+ *    clients that accept it, with "Vary: Accept" (finding P-1: 2.x
+ *    redirected every client to the WEBP copy);
  * 5. otherwise, unless the circuit breaker of the origin is open, the
- *    asset is fetched from the origin (a failure is answered
- *    by its kind, see failure(), finding P-13) and stored as the
- *    origin sent it (2.x rewrote stylesheets, findings P-2, P-3, P-4), a
- *    raster is converted to WEBP when a converter is configured, and the
- *    asset is answered.
+ *    asset is fetched from the origin (a failure is answered by its kind,
+ *    see failure(), finding P-13), stored as the origin sent it, a raster
+ *    is converted to WEBP when a converter is configured, and the asset is
+ *    served from the cache.
  *
- * The kernel only builds the response: it never sends it, never exits and
- * reads nothing but the Request, so that a host framework can mount it.
+ * The web server serves the cache files itself, without PHP, whenever it
+ * can compute their location (see CacheKeyResolver); the kernel answers
+ * everything else, with the same headers. It only builds the response: it
+ * never sends it, never exits and reads nothing but the Request, so that a
+ * host framework can mount it.
  */
 final class ProxyKernel
 {
-    private const RASTER_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'bmp'];
+    /**
+     * The raster formats: their entries may have AVIF and WEBP variants.
+     */
+    public const RASTER_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'bmp'];
 
     /**
      * The failures that mean the origin is unavailable, which open the
@@ -73,6 +84,11 @@ final class ProxyKernel
      * @var Config
      */
     private $config;
+
+    /**
+     * @var HostAllowlist
+     */
+    private $hosts;
 
     /**
      * @var PathSanitizer
@@ -165,6 +181,7 @@ final class ProxyKernel
         LoggerInterface $logger
     ) {
         $this->config = $config;
+        $this->hosts = $config->getHostAllowlist();
         $this->pathSanitizer = $pathSanitizer;
         $this->keyResolver = $keyResolver;
         $this->queryPolicy = $queryPolicy;
@@ -191,19 +208,23 @@ final class ProxyKernel
         if (!self::hasValidHost($request)) {
             return $this->responses->error(null, ResponseFactory::ERROR_BAD_HOST);
         }
+        $host = $this->hosts->match($request->getHost());
+        if ($host === null) {
+            return $this->responses->error(null, ResponseFactory::ERROR_UNKNOWN_HOST);
+        }
         if ($method === 'OPTIONS') {
             return $this->responses->preflight((string) $request->headers->get('Access-Control-Request-Headers', ''));
         }
         if ($method === 'PURGE') {
-            return $this->handlePurge($request);
+            return $this->handlePurge($request, $host);
         }
         // Finding P-19: 2.x served every method like GET.
         if ($method !== 'GET' && $method !== 'HEAD') {
             return $this->responses->error($request->getPathInfo(), ResponseFactory::ERROR_METHOD_NOT_ALLOWED);
         }
 
-        $response = $this->handleAsset($request);
-        if ($method === 'HEAD') {
+        $response = $this->handleAsset($request, $host);
+        if ($method === 'HEAD' && !$response instanceof StreamedResponse) {
             // The headers of the GET, Content-Length included, without its body.
             $response->setContent('');
         }
@@ -216,9 +237,11 @@ final class ProxyKernel
      * and the cache location of a request; or the error response when the
      * path or the query string is refused.
      *
+     * @param string $host a host of the allowlist
+     *
      * @return Response|array{string, string, QueryString, CacheLocation}
      */
-    private function locate(Request $request)
+    private function locate(Request $request, string $host)
     {
         $requestPath = $request->getPathInfo();
         $path = $this->pathSanitizer->sanitize($requestPath);
@@ -226,7 +249,7 @@ final class ProxyKernel
             return $this->responses->error($requestPath, ResponseFactory::ERROR_REFUSED);
         }
 
-        $extension = trim(strtolower(pathinfo($path, PATHINFO_EXTENSION)));
+        $extension = self::extensionOf($path);
         if (!$this->config->isCacheableExtension($extension)) {
             return $this->responses->error($path, ResponseFactory::ERROR_NOT_CACHEABLE);
         }
@@ -236,32 +259,34 @@ final class ProxyKernel
             return $this->responses->error($path, ResponseFactory::ERROR_QUERY_NOT_ALLOWED);
         }
 
-        return [$path, $extension, $query, $this->keyResolver->resolve($path, $query->getCanonical())];
+        return [$path, $extension, $query, $this->keyResolver->resolve($host, $path, $query->getCanonical())];
     }
 
     /**
-     * The answer to PURGE: the entry is removed when the request proves a
-     * purge key whose scope covers the origin.
+     * The answer to PURGE: the entry, its variants and its encodings are
+     * removed when the request proves a purge key whose scope covers the
+     * origin of the host.
      */
-    private function handlePurge(Request $request): Response
+    private function handlePurge(Request $request, string $host): Response
     {
-        $located = $this->locate($request);
+        $located = $this->locate($request, $host);
         if ($located instanceof Response) {
             return $located;
         }
-        list($path, $extension, $query, $location) = $located;
+        list($path, , $query, $location) = $located;
         $client = $this->trustedProxies->getClientAddress($request);
 
-        $scheme = $this->purgeAuthenticator->authenticate($request, $this->originHost(), time());
+        $originHost = strtolower((string) parse_url((string) $this->hosts->originOf($host), PHP_URL_HOST));
+        $scheme = $this->purgeAuthenticator->authenticate($request, $originHost, time());
         if ($scheme === null) {
-            $this->logger->warning('purge refused', ['path' => $path, 'client' => $client]);
+            $this->logger->warning('purge refused', ['host' => $host, 'path' => $path, 'client' => $client]);
 
             return $this->responses->error($path, ResponseFactory::ERROR_PURGE_UNAUTHORIZED);
         }
 
-        $isRaster = in_array($extension, self::RASTER_EXTENSIONS, true);
-        $removed = $this->purger->purge($location, $isRaster);
+        $removed = $this->purger->purge($location);
         $this->logger->notice('purge', [
+            'host' => $host,
             'path' => $path,
             'query' => $query->getCanonical(),
             'removed' => count($removed),
@@ -275,14 +300,15 @@ final class ProxyKernel
     /**
      * The answer to a GET of an asset.
      */
-    private function handleAsset(Request $request): Response
+    private function handleAsset(Request $request, string $host): Response
     {
-        $located = $this->locate($request);
+        $located = $this->locate($request, $host);
         if ($located instanceof Response) {
             return $located;
         }
         list($path, $extension, $query, $location) = $located;
         $file = $location->getFile();
+        $origin = (string) $this->hosts->originOf($host);
 
         // Risk L-7: 2.x purged for anyone; the request now explains how to purge.
         $rawQuery = self::rawQuery($request);
@@ -295,76 +321,136 @@ final class ProxyKernel
             return $this->responses->error($path, $remembered === 410 ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
         }
 
-        $acceptsWebp = stripos((string) $request->headers->get('Accept', ''), 'image/webp') !== false;
-        $isRaster = in_array($extension, self::RASTER_EXTENSIONS, true);
-        $webpFile = $location->getWebpFile();
-
-        if ($isRaster && $acceptsWebp && $this->storage->isFile($webpFile)) {
-            return $this->files->respond($webpFile, 'webp');
+        // The web server serves the entries it can locate itself, and
+        // routes the others here: an entry whose query string it cannot
+        // map, or one the policy ignored (finding P-5).
+        $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT);
+        if ($stored !== null) {
+            return $stored;
         }
 
-        // The web server serves the entries of the path itself, but routes
-        // every request with a query string here: an entry on disk is
-        // served, whether it is a bucket's or the path's one (a query
-        // string the policy ignored, finding P-5).
-        if ($this->storage->isFile($file)) {
-            if ($isRaster && $this->converter !== null && !$this->storage->isFile($webpFile)) {
-                $this->converter->convert($file, $webpFile);
-                if ($acceptsWebp && $this->storage->isFile($webpFile)) {
-                    return $this->files->respond($webpFile, 'webp');
-                }
-            }
-
-            return $this->files->respond($file, $extension);
-        }
-
-        // Finding P-14: one breaker for the origin, checked only before a
+        // Finding P-14: one breaker per origin, checked only before a
         // fetch, so that the entries on disk are served while it is open.
-        $origin = RedirectTarget::originOf($this->config->getSourceOrigin());
-        if ($this->circuitBreaker->isOpen($origin)) {
+        if ($this->circuitBreaker->isOpen(RedirectTarget::originOf($origin))) {
             return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
 
+        $fetched = $this->fetch($request, $origin, $path, $query);
+        if ($fetched->isSuccessful()) {
+            return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
+        }
+
+        return $this->failure($origin, $path, $file, $fetched);
+    }
+
+    /**
+     * Fetches the asset of $path from $origin, with the query string the
+     * policy kept.
+     */
+    private function fetch(Request $request, string $origin, string $path, QueryString $query): OriginResponse
+    {
         // The scheme the client used, as a trusted proxy reports it (TRUSTED_PROXIES).
         $server = ($this->trustedProxies->isSecure($request) ? 'https' : 'http') . '://' . $request->getHttpHost();
         $forwardedQuery = $query->getForwarded();
-        $originUrl = $this->config->getSourceOrigin() . PathSanitizer::encode($path) . ($forwardedQuery !== '' ? '?' . $forwardedQuery : '');
-        $fetched = $this->origin->fetch(new OriginRequest($originUrl, ['Referer' => $server]));
+        $originUrl = $origin . PathSanitizer::encode($path) . ($forwardedQuery !== '' ? '?' . $forwardedQuery : '');
 
-        if (!$fetched->isSuccessful()) {
-            return $this->failure($path, $file, $fetched);
+        return $this->origin->fetch(new OriginRequest($originUrl, ['Referer' => $server]));
+    }
+
+    /**
+     * Stores a fetched asset with its siblings and serves it.
+     */
+    private function storeAndServe(Request $request, string $origin, CacheLocation $location, string $extension, OriginResponse $fetched): Response
+    {
+        $path = '/' . $location->getRelativePath();
+        $error = $this->store($location, $extension, $fetched->getBody());
+        if ($error !== null) {
+            return $this->responses->error($path, $error);
         }
 
-        $body = $fetched->getBody();
-        $headers = $this->responses->forwardedHeaders($fetched->getHeaders());
-
-        if (!$this->storage->ensureDirectory($location->getDirectory())) {
-            return $this->responses->error($path, ResponseFactory::ERROR_CACHE_DIRECTORY);
-        }
-        if (!$this->storage->write($file, $body)) {
-            return $this->responses->error($path, ResponseFactory::ERROR_CACHE_FILE);
-        }
-
-        $servedWebp = false;
-        if ($isRaster && $this->converter !== null) {
-            $conversion = $this->converter->convert($file, $webpFile);
-            $convertedFile = $conversion->getPath();
-            if ($convertedFile === null) {
+        if ($this->isRaster($extension) && $this->converter !== null) {
+            $conversion = $this->converter->convert($location->getFile(), $location->getVariantFile(CacheLocation::FORMAT_WEBP));
+            if (!$conversion->isConverted()) {
                 return $this->responses->internalError('Image conversion failed: ' . (string) $conversion->getError());
-            }
-            $webp = $acceptsWebp ? $this->storage->read($convertedFile) : null;
-            if ($webp !== null) {
-                $body = $webp;
-                $headers['content-length'] = (string) strlen($webp);
-                $servedWebp = true;
             }
         }
 
         // The asset is back: forget any stale failure.
-        $this->negativeCache->forget($file);
-        $this->circuitBreaker->reset($origin);
+        $this->negativeCache->forget($location->getFile());
+        $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
 
-        return $this->responses->miss($body, $headers, $servedWebp, $extension);
+        return $this->serve($request, $location, $extension, ResponseFactory::CACHE_MISS)
+            ?? $this->responses->error($path, ResponseFactory::ERROR_CACHE_FILE);
+    }
+
+    /**
+     * Writes $body as the entry of $location, replacing the entry and the
+     * siblings of an older version, and writes its compressed siblings.
+     *
+     * @return int|null the ResponseFactory::ERROR_* constant of a failure, null on success
+     */
+    private function store(CacheLocation $location, string $extension, string $body): ?int
+    {
+        if (!$this->storage->ensureDirectory($location->getDirectory())) {
+            return ResponseFactory::ERROR_CACHE_DIRECTORY;
+        }
+        foreach ($location->getFiles() as $file) {
+            if ($file !== $location->getFile()) {
+                $this->storage->delete($file);
+            }
+        }
+        if (!$this->storage->write($location->getFile(), $body)) {
+            return ResponseFactory::ERROR_CACHE_FILE;
+        }
+
+        return null;
+    }
+
+    /**
+     * The response of the entry of $location when it is on disk: a raster
+     * as its AVIF or WEBP variant when the client accepts it (converted
+     * first when a converter is configured and the WEBP variant is
+     * missing), any other entry as its Brotli or gzip sibling when the
+     * client accepts it; null when the entry is not on disk.
+     *
+     * @param string $cacheStatus one of the ResponseFactory::CACHE_* constants
+     */
+    private function serve(Request $request, CacheLocation $location, string $extension, string $cacheStatus): ?Response
+    {
+        $file = $location->getFile();
+        if (!$this->storage->isFile($file)) {
+            return null;
+        }
+        if (!$this->isRaster($extension)) {
+            return $this->files->respond($request, $file, $extension, $cacheStatus);
+        }
+
+        $webp = $location->getVariantFile(CacheLocation::FORMAT_WEBP);
+        if ($this->converter !== null && !$this->storage->isFile($webp)) {
+            $this->converter->convert($file, $webp);
+        }
+        $accept = (string) $request->headers->get('Accept', '');
+        foreach (CacheLocation::FORMATS as $format) {
+            $variant = $location->getVariantFile($format);
+            if (AcceptHeader::accepts($accept, MediaTypes::of($format)) && $this->storage->isFile($variant)) {
+                return $this->files->respond($request, $variant, $format, $cacheStatus, ['Accept']);
+            }
+        }
+
+        return $this->files->respond($request, $file, $extension, $cacheStatus, ['Accept']);
+    }
+
+    private function isRaster(string $extension): bool
+    {
+        return in_array($extension, self::RASTER_EXTENSIONS, true);
+    }
+
+    /**
+     * The lower-case extension of a decoded path.
+     */
+    private static function extensionOf(string $path): string
+    {
+        return trim(strtolower(pathinfo($path, PATHINFO_EXTENSION)));
     }
 
     /**
@@ -384,17 +470,17 @@ final class ProxyKernel
      *   malformed reply, an HTTP/2 stream error, a local write error) is
      *   neutral: it neither counts nor closes.
      */
-    private function failure(string $path, string $file, OriginResponse $fetched): Response
+    private function failure(string $origin, string $path, string $file, OriginResponse $fetched): Response
     {
         $reason = $fetched->getFailureReason();
-        $origin = RedirectTarget::originOf($this->config->getSourceOrigin());
+        $breakerKey = RedirectTarget::originOf($origin);
         if (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429) {
-            $this->circuitBreaker->recordFailure($origin);
+            $this->circuitBreaker->recordFailure($breakerKey);
 
             return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
         if ($fetched->getStatus() > 0 && $fetched->getTransportErrorCode() === 0) {
-            $this->circuitBreaker->reset($origin);
+            $this->circuitBreaker->reset($breakerKey);
         }
 
         if ($reason === OriginResponse::FAILURE_NOT_FOUND || $reason === OriginResponse::FAILURE_GONE) {
@@ -407,7 +493,7 @@ final class ProxyKernel
             return $this->responses->error($path, ResponseFactory::ERROR_ORIGIN_FORBIDDEN);
         }
         if ($reason === OriginResponse::FAILURE_REDIRECT) {
-            $location = $this->proxyLocation($fetched->getLocation());
+            $location = $this->proxyLocation($origin, $fetched->getLocation());
 
             return $location === null
                 ? $this->responses->error($path, ResponseFactory::ERROR_BAD_GATEWAY)
@@ -419,7 +505,7 @@ final class ProxyKernel
 
     /**
      * The path and query string on the proxy of an origin URL below
-     * SOURCE_ORIGIN; null for any other URL, which the client must not be
+     * the origin of the host; null for any other URL, which the client must not be
      * sent to (it may be a private host: SSRF through the client).
      *
      * The URL is refused when a browser could read the path as another
@@ -429,9 +515,8 @@ final class ProxyKernel
      * ("/.//evil.example/x" resolves to "//evil.example/x"), and any "." or
      * ".." segment left after the origin URL was resolved.
      */
-    private function proxyLocation(?string $target): ?string
+    private function proxyLocation(string $origin, ?string $target): ?string
     {
-        $origin = $this->config->getSourceOrigin();
         // parse_url() turns control characters into "_": look at them first.
         if ($target === null || preg_match('#[\\\\\x00-\x20\x7f]#', $target) === 1 || !RedirectTarget::isSameOrigin($target, $origin)) {
             return null;
@@ -472,14 +557,6 @@ final class ProxyKernel
         $rawQuery = $request->server->get('QUERY_STRING');
 
         return is_scalar($rawQuery) ? (string) $rawQuery : '';
-    }
-
-    /**
-     * The host name of the origin, which scopes the purge keys.
-     */
-    private function originHost(): string
-    {
-        return strtolower((string) parse_url($this->config->getSourceOrigin(), PHP_URL_HOST));
     }
 
     /**
