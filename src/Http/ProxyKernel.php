@@ -21,6 +21,7 @@ use Mfonte\ProxyCdn\Origin\RedirectTarget;
 use Mfonte\ProxyCdn\Security\PathSanitizer;
 use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 use Psr\Log\LoggerInterface;
+use Symfony\Component\HttpFoundation\Exception\SuspiciousOperationException;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -184,6 +185,12 @@ final class ProxyKernel
     {
         // The method on the wire: X-HTTP-Method-Override must not turn a POST into a GET or a PURGE.
         $method = $request->getRealMethod();
+        // Symfony throws on a Host header that is not a host name, which
+        // would reach the front controller as a 500 and an error in the log:
+        // it is the client's mistake.
+        if (!self::hasValidHost($request)) {
+            return $this->responses->error(null, ResponseFactory::ERROR_BAD_HOST);
+        }
         if ($method === 'OPTIONS') {
             return $this->responses->preflight((string) $request->headers->get('Access-Control-Request-Headers', ''));
         }
@@ -437,6 +444,20 @@ final class ProxyKernel
         $query = parse_url($target, PHP_URL_QUERY);
 
         return ($path === '' ? '/' : $path) . (is_string($query) && $query !== '' ? '?' . $query : '');
+    }
+
+    /**
+     * Whether the Host header, if any, is a valid host name.
+     */
+    private static function hasValidHost(Request $request): bool
+    {
+        try {
+            $request->getHost();
+        } catch (SuspiciousOperationException $exception) {
+            return false;
+        }
+
+        return true;
     }
 
     /**

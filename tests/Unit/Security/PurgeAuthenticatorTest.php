@@ -119,6 +119,18 @@ final class PurgeAuthenticatorTest extends TestCase
         self::assertNull($authenticator->authenticate(self::purge($headers, '/css/a.css?v=1', 'other.example.test'), 'origin.example.test', self::NOW));
     }
 
+    public function testASignedRequestWithAnInvalidHostIsRefused(): void
+    {
+        $signature = hash_hmac('sha256', PurgeAuthenticator::signedMessage('bad host', '/css/a.css', (string) self::NOW), self::ORIGIN_SECRET);
+        $request = Request::create('/css/a.css', 'PURGE', [], [], [], [
+            'HTTP_HOST' => 'bad host',
+            'HTTP_X_PURGE_TIMESTAMP' => (string) self::NOW,
+            'HTTP_X_PURGE_SIGNATURE' => $signature,
+        ]);
+
+        self::assertNull(self::authenticator()->authenticate($request, 'origin.example.test', self::NOW));
+    }
+
     public function testASignatureWithTheKeyOfAnotherOriginIsRefused(): void
     {
         self::assertNull(self::authenticator()->authenticate(self::signed(self::OTHER_SECRET, (string) self::NOW), 'origin.example.test', self::NOW));

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Security;
 
 use Mfonte\ProxyCdn\Config\Config;
+use Symfony\Component\HttpFoundation\Exception\SuspiciousOperationException;
 use Symfony\Component\HttpFoundation\Request;
 
 /**
@@ -143,7 +144,12 @@ final class PurgeAuthenticator
         if (abs($now - (int) $timestamp) > self::MAX_CLOCK_SKEW) {
             return null;
         }
-        $message = self::signedMessage(strtolower($request->getHttpHost()), $request->getRequestUri(), $timestamp);
+        try {
+            $host = $request->getHttpHost();
+        } catch (SuspiciousOperationException $exception) {
+            return null;
+        }
+        $message = self::signedMessage(strtolower($host), $request->getRequestUri(), $timestamp);
         foreach ($secrets as $secret) {
             if (hash_equals(hash_hmac('sha256', $message, $secret), $signature)) {
                 return self::SCHEME_HMAC;

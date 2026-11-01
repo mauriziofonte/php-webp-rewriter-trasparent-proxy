@@ -58,6 +58,9 @@ final class ResponseFactory
      */
     public const ERROR_BAD_GATEWAY = 11;
 
+    /** The Host header is not a valid host name ("Host: bad host"). */
+    public const ERROR_BAD_HOST = 12;
+
     /**
      * The realm of the WWW-Authenticate challenge of a refused purge.
      */
@@ -91,6 +94,7 @@ final class ResponseFactory
     private const STATUSES = [
         self::ERROR_REFUSED => 400,
         self::ERROR_QUERY_NOT_ALLOWED => 400,
+        self::ERROR_BAD_HOST => 400,
         self::ERROR_PURGE_UNAUTHORIZED => 401,
         self::ERROR_NOT_CACHEABLE => 404,
         self::ERROR_ORIGIN_NOT_FOUND => 404,
@@ -121,6 +125,7 @@ final class ResponseFactory
         self::ERROR_ORIGIN_FORBIDDEN => 'Remote origin refused the file',
         self::ERROR_ORIGIN_GONE => 'Remote origin file is gone',
         self::ERROR_BAD_GATEWAY => 'Bad response from the remote origin',
+        self::ERROR_BAD_HOST => 'Invalid Host header',
     ];
 
     /**

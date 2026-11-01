@@ -234,6 +234,37 @@ final class ProxyKernelTest extends TestCase
         self::assertSame([], $this->origin->getRequests());
     }
 
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function provideMethods(): array
+    {
+        return ['GET' => ['GET'], 'OPTIONS' => ['OPTIONS'], 'PURGE' => ['PURGE']];
+    }
+
+    /**
+     * A Host header that is not a host name is the client's mistake: 400,
+     * not the exception of Symfony, which the front controller logs as an
+     * error and answers 500.
+     *
+     * @dataProvider provideMethods
+     */
+    #[DataProvider('provideMethods')]
+    public function testAnInvalidHostIsABadRequest(string $method): void
+    {
+        $request = Request::create('/css/site.css', $method, [], [], [], [
+            'HTTP_HOST' => 'bad host',
+            'HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET,
+        ]);
+
+        $response = $this->kernel()->handle($request);
+
+        self::assertSame(400, $response->getStatusCode());
+        self::assertStringContainsString('Error code: Invalid Host header.', (string) $response->getContent());
+        self::assertSame([], $this->origin->getRequests());
+        self::assertSame([], $this->logger->getRecords());
+    }
+
     public function testHeadHasTheHeadersOfTheGetWithoutBody(): void
     {
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'HEAD'));

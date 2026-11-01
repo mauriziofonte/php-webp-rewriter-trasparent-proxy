@@ -39,6 +39,20 @@ final class ErrorLoggingTest extends CharacterizationTestCase
         self::assertStringNotContainsString('upstream 404', $log);
     }
 
+    /**
+     * "Host: bad host" makes Symfony throw: the front controller answered
+     * 500 and logged an error for what is the client's mistake.
+     */
+    public function testAnInvalidHostIsABadRequestThatLogsNothing(): void
+    {
+        $response = $this->get('/images/gradient.png', ['Host' => 'bad host']);
+
+        self::assertSame(400, $response->getStatus());
+        self::assertStringContainsString('Error code: Invalid Host header.', $response->getBody());
+        self::assertSame(0, $this->origin->countRequestsFor('/images/gradient.png'));
+        self::assertFileDoesNotExist($this->logFile());
+    }
+
     private function logFile(): string
     {
         return $this->proxy->getProjectDirectory() . '/logs/proxy.log';
