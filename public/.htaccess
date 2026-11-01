@@ -7,11 +7,13 @@
 # client accepts it. Everything else reaches index.php: misses, query
 # strings that PHP must map, PURGE and OPTIONS.
 #
-# Requirements:
+# Requirements (see config/apache/proxy-cdn.conf for a virtual host):
 #   - DocumentRoot is public/, with "AllowOverride All";
 #   - mod_rewrite, mod_headers, mod_setenvif and mod_mime;
 #   - UseCanonicalName Off (the default): the cache directory is named
-#     after the Host header.
+#     after the Host header;
+#   - behind a TLS-terminating proxy, the virtual host sets PROXYCDN_HTTPS
+#     for the addresses of TRUSTED_PROXIES only (see section 2).
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -46,11 +48,18 @@ ErrorDocument 403 "Access Forbidden"
 <IfModule mod_rewrite.c>
     RewriteEngine On
 
-    # Force HTTPS. Honor X-Forwarded-Proto so the proxy works behind a
-    # TLS-terminating load balancer.
-    RewriteCond %{HTTPS} off
-    RewriteCond %{HTTP:X-Forwarded-Proto} !=https
-    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+    # Force HTTPS. X-Forwarded-Proto is NOT read here: any client can send
+    # it. Behind a TLS-terminating proxy, the virtual host sets the
+    # variable PROXYCDN_HTTPS for the addresses of that proxy only, the
+    # TRUSTED_PROXIES of the proxy configuration:
+    #   SetEnvIfExpr "-R '10.0.0.0/8' && %{HTTP:X-Forwarded-Proto} == 'https'" PROXYCDN_HTTPS=on
+    # The target names the host without the port of the plain-HTTP
+    # request (SERVER_NAME is the Host header without its port, with
+    # UseCanonicalName Off): HTTPS is served on 443, and the shipped nginx
+    # configuration redirects the same way.
+    RewriteCond %{HTTPS} !=on
+    RewriteCond %{ENV:PROXYCDN_HTTPS} !=on
+    RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [L,R=301]
 
     # Entry point must always reach PHP.
     RewriteRule ^index\.php$ - [L]

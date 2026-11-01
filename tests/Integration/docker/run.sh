@@ -8,7 +8,8 @@
 # server without reaching PHP-FPM (its access log stays unchanged) or the
 # origin: the entry, its WEBP and AVIF variants, its gzip encoding and the
 # entry of a query string, each with the headers PHP sends, once. PURGE,
-# OPTIONS and unlisted hosts reach PHP.
+# OPTIONS and unlisted hosts reach PHP, and only a trusted proxy can tell
+# that the client used https.
 #
 # Usage: tests/Integration/docker/run.sh [--php <version>] [--stack apache|nginx|all] [--keep]
 #
@@ -322,6 +323,16 @@ hit_headers() {
     pass "$1: no version in X-Powered-By"
 }
 
+# untrusted_https <stack>: the status of a plain-HTTP request with
+# "X-Forwarded-Proto: https" from another container than the trusted proxy.
+untrusted_https() {
+    compose exec -T "fpm-$1" php -r '
+        $context = stream_context_create(["http" => ["follow_location" => 0, "ignore_errors" => true,
+            "header" => "X-Forwarded-Proto: https\r\n"]]);
+        @file_get_contents($argv[1], false, $context);
+        echo explode(" ", $http_response_header[0] ?? "x 000")[1];' "http://$1/images/gradient.png"
+}
+
 smoke() {
     local s="$1" base fpm_log lines app css svg redirect
     base="http://127.0.0.1:$(port_of "$s")"
@@ -330,12 +341,13 @@ smoke() {
     log "Smoke test: $s + PHP-FPM $php_version"
     origin_reset
 
-    # Apache keeps the port of the Host header, nginx drops it.
+    # Both redirect to the host without the port of the plain-HTTP request.
     redirect="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$base$asset")"
     case "$redirect" in
-        "301 https://127.0.0.1$asset" | "301 https://${base#http://}$asset") pass "$s: plain HTTP is redirected to https" ;;
+        "301 https://127.0.0.1$asset") pass "$s: plain HTTP is redirected to https, without the port" ;;
         *) die "$s: plain HTTP is redirected to https: got '$redirect'" ;;
     esac
+    expect "$s: X-Forwarded-Proto of an untrusted client is ignored" "$(untrusted_https "$s")" 301
     expect "$s: vendor/ is refused" "$(status_of -H 'X-Forwarded-Proto: https' "$base/vendor/autoload.php")" 403
 
     lines="$(lines_of "$fpm_log")"
