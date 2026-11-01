@@ -200,7 +200,7 @@ final class ResponseReader
                 return [HttpResponse::OUTCOME_NETWORK, 0, 'Malformed chunked body: line too long or unterminated'];
             }
             $size = trim(explode(';', $line, 2)[0]);
-            if ($size === '' || strlen($size) > 15 || !ctype_xdigit($size)) {
+            if ($size === '' || strlen($size) > 15 || preg_match('/\A[0-9A-Fa-f]+\z/', $size) !== 1) {
                 return [HttpResponse::OUTCOME_NETWORK, 0, 'Malformed chunk size'];
             }
             if (hexdec($size) === 0) {

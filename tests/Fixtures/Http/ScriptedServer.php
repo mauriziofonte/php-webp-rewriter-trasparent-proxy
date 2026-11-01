@@ -79,7 +79,7 @@ final class ScriptedServer
         $deadline = microtime(true) + 10.0;
         while (microtime(true) < $deadline) {
             $port = @file_get_contents($stateDirectory . '/port');
-            if (is_string($port) && ctype_digit($port)) {
+            if (is_string($port) && preg_match('/\A[0-9]+\z/', $port) === 1) {
                 $host = strpos($bind, ':') !== false ? '[' . $bind . ']' : $bind;
 
                 return new self($process, $stateDirectory, ($certificate === null ? 'http' : 'https') . '://' . $host . ':' . $port, (int) $port);

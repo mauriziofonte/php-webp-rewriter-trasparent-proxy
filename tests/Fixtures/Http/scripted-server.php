@@ -168,7 +168,7 @@ function handle($stream, string $head, int $connection, int $index, string $stat
     $isHead = $method === 'HEAD';
     $acceptsGzip = stripos($headers['accept-encoding'] ?? '', 'gzip') !== false;
     $segments = explode('/', trim($path, '/'));
-    $number = isset($segments[1]) && ctype_digit($segments[1]) ? (int) $segments[1] : 0;
+    $number = isset($segments[1]) && preg_match('/\A[0-9]+\z/', $segments[1]) === 1 ? (int) $segments[1] : 0;
 
     switch ($segments[0]) {
         case 'echo':

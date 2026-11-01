@@ -114,7 +114,7 @@ final class LargeDownloadTest extends TestCase
     {
         $megabytes = getenv('PROXY_CDN_LARGE_DOWNLOAD_MB');
 
-        return (is_string($megabytes) && ctype_digit($megabytes) && (int) $megabytes > 1 ? (int) $megabytes : 32) * self::MEGABYTE;
+        return (is_string($megabytes) && preg_match('/\A[0-9]+\z/', $megabytes) === 1 && (int) $megabytes > 1 ? (int) $megabytes : 32) * self::MEGABYTE;
     }
 
     /**

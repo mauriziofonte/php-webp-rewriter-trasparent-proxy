@@ -57,9 +57,13 @@ final class ComposerManifestTest extends TestCase
         // The console and phpdotenv floors are the first releases that load
         // without deprecations on PHP 8.4 and later (implicitly nullable
         // parameters), so that bin/proxy-cdn and the install hooks print none.
+        // Every extension the code calls is declared, except the optional
+        // ones listed in "suggest".
         self::assertSame(
             [
                 'php' => '^7.2.5 || ^8.0',
+                'ext-filter' => '*',
+                'ext-hash' => '*',
                 'ext-json' => '*',
                 'psr/log' => '^1.1 || ^2.0 || ^3.0',
                 'symfony/console' => '^5.4.35 || ^6.4.3 || ^7.0.3 || ^8.0',
@@ -96,6 +100,25 @@ final class ComposerManifestTest extends TestCase
             [['type' => 'vcs', 'url' => 'https://github.com/mauriziofonte/php-secure-image-converter']],
             self::readManifest('composer.json')['repositories'] ?? null
         );
+    }
+
+    /**
+     * ext-ctype is not declared, so the code must not call it: digits are
+     * checked with preg_match(), which PCRE always provides.
+     */
+    public function testTheCodeDoesNotCallUndeclaredCtype(): void
+    {
+        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(self::ROOT . '/src', \FilesystemIterator::SKIP_DOTS));
+        $offenders = [];
+        foreach ($iterator as $file) {
+            if ($file instanceof \SplFileInfo && $file->getExtension() === 'php'
+                && preg_match('/\bctype_[a-z]+\s*\(/', (string) file_get_contents($file->getPathname())) === 1) {
+                $offenders[] = $file->getFilename();
+            }
+        }
+
+        self::assertSame([], $offenders);
+        self::assertArrayNotHasKey('ext-ctype', self::section(self::readManifest('composer.json'), 'require'));
     }
 
     public function testCurlIsSuggestedNotRequired(): void

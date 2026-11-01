@@ -524,7 +524,7 @@ final class ResponseCollector
             }
             $this->inflate = $inflate;
         }
-        if ($length !== null && $encoding === 'identity' && ctype_digit($length) && (strlen($length) > 18 || (int) $length > $this->maxBodySize)) {
+        if ($length !== null && $encoding === 'identity' && preg_match('/\A[0-9]+\z/', $length) === 1 && (strlen($length) > 18 || (int) $length > $this->maxBodySize)) {
             return $this->abort(self::ABORT_TOO_LARGE, 'The response body announces ' . $length . ' bytes, more than ' . $this->maxBodySize);
         }
 

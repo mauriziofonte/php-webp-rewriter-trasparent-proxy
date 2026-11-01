@@ -266,7 +266,7 @@ final class StreamTransport implements HttpClient
         $length = $collector->getHeader('content-length');
         if (strpos($transferEncoding, 'chunked') !== false) {
             $failure = $reader->readChunked();
-        } elseif ($length !== null && ctype_digit($length)) {
+        } elseif ($length !== null && preg_match('/\A[0-9]+\z/', $length) === 1) {
             $failure = $reader->readLength((int) $length);
         } else {
             $failure = $reader->readUntilClose();
