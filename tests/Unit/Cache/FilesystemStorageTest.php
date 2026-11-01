@@ -38,6 +38,28 @@ final class FilesystemStorageTest extends TestCase
         parent::tear_down();
     }
 
+    /**
+     * Finding P-17: an origin body is copied from its temporary file in
+     * chunks, never read into memory, and the copy is atomic.
+     */
+    public function testImportCopiesAFileAtomically(): void
+    {
+        $source = $this->directory->write('tmp/body', str_repeat('x', 300000));
+        $file = $this->directory->path('a/b/c.css');
+
+        self::assertTrue($this->storage->import($file, $source));
+        self::assertSame(str_repeat('x', 300000), file_get_contents($file));
+        self::assertSame(0644, fileperms($file) & 0777);
+        self::assertFileExists($source, 'the source is the caller\'s');
+        self::assertSame(['.', '..', 'c.css'], scandir($this->directory->path('a/b')));
+    }
+
+    public function testImportFailsWithoutSourceAndCleansUp(): void
+    {
+        self::assertFalse($this->storage->import($this->directory->path('a/c.css'), $this->directory->path('missing')));
+        self::assertSame(['.', '..'], scandir($this->directory->path('a')));
+    }
+
     public function testWriteCreatesTheDirectoriesAndTheFile(): void
     {
         $file = $this->directory->path('a/b/c.css');

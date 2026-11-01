@@ -46,6 +46,26 @@ final class ResponseBody
     }
 
     /**
+     * A body held in memory, written to a new temporary file of $directory;
+     * null when the file cannot be written.
+     */
+    public static function fromString(string $contents, string $directory): ?self
+    {
+        $path = @tempnam($directory, 'proxycdn-');
+        if ($path === false) {
+            return null;
+        }
+        TemporaryFiles::track($path);
+        if (@file_put_contents($path, $contents) !== strlen($contents)) {
+            TemporaryFiles::delete($path);
+
+            return null;
+        }
+
+        return new self($path, strlen($contents));
+    }
+
+    /**
      * The path of the file: the temporary file, or the target of moveTo().
      */
     public function getPath(): string

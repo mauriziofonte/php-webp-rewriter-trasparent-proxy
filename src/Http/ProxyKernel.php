@@ -54,10 +54,11 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    redirected every client to the WEBP copy), or as its Brotli or gzip
  *    sibling;
  * 6. otherwise, unless the circuit breaker of the origin is open, the
- *    asset is fetched from the origin (a failure is answered by its kind,
- *    see failure(), finding P-13), stored as the origin sent it with its
- *    compressed siblings, a raster is converted to WEBP when a converter is
- *    configured, and the asset is served from the cache.
+ *    entry is fetched from the origin; a failure is answered by its kind
+ *    (see failure(), finding P-13); the entry is stored as the origin sent
+ *    it, streamed from its temporary file (finding P-17), with its
+ *    compressed siblings, a raster is converted to WEBP when a converter
+ *    is configured, and the asset is served from the cache.
  *
  * The web server serves the cache files itself, without PHP, whenever it
  * can compute their location (see CacheKeyResolver); the kernel answers
@@ -388,7 +389,7 @@ final class ProxyKernel
     private function storeAndServe(Request $request, string $origin, CacheLocation $location, string $extension, OriginResponse $fetched): Response
     {
         $path = '/' . $location->getRelativePath();
-        $error = $this->store($location, $extension, $fetched->getBody());
+        $error = $this->store($location, $extension, $fetched);
         if ($error !== null) {
             return $this->responses->error($path, $error);
         }
@@ -409,14 +410,18 @@ final class ProxyKernel
     }
 
     /**
-     * Writes $body as the entry of $location, replacing the entry and the
-     * siblings of an older version, and writes its compressed siblings.
+     * Writes the body of $fetched as the entry of $location, replacing the
+     * entry and the siblings of an older version, and writes its
+     * compressed siblings. The body is copied from its temporary file in
+     * chunks (finding P-17), which is then deleted.
      *
      * @return int|null the ResponseFactory::ERROR_* constant of a failure, null on success
      */
-    private function store(CacheLocation $location, string $extension, string $body): ?int
+    private function store(CacheLocation $location, string $extension, OriginResponse $fetched): ?int
     {
         if (!$this->storage->ensureDirectory($location->getDirectory())) {
+            $fetched->release();
+
             return ResponseFactory::ERROR_CACHE_DIRECTORY;
         }
         foreach ($location->getFiles() as $file) {
@@ -424,7 +429,12 @@ final class ProxyKernel
                 $this->storage->delete($file);
             }
         }
-        if (!$this->storage->write($location->getFile(), $body)) {
+        $body = $fetched->getBodyFile();
+        $written = $body === null
+            ? $this->storage->write($location->getFile(), $fetched->getBody())
+            : $this->storage->import($location->getFile(), $body->getPath());
+        $fetched->release();
+        if (!$written) {
             return ResponseFactory::ERROR_CACHE_FILE;
         }
         $this->precompressor->compress($location, $extension);
@@ -546,7 +556,7 @@ final class ProxyKernel
             if (!$fetched->isSuccessful()) {
                 return $this->failure($origin, $path, $location->getFile(), $fetched);
             }
-            $error = $this->store($location, $extension, $fetched->getBody());
+            $error = $this->store($location, $extension, $fetched);
             if ($error !== null) {
                 return $this->responses->error($path, $error);
             }

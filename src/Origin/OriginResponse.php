@@ -6,7 +6,8 @@ namespace Mfonte\ProxyCdn\Origin;
 
 /**
  * The outcome of an origin fetch: a 200 response with its headers and body,
- * or a failure with its reason. Immutable.
+ * or a failure with its reason. Immutable, but for the temporary file of a streamed body, which the receiver moves
+ * or deletes.
  *
  * As in 2.x only a 200 is a success; every other status and every transport
  * error is a failure, classified by one of the FAILURE_* reasons. Redirects,
@@ -90,6 +91,11 @@ final class OriginResponse
     private $location;
 
     /**
+     * @var ResponseBody|null
+     */
+    private $bodyFile;
+
+    /**
      * @param array<string, string> $headers
      */
     private function __construct(int $status, array $headers, string $body, ?string $failureReason, int $transportErrorCode, string $transportError)
@@ -125,6 +131,20 @@ final class OriginResponse
     public static function success(array $headers, string $body): self
     {
         return new self(200, $headers, $body, null, 0, '');
+    }
+
+    /**
+     * A 200 response whose body is a temporary file, never read into memory
+     * (finding P-17).
+     *
+     * @param array<string, string> $headers header values keyed by lower-case name, the last occurrence of each
+     */
+    public static function streamed(array $headers, ResponseBody $body): self
+    {
+        $response = new self(200, $headers, '', null, 0, '');
+        $response->bodyFile = $body;
+
+        return $response;
     }
 
     /**
@@ -172,11 +192,42 @@ final class OriginResponse
     }
 
     /**
-     * The response body; empty for a failure.
+     * A response header by lower-case name; null when it was not sent.
+     */
+    public function getHeader(string $name): ?string
+    {
+        return $this->headers[$name] ?? null;
+    }
+
+    /**
+     * The response body; empty for a failure. A streamed body is read from
+     * its file: prefer getBodyFile().
      */
     public function getBody(): string
     {
+        if ($this->bodyFile !== null) {
+            return (string) $this->bodyFile->getContents();
+        }
+
         return $this->body;
+    }
+
+    /**
+     * The temporary file of a streamed body; null for any other response.
+     */
+    public function getBodyFile(): ?ResponseBody
+    {
+        return $this->bodyFile;
+    }
+
+    /**
+     * Deletes the temporary file of a streamed body, if any.
+     */
+    public function release(): void
+    {
+        if ($this->bodyFile !== null) {
+            $this->bodyFile->delete();
+        }
     }
 
     /**

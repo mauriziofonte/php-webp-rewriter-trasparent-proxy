@@ -76,6 +76,40 @@ final class FilesystemStorage implements CacheStorage
         return is_file($path);
     }
 
+    public function import(string $path, string $source): bool
+    {
+        $directory = dirname($path);
+        if (!$this->ensureDirectory($directory)) {
+            return false;
+        }
+        $input = @fopen($source, 'rb');
+        if ($input === false) {
+            return false;
+        }
+        $temporary = @tempnam($directory, self::TEMPORARY_PREFIX);
+        $output = $temporary === false ? false : @fopen($temporary, 'wb');
+        if ($temporary === false || $output === false) {
+            fclose($input);
+            if ($temporary !== false) {
+                @unlink($temporary);
+            }
+
+            return false;
+        }
+        $copied = @stream_copy_to_stream($input, $output);
+        $complete = $copied !== false && @fflush($output) && $copied === @filesize($source);
+        fclose($input);
+        fclose($output);
+        @chmod($temporary, 0644);
+        if (!$complete || !@rename($temporary, $path)) {
+            @unlink($temporary);
+
+            return false;
+        }
+
+        return is_file($path);
+    }
+
     public function ensureDirectory(string $directory): bool
     {
         if (is_dir($directory)) {

@@ -30,9 +30,9 @@ final class ConfigValidator
     private const SENSITIVE_EXTENSIONS = ['html', 'htm', 'php', 'xml', 'json'];
 
     /**
-     * The largest UPSTREAM_MAX_SIZE, 256 MiB: until bodies are streamed to
-     * the cache (PRX-7), the kernel holds an origin body in memory as a
-     * string, and a larger one would exhaust the memory limit.
+     * The largest UPSTREAM_MAX_SIZE, 256 MiB: bodies are streamed to disk,
+     * but a fetch holds a PHP worker and a temporary file for its whole
+     * transfer.
      */
     public const MAX_UPSTREAM_MAX_SIZE = 268435456;
 

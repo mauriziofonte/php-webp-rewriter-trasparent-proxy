@@ -68,7 +68,11 @@ final class HttpOriginFetcherTest extends TestCase
             $response->getHeaders(),
             'the whitelist is applied by the kernel'
         );
-        self::assertSame(['.', '..'], scandir($this->directory->path()), 'the temporary file is deleted');
+        $bodyFile = $response->getBodyFile();
+        self::assertNotNull($bodyFile, 'finding P-17: the body stays in its temporary file');
+        self::assertFileExists($bodyFile->getPath());
+        $response->release();
+        self::assertSame(['.', '..'], scandir($this->directory->path()), 'the temporary file is deleted on release');
         self::assertSame([], $this->logger->getRecords());
     }
 

@@ -16,6 +16,13 @@ namespace Mfonte\ProxyCdn\Cache;
 interface CacheStorage
 {
     /**
+     * Copies the file at $source to $path atomically, in chunks: the
+     * contents are never held in memory. False when $source cannot be read
+     * or $path cannot be written.
+     */
+    public function import(string $path, string $source): bool;
+
+    /**
      * Whether $path is an existing regular file.
      *
      * @phpstan-impure

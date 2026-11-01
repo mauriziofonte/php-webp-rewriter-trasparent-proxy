@@ -110,13 +110,12 @@ final class HttpOriginFetcher implements OriginFetcher
 
         if ($outcome === HttpResponse::OUTCOME_SUCCESS && $status === 200) {
             $body = $response->getBody();
-            $contents = $body === null ? null : $body->getContents();
-            if ($body === null || $contents === null) {
+            if ($body === null) {
                 return $this->transportFailure($url, OriginResponse::FAILURE_OTHER, $status, 0, 'The response body cannot be read');
             }
-            $body->delete();
 
-            return OriginResponse::success($response->getHeaders(), $contents);
+            // Finding P-17: the body stays in its temporary file.
+            return OriginResponse::streamed($response->getHeaders(), $body);
         }
 
         if ($outcome === HttpResponse::OUTCOME_NOT_FOUND) {

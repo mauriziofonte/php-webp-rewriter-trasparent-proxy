@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Tests\Unit\Origin;
 
 use Mfonte\ProxyCdn\Origin\OriginResponse;
+use Mfonte\ProxyCdn\Origin\ResponseBody;
 use PHPUnit\Framework\Attributes\CoversClass;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -14,6 +15,22 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 #[CoversClass(OriginResponse::class)]
 final class OriginResponseTest extends TestCase
 {
+    public function testStreamedBodyStaysInItsFileUntilReleased(): void
+    {
+        $body = ResponseBody::fromString('body {}', sys_get_temp_dir());
+        self::assertNotNull($body);
+
+        $response = OriginResponse::streamed(['content-type' => 'text/css'], $body);
+
+        self::assertTrue($response->isSuccessful());
+        self::assertSame($body, $response->getBodyFile());
+        self::assertSame('body {}', $response->getBody());
+        self::assertSame('text/css', $response->getHeader('content-type'));
+        self::assertNull($response->getHeader('etag'));
+        $response->release();
+        self::assertFileDoesNotExist($body->getPath());
+    }
+
     public function testSuccess(): void
     {
         $response = OriginResponse::success(['content-type' => 'text/css'], 'body {}');
