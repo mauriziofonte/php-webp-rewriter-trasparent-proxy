@@ -212,6 +212,8 @@ Levels:
 - **error** - upstream fetch failures (with `reason`, `response_code`, and for a transport failure `transport_error_code` and `transport_error`: the libcurl error number, which the stream transport reports too for the same failure, and the message), conversion failures, an invalid configuration.
 - **info** - purges, upstream 404s. Only written when `DEBUG=true`.
 
+An exception in the context is written as an object (`class`, `message`, `code`, `file`, `previous`, and `error_code` when the exception has a `getErrorCode()` method). When the `exception` of an entry comes from the conversion library, its error code is also copied to the context as `conversion_error_code`, the key the conversion API uses for the same codes.
+
 Example entry:
 
 ``` text

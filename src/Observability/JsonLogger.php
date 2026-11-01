@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Observability;
 
+use Mfonte\SecureImageConverter\Contract\Exception\ExceptionInterface as ConversionException;
 use Psr\Log\AbstractLogger;
 use Psr\Log\InvalidArgumentException;
 use Psr\Log\LogLevel;
@@ -15,7 +16,14 @@ use Psr\Log\LogLevel;
  *      "channel":"proxy-cdn","message":"upstream non-200","context":{...}}
  *
  * Placeholders such as "{url}" in the message are replaced with the context
- * values, as PSR-3 describes. Entries below the minimum level are dropped.
+ * values, as PSR-3 describes. An exception in the context is written as an
+ * object with its class, message, code, file and line, previous exception,
+ * and the "error_code" of an exception that has a getErrorCode() method.
+ * When the "exception" of the context (the PSR-3 key) comes from the
+ * conversion library, its error code is also copied to the context as
+ * CONVERSION_ERROR_CODE, the key the proxy and the conversion API share for
+ * the library's error codes, so that log queries need not dig into the
+ * exception object. Entries below the minimum level are dropped.
  * The directory of the file is created on the first write. Writing never
  * throws and never prints: a log that cannot be written must not break the
  * response.
@@ -27,6 +35,13 @@ use Psr\Log\LogLevel;
 final class JsonLogger extends AbstractLogger
 {
     public const DEFAULT_CHANNEL = 'proxy-cdn';
+
+    /**
+     * Context key of the conversion library's error code (an ErrorCode
+     * constant of mfonte/secure-image-converter), shared with the
+     * conversion API's log schema.
+     */
+    public const CONVERSION_ERROR_CODE = 'conversion_error_code';
 
     /**
      * Severity of each level, most severe first.
@@ -88,6 +103,10 @@ final class JsonLogger extends AbstractLogger
         $level = is_string($level) ? $level : '';
         if (self::severityOf($level) > $this->minimumSeverity) {
             return;
+        }
+        $exception = $context['exception'] ?? null;
+        if ($exception instanceof ConversionException && !array_key_exists(self::CONVERSION_ERROR_CODE, $context)) {
+            $context[self::CONVERSION_ERROR_CODE] = $exception->getErrorCode();
         }
 
         $line = json_encode(
@@ -201,6 +220,12 @@ final class JsonLogger extends AbstractLogger
                 'code' => $value->getCode(),
                 'file' => $value->getFile() . ':' . $value->getLine(),
             ];
+            if (method_exists($value, 'getErrorCode')) {
+                $errorCode = $value->getErrorCode();
+                if (is_string($errorCode) || is_int($errorCode)) {
+                    $exception['error_code'] = $errorCode;
+                }
+            }
             $previous = $value->getPrevious();
             if ($previous !== null) {
                 $exception['previous'] = self::normalise($previous, $depth + 1);

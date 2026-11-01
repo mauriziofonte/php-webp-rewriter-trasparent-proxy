@@ -6,6 +6,8 @@ namespace Mfonte\ProxyCdn\Tests\Unit\Observability;
 
 use Mfonte\ProxyCdn\Observability\JsonLogger;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
+use Mfonte\SecureImageConverter\Contract\Exception\ConversionFailedException;
+use Mfonte\SecureImageConverter\Contract\Exception\ConversionTimeoutException;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Psr\Log\InvalidArgumentException;
@@ -168,6 +170,54 @@ final class JsonLoggerTest extends TestCase
                 'file' => __FILE__ . ':' . $previous->getLine(),
             ],
         ], $context['exception']);
+    }
+
+    /**
+     * The error code of a library exception is written with the exception
+     * and copied to the context key shared with the conversion API.
+     */
+    public function testTheErrorCodeOfALibraryExceptionIsLogged(): void
+    {
+        $exception = new ConversionTimeoutException('took too long');
+
+        (new JsonLogger($this->file))->error('conversion failed', ['exception' => $exception, 'url' => '/a.png']);
+
+        $context = $this->entries()[0]['context'];
+        self::assertIsArray($context);
+        self::assertSame('conversion_timeout', $context['conversion_error_code'] ?? null);
+        self::assertIsArray($context['exception']);
+        self::assertSame('conversion_timeout', $context['exception']['error_code'] ?? null);
+        self::assertSame(ConversionTimeoutException::class, $context['exception']['class'] ?? null);
+        self::assertSame('/a.png', $context['url'] ?? null);
+    }
+
+    public function testAGivenConversionErrorCodeIsKept(): void
+    {
+        (new JsonLogger($this->file))->error('failed', ['exception' => new ConversionFailedException('x'), 'conversion_error_code' => 'set_by_caller']);
+
+        $context = $this->entries()[0]['context'];
+        self::assertIsArray($context);
+        self::assertSame('set_by_caller', $context[JsonLogger::CONVERSION_ERROR_CODE] ?? null);
+    }
+
+    public function testOtherExceptionsGetNoConversionErrorCode(): void
+    {
+        $exception = new class ('other') extends \RuntimeException {
+            public function getErrorCode(): string
+            {
+                return 'own_code';
+            }
+        };
+
+        (new JsonLogger($this->file))->error('failed', ['exception' => $exception, 'previous' => new \LogicException('plain')]);
+
+        $context = $this->entries()[0]['context'];
+        self::assertIsArray($context);
+        self::assertArrayNotHasKey('conversion_error_code', $context);
+        self::assertIsArray($context['exception']);
+        self::assertSame('own_code', $context['exception']['error_code'] ?? null);
+        self::assertIsArray($context['previous']);
+        self::assertArrayNotHasKey('error_code', $context['previous']);
     }
 
     public function testOtherValuesAreMadeJsonFriendly(): void
