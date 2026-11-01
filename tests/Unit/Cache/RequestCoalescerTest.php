@@ -221,7 +221,7 @@ final class RequestCoalescerTest extends TestCase
         self::assertNull($coalescer->recentFailure('key'));
         self::assertTrue($coalescer->isRecentlyUncacheable('key'));
 
-        $file = $this->directory->path('outcomes/' . hash('sha256', 'key') . '.outcome');
+        $file = $this->directory->path('outcomes/' . substr(hash('sha256', 'key'), 0, 3) . '.outcome');
         self::assertFileExists($file);
         touch($file, time() - RequestCoalescer::OUTCOME_WINDOW);
         clearstatcache();
@@ -233,6 +233,33 @@ final class RequestCoalescerTest extends TestCase
         self::assertFileDoesNotExist($file);
     }
 
+    /**
+     * The outcomes stay bounded, as the markers of NegativeCache: one slot
+     * file per three hexadecimal digits of the hash of the key, whatever
+     * the clients ask; a key that shares a slot replaces the outcome of the
+     * other, and forgetting a key leaves the outcome of the other.
+     */
+    public function testOutcomesLiveInABoundedNumberOfSlots(): void
+    {
+        $coalescer = $this->coalescer($this->lock(), 1.0);
+        for ($i = 0; $i < 5000; ++$i) {
+            $coalescer->recordFailure('/path/' . $i, ResponseFactory::ERROR_ORIGIN_FORBIDDEN);
+        }
+
+        $files = glob($this->directory->path('outcomes/*')) ?: [];
+        self::assertLessThanOrEqual(4096, count($files));
+        self::assertGreaterThan(2000, count($files), 'about 4096 * (1 - e^(-5000/4096)) slots in use');
+        self::assertSame(ResponseFactory::ERROR_ORIGIN_FORBIDDEN, $coalescer->recentFailure('/path/4999'));
+
+        list($first, $second) = self::keysOfOneSlot();
+        $coalescer->recordFailure($first, ResponseFactory::ERROR_BAD_GATEWAY);
+        $coalescer->recordUncacheable($second);
+        self::assertNull($coalescer->recentFailure($first), 'replaced by the other key');
+        self::assertTrue($coalescer->isRecentlyUncacheable($second));
+        $coalescer->forget($first);
+        self::assertTrue($coalescer->isRecentlyUncacheable($second), 'not the outcome of another key');
+    }
+
     public function testWithoutALockNoOutcomeIsRecorded(): void
     {
         $coalescer = $this->coalescer(null, 1.0);
@@ -242,6 +269,24 @@ final class RequestCoalescerTest extends TestCase
         self::assertNull($coalescer->recentFailure('key'));
         self::assertFalse($coalescer->isRecentlyUncacheable('other'));
         self::assertDirectoryDoesNotExist($this->directory->path('outcomes'));
+    }
+
+    /**
+     * Two keys whose hashes share their first three hexadecimal digits.
+     *
+     * @return array{string, string}
+     */
+    private static function keysOfOneSlot(): array
+    {
+        $seen = [];
+        for ($i = 0;; ++$i) {
+            $key = 'collision-' . $i;
+            $slot = substr(hash('sha256', $key), 0, 3);
+            if (isset($seen[$slot])) {
+                return [$seen[$slot], $key];
+            }
+            $seen[$slot] = $key;
+        }
     }
 
     private function coalescer(?KeyedLockInterface $lock, float $timeout, ?Backoff $backoff = null): RequestCoalescer

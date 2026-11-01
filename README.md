@@ -297,7 +297,9 @@ The proxy does not auto-clean stale negative markers or old cached files. Run ma
 ``` bash
 # Once, after the upgrade from 2.x: drop the .404 / .netfail markers it
 # left next to the cache files. The state of 3.0 lives in var/negative/
-# (bounded) and var/breaker/ (one file per origin) and needs no cleaning.
+# and var/coalescing/ (at most 4096 files each), var/locks/ (a file only
+# while its lock is held) and var/breaker/ (one file per origin), and
+# needs no cleaning.
 find /srv/sites/cdn/public \( -name '*.404' -o -name '*.netfail' \) -type f -delete
 
 # Every week: garbage-collect the query-string directories not touched in

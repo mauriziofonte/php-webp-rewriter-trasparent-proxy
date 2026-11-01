@@ -35,7 +35,13 @@ use Psr\Log\LoggerInterface;
  *   becomes the leader;
  * - a waiter that waited longer than the timeout is told so, and answers
  *   with an error instead of fetching.
- * The outcomes are small files of a directory of the state directory.
+ * The outcomes are small files of a directory of the state directory, in
+ * a bounded number of slots, as NegativeCache keeps its markers: the first
+ * SLOT_HEX_DIGITS hexadecimal digits of the SHA-256 of the key name the
+ * slot, so at most 4096 outcome files exist whatever the clients ask, and
+ * none needs cleaning. A slot holds the outcome and the full hash of its
+ * key; two keys that share a slot replace each other's outcome, which only
+ * costs the waiters of the other key one more origin fetch.
  *
  * Without a lock directory (it could not be created safely, or the library
  * reports an error) every request fetches by itself, as in 2.x, and the
@@ -56,6 +62,13 @@ final class RequestCoalescer
     private const UNCACHEABLE = 'uncacheable';
 
     private const FAILED = 'failed';
+
+    /**
+     * Hexadecimal digits of the hash that name a slot: 16^3 = 4096 slots.
+     */
+    private const SLOT_HEX_DIGITS = 3;
+
+    private const SLOT_SUFFIX = '.outcome';
 
     /**
      * @var KeyedLockInterface|null
@@ -205,7 +218,7 @@ final class RequestCoalescer
     public function recordFailure(string $key, int $error): void
     {
         if ($this->lock !== null) {
-            $this->storage->write($this->outcomeFile($key), self::FAILED . ' ' . $error . "\n");
+            $this->storage->write($this->slotOf($key), self::FAILED . ' ' . $error . ' ' . hash('sha256', $key) . "\n");
         }
     }
 
@@ -215,7 +228,7 @@ final class RequestCoalescer
     public function recordUncacheable(string $key): void
     {
         if ($this->lock !== null) {
-            $this->storage->write($this->outcomeFile($key), self::UNCACHEABLE . " 0\n");
+            $this->storage->write($this->slotOf($key), self::UNCACHEABLE . ' 0 ' . hash('sha256', $key) . "\n");
         }
     }
 
@@ -242,13 +255,13 @@ final class RequestCoalescer
     }
 
     /**
-     * Forgets the outcome recorded for $key: the entry is stored.
+     * Forgets the outcome recorded for $key: the entry is stored. The
+     * outcome of another key that shares the slot is kept.
      */
     public function forget(string $key): void
     {
-        $file = $this->outcomeFile($key);
-        if ($this->lock !== null && $this->storage->isFile($file)) {
-            $this->storage->delete($file);
+        if ($this->lock !== null && $this->recordedIn($key) !== null) {
+            $this->storage->delete($this->slotOf($key));
         }
     }
 
@@ -265,21 +278,35 @@ final class RequestCoalescer
         if ($this->lock === null) {
             return null;
         }
-        $file = $this->outcomeFile($key);
-        $contents = $this->storage->read($file);
-        if ($contents === null || preg_match('/\A(failed|uncacheable) ([0-9]{1,9})\n\z/', $contents, $match) !== 1) {
-            return null;
-        }
-        $recordedAt = $this->storage->modifiedAt($file);
+        $outcome = $this->recordedIn($key);
+        $recordedAt = $outcome === null ? null : $this->storage->modifiedAt($this->slotOf($key));
         if ($recordedAt === null || time() - $recordedAt >= $this->outcomeWindow) {
             return null;
         }
 
-        return [$match[1], (int) $match[2]];
+        return $outcome;
     }
 
-    private function outcomeFile(string $key): string
+    /**
+     * The outcome the slot of $key holds for $key, fresh or not; null when
+     * it holds none or the one of another key.
+     *
+     * @return array{string, int}|null
+     *
+     * @phpstan-impure
+     */
+    private function recordedIn(string $key): ?array
     {
-        return $this->outcomeDirectory . '/' . hash('sha256', $key) . '.outcome';
+        $contents = $this->storage->read($this->slotOf($key));
+        if ($contents === null || preg_match('/\A(failed|uncacheable) ([0-9]{1,9}) ([0-9a-f]{64})\n\z/', $contents, $match) !== 1) {
+            return null;
+        }
+
+        return $match[3] === hash('sha256', $key) ? [$match[1], (int) $match[2]] : null;
+    }
+
+    private function slotOf(string $key): string
+    {
+        return $this->outcomeDirectory . '/' . substr(hash('sha256', $key), 0, self::SLOT_HEX_DIGITS) . self::SLOT_SUFFIX;
     }
 }
