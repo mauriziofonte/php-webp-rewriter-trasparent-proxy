@@ -27,7 +27,6 @@ final class NegativeCacheTest extends CharacterizationTestCase
         self::assertCount(1, $this->negativeMarkers());
         self::assertFileDoesNotExist($this->publicPath('images/missing.png.404'));
         self::assertFileDoesNotExist($this->publicPath('images/missing.png'));
-        self::assertFileDoesNotExist($this->publicPath('images/missing.png.netfail'));
     }
 
     public function testFreshMarkerAnswersWithoutContactingTheOrigin(): void

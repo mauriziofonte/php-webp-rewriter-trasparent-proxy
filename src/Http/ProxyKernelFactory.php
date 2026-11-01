@@ -11,7 +11,7 @@ use Mfonte\ProxyCdn\Cache\Purger;
 use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\WebpConverter;
-use Mfonte\ProxyCdn\Origin\MarkerFileCircuitBreaker;
+use Mfonte\ProxyCdn\Origin\OriginCircuitBreaker;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Security\PathSanitizer;
 use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
@@ -53,7 +53,7 @@ final class ProxyKernelFactory
             PurgeAuthenticator::fromConfig($config),
             $storage,
             $negativeCache,
-            new MarkerFileCircuitBreaker($storage, $config->getNetworkErrorTtl()),
+            new OriginCircuitBreaker($stateDirectory . '/breaker', $config->getNetworkErrorTtl(), $config->getCircuitBreakerThreshold()),
             new Purger($storage, $negativeCache),
             $origin,
             $converter,

@@ -179,6 +179,7 @@ final class ConfigTest extends TestCase
             'CACHE_EXPIRY' => 100,
             'NEGATIVE_CACHE_TTL' => 200,
             'NETWORK_ERROR_TTL' => 300,
+            'CIRCUIT_BREAKER_THRESHOLD' => 3,
             'UPSTREAM_TIMEOUT' => 40,
             'UPSTREAM_CONNECT_TIMEOUT' => 5,
             'UPSTREAM_VERIFY_TLS' => true,

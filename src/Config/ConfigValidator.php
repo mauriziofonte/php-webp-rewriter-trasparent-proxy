@@ -42,6 +42,7 @@ final class ConfigValidator
         'CACHE_EXPIRY' => [0, PHP_INT_MAX],
         'NEGATIVE_CACHE_TTL' => [0, 86400],
         'NETWORK_ERROR_TTL' => [0, 3600],
+        'CIRCUIT_BREAKER_THRESHOLD' => [1, 1000],
         'UPSTREAM_TIMEOUT' => [1, 300],
         'UPSTREAM_CONNECT_TIMEOUT' => [1, 60],
         'UPSTREAM_MAX_SIZE' => [1, self::MAX_UPSTREAM_MAX_SIZE],

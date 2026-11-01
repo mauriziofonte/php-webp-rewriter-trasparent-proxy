@@ -286,19 +286,49 @@ final class ProxyKernelTest extends TestCase
         self::assertCount(1, glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/negative/*.neg')) ?: []);
     }
 
-    public function testAnOriginFailureOpensTheBreaker(): void
+    /**
+     * The breaker belongs to the origin: once it opens, every path that
+     * needs a fetch is answered 503 without contacting the origin, and the
+     * entries on disk are still served (finding P-14: 2.x kept a breaker
+     * per file).
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testTheBreakerOpensForTheWholeOriginP14(): void
     {
+        $this->directory->write('css/cached.css', 'cached');
         $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_TIMEOUT, 0, 28, 'timed out'));
 
         $first = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'));
-        $second = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'));
+        $other = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
+        $cached = $this->kernel()->handle(Request::create('https://cdn.example.test/css/cached.css'));
 
         self::assertSame(503, $first->getStatusCode());
         self::assertSame('30', $first->headers->get('retry-after'));
         self::assertStringContainsString('Error code: Upstream temporarily unavailable.', (string) $first->getContent());
-        self::assertSame(503, $second->getStatusCode());
-        self::assertCount(1, $this->origin->getRequests());
-        self::assertFileExists($this->directory->path('js/app.js.netfail'));
+        self::assertSame(503, $other->getStatusCode());
+        self::assertSame(200, $cached->getStatusCode());
+        self::assertSame(['https://origin.example.test/js/app.js'], $this->origin->getRequestedUrls());
+        self::assertFileDoesNotExist($this->directory->path('js/app.js.netfail'));
+    }
+
+    public function testTheBreakerOpensAfterTheThreshold(): void
+    {
+        $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 500));
+        $kernel = TestKernel::create(
+            TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'CIRCUIT_BREAKER_THRESHOLD' => '3']),
+            $this->directory->path(),
+            $this->origin,
+            null,
+            $this->logger
+        );
+
+        for ($attempt = 0; $attempt < 4; ++$attempt) {
+            self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+        }
+
+        self::assertCount(3, $this->origin->getRequests());
     }
 
     /**
@@ -342,7 +372,8 @@ final class ProxyKernelTest extends TestCase
         self::assertSame($status, $response->getStatusCode());
         self::assertFalse($response->headers->has('location'));
         self::assertStringContainsString('no-store', (string) $response->headers->get('cache-control'));
-        self::assertSame($opensTheBreaker, is_file($this->directory->path('js/app.js.netfail')));
+        $next = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
+        self::assertSame($opensTheBreaker ? 503 : 200, $next->getStatusCode());
     }
 
     /**
@@ -362,8 +393,8 @@ final class ProxyKernelTest extends TestCase
         self::assertSame('/js/app.min.js?v=2', $response->headers->get('location'));
         self::assertStringContainsString('no-store', (string) $response->headers->get('cache-control'));
         self::assertSame('', $response->getContent());
-        self::assertFileDoesNotExist($this->directory->path('js/app.js.netfail'));
         self::assertFileDoesNotExist($this->directory->path('js/app.js'));
+        self::assertSame(200, $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'))->getStatusCode());
     }
 
     public function testARedirectOutsideTheOriginPathIsRefused(): void
@@ -396,8 +427,6 @@ final class ProxyKernelTest extends TestCase
         self::assertCount(1, $markers);
         touch($markers[0], time() - 3600);
         $this->origin->serve(self::ORIGIN . '/css/gone.css', self::CSS, ['content-type' => 'text/css']);
-        $this->directory->write('css/site.css.netfail', '');
-        touch($this->directory->path('css/site.css.netfail'), time() - 3600);
 
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
         $gone = $this->kernel()->handle(Request::create('https://cdn.example.test/css/gone.css'));
@@ -405,7 +434,6 @@ final class ProxyKernelTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertSame(200, $gone->getStatusCode());
         self::assertFileDoesNotExist($markers[0]);
-        self::assertFileDoesNotExist($this->directory->path('css/site.css.netfail'));
     }
 
     /**
@@ -439,7 +467,6 @@ final class ProxyKernelTest extends TestCase
         $this->origin->serve(self::ORIGIN . '/js/app.js?v=1', 'old');
         $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'));
         $bucket = '_qs/' . substr(hash('sha256', 'v=1'), 0, 16);
-        $this->directory->write($bucket . '/js/app.js.netfail', '');
         $this->logger = new MemoryLogger();
 
         $response = $this->purgingKernel()->handle(Request::create(
@@ -455,7 +482,6 @@ final class ProxyKernelTest extends TestCase
         self::assertSame('application/json', $response->headers->get('content-type'));
         self::assertSame(['purged' => true, 'path' => '/js/app.js', 'query' => 'v=1', 'removed' => 1], json_decode((string) $response->getContent(), true));
         self::assertFileDoesNotExist($this->directory->path($bucket . '/js/app.js'));
-        self::assertFileDoesNotExist($this->directory->path($bucket . '/js/app.js.netfail'));
         self::assertSame(
             [['level' => 'notice', 'message' => 'purge', 'context' => ['path' => '/js/app.js', 'query' => 'v=1', 'removed' => 1, 'auth' => 'bearer', 'client' => '192.0.2.7']]],
             $this->logger->getRecords()
@@ -659,7 +685,8 @@ final class ProxyKernelTest extends TestCase
     private function kernel(?FakeWebpConverter $converter = null): ProxyKernel
     {
         return TestKernel::create(
-            TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'IMAGE_CONVERSION_MODE' => $converter === null ? 'none' : 'native']),
+            // One failure opens the breaker, as in 2.x, to keep the tests short.
+            TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'IMAGE_CONVERSION_MODE' => $converter === null ? 'none' : 'native', 'CIRCUIT_BREAKER_THRESHOLD' => '1']),
             $this->directory->path(),
             $this->origin,
             $converter,

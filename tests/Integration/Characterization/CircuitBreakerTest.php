@@ -8,8 +8,8 @@ use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * The ".netfail" marker: any origin failure other than a 404 is remembered
- * for NETWORK_ERROR_TTL seconds and answered with 503.
+ * The circuit breaker of the origin, and how the other origin answers are
+ * served (CIRCUIT_BREAKER_THRESHOLD=2 here).
  *
  * @coversNothing
  *
@@ -19,72 +19,85 @@ use PHPUnit\Framework\Attributes\Group;
 #[Group('characterization')]
 final class CircuitBreakerTest extends CharacterizationTestCase
 {
-    public function testServerErrorOpensTheBreakerAndAnswers503(): void
+    public function testServerErrorsOpenTheBreakerAfterTheThreshold(): void
     {
         $this->origin->setRule('/images/gradient.png', 500);
 
-        $response = $this->get('/images/gradient.png');
+        $first = $this->get('/images/gradient.png');
+        $second = $this->get('/images/gradient.png');
+        $third = $this->get('/images/gradient.png');
 
-        self::assertErrorResponse($response, 503, 'Upstream temporarily unavailable', '/images/gradient.png');
-        self::assertSame('30', $response->getHeader('Retry-After'));
-        self::assertFileExists($this->publicPath('images/gradient.png.netfail'));
+        foreach ([$first, $second, $third] as $response) {
+            self::assertErrorResponse($response, 503, 'Upstream temporarily unavailable', '/images/gradient.png');
+            self::assertSame('30', $response->getHeader('Retry-After'));
+        }
+        self::assertSame(2, $this->origin->countRequestsFor('/images/gradient.png'));
+        self::assertCount(1, $this->breakerStates());
         self::assertSame([], $this->negativeMarkers());
+        self::assertFileDoesNotExist($this->publicPath('images/gradient.png.netfail'));
         self::assertFileDoesNotExist($this->publicPath('images/gradient.png'));
     }
 
-    public function testOpenBreakerAnswersWithoutContactingTheOrigin(): void
+    /**
+     * Once open, the breaker answers for every path of the origin without
+     * contacting it, while the entries on disk are still served (finding
+     * P-14: 2.x kept one breaker per file, so a failing origin was
+     * contacted again for every other path, and an open breaker hid the
+     * cached copy of its own file).
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testTheBreakerIsKeptPerOriginP14(): void
     {
+        $this->get('/css/site.css?v=1');
         $this->origin->setRule('/images/gradient.png', 502);
+        $this->origin->setRule('/js/app.js', 502);
         $this->get('/images/gradient.png');
-        $this->origin->removeRule('/images/gradient.png');
+        $this->get('/images/gradient.png');
 
-        $response = $this->get('/images/gradient.png');
+        $other = $this->get('/js/app.js');
+        $cached = $this->get('/css/site.css?v=1');
 
-        self::assertErrorResponse($response, 503, 'Upstream temporarily unavailable', '/images/gradient.png');
-        self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
+        self::assertErrorResponse($other, 503, 'Upstream temporarily unavailable', '/js/app.js');
+        self::assertSame(0, $this->origin->countRequestsFor('/js/app.js'));
+        self::assertSame(200, $cached->getStatus());
+        self::assertSame('hit', $cached->getHeader('X-Cache-Status'));
+        self::assertFileDoesNotExist($this->publicPath('js/app.js.netfail'));
     }
 
-    public function testExpiredBreakerRetriesAndClosesOnSuccess(): void
+    public function testAnExpiredBreakerLetsAProbeThroughAndClosesOnSuccess(): void
     {
         $this->origin->setRule('/images/gradient.png', 503);
         $this->get('/images/gradient.png');
+        $this->get('/images/gradient.png');
         $this->origin->removeRule('/images/gradient.png');
-
-        self::age($this->publicPath('images/gradient.png.netfail'), 31);
-        $response = $this->get('/images/gradient.png');
-
-        self::assertSame(200, $response->getStatus());
-        self::assertFileDoesNotExist($this->publicPath('images/gradient.png.netfail'));
-        self::assertSame(2, $this->origin->countRequestsFor('/images/gradient.png'));
-    }
-
-    /**
-     * An open breaker also hides an entry that is cached on disk.
-     */
-    public function testOpenBreakerAlsoAnswersForCachedEntries(): void
-    {
-        $this->get('/images/gradient.png?v=1');
-        touch($this->bucketPath('v=1', 'images/gradient.png.netfail'));
-
-        $response = $this->get('/images/gradient.png?v=1');
-
-        self::assertSame(503, $response->getStatus());
-    }
-
-    /**
-     * The breaker is kept per file, not per origin (finding P-14, resolved
-     * by PRX-5): a failing origin is contacted again for every other path.
-     */
-    public function testBreakerIsKeptPerFileP14(): void
-    {
-        $this->origin->setRule('/images/gradient.png', 500);
-        $this->origin->setRule('/js/app.js', 500);
-
-        self::assertSame(503, $this->get('/images/gradient.png')->getStatus());
         self::assertSame(503, $this->get('/js/app.js')->getStatus());
 
-        self::assertSame(1, $this->origin->countRequestsFor('/js/app.js'));
-        self::assertFileExists($this->publicPath('js/app.js.netfail'));
+        $this->shiftBreakerTimes(-31);
+        $probe = $this->get('/images/gradient.png');
+        $after = $this->get('/js/app.js');
+
+        self::assertSame(200, $probe->getStatus());
+        self::assertSame(200, $after->getStatus());
+        self::assertSame([], $this->breakerStates());
+        self::assertSame(3, $this->origin->countRequestsFor('/images/gradient.png'));
+    }
+
+    public function testAFailedProbeOpensTheBreakerAgain(): void
+    {
+        $this->origin->setRule('/images/gradient.png', 500);
+        $this->get('/images/gradient.png');
+        $this->get('/images/gradient.png');
+
+        $this->shiftBreakerTimes(-31);
+        $probe = $this->get('/images/gradient.png');
+        $next = $this->get('/js/app.js');
+
+        self::assertSame(503, $probe->getStatus());
+        self::assertSame(503, $next->getStatus());
+        self::assertSame(3, $this->origin->countRequestsFor('/images/gradient.png'));
+        self::assertSame(0, $this->origin->countRequestsFor('/js/app.js'));
     }
 
     /**
@@ -116,9 +129,7 @@ final class CircuitBreakerTest extends CharacterizationTestCase
         self::assertErrorResponse($gone, 410, 'Remote origin file is gone', '/images/gone.png');
         self::assertErrorResponse($goneAgain, 410, 'Remote origin file is gone', '/images/gone.png');
         self::assertSame(1, $this->origin->countRequestsFor('/images/gone.png'));
-        foreach (['moved', 'away', 'forbidden', 'gone'] as $name) {
-            self::assertFileDoesNotExist($this->publicPath('images/' . $name . '.png.netfail'));
-        }
+        self::assertSame([], $this->breakerStates());
         self::assertSame(0, $this->origin->countRequestsFor('/images/gradient.png'));
     }
 
@@ -141,26 +152,61 @@ final class CircuitBreakerTest extends CharacterizationTestCase
         self::assertSame(2, $this->origin->countRequestsFor('/images/gradient.png'));
     }
 
-    public function testUnreachableOriginOpensTheBreaker(): void
+    public function testAnUnreachableOriginCountsAsAFailure(): void
     {
         $this->origin->stop();
 
-        $response = $this->get('/images/gradient.png');
+        $this->get('/images/gradient.png');
+        $response = $this->get('/js/app.js');
 
-        self::assertErrorResponse($response, 503, 'Upstream temporarily unavailable', '/images/gradient.png');
-        self::assertFileExists($this->publicPath('images/gradient.png.netfail'));
+        self::assertErrorResponse($response, 503, 'Upstream temporarily unavailable', '/js/app.js');
+        self::assertCount(1, $this->breakerStates());
     }
 
-    public function testFreshNotFoundMarkerIsCheckedBeforeTheBreaker(): void
+    public function testAFreshNotFoundMarkerIsCheckedBeforeTheBreaker(): void
     {
         $this->origin->setRule('/images/gradient.png', 404);
         $this->get('/images/gradient.png?v=1');
-        $this->origin->removeRule('/images/gradient.png');
-        mkdir(dirname($this->bucketPath('v=1', 'images/gradient.png')), 0777, true);
-        touch($this->bucketPath('v=1', 'images/gradient.png.netfail'));
+        $this->origin->setRule('/js/app.js', 500);
+        $this->get('/js/app.js');
+        $this->get('/js/app.js');
 
         $response = $this->get('/images/gradient.png?v=1');
 
-        self::assertSame(404, $response->getStatus());
+        self::assertErrorResponse($response, 404, 'Cannot read remote origin file', '/images/gradient.png');
+    }
+
+    protected function configuration(): array
+    {
+        return array_merge(parent::configuration(), ['CIRCUIT_BREAKER_THRESHOLD' => '2']);
+    }
+
+    /**
+     * The state files of the breakers, in var/breaker/ of the copy.
+     *
+     * @return list<string>
+     */
+    private function breakerStates(): array
+    {
+        $files = glob($this->proxy->getProjectDirectory() . '/var/breaker/*.breaker');
+
+        return $files === false ? [] : $files;
+    }
+
+    /**
+     * Moves the times kept by every breaker by $seconds.
+     */
+    private function shiftBreakerTimes(int $seconds): void
+    {
+        foreach ($this->breakerStates() as $file) {
+            $state = json_decode((string) file_get_contents($file), true);
+            self::assertIsArray($state);
+            foreach (['last_failure_at', 'opened_at', 'probe_at'] as $name) {
+                if (isset($state[$name]) && is_int($state[$name]) && $state[$name] !== 0) {
+                    $state[$name] += $seconds;
+                }
+            }
+            file_put_contents($file, json_encode($state));
+        }
     }
 }

@@ -72,6 +72,11 @@ final class Config
     /**
      * @var int
      */
+    private $circuitBreakerThreshold;
+
+    /**
+     * @var int
+     */
     private $networkErrorTtl;
 
     /**
@@ -164,6 +169,7 @@ final class Config
         $config->cacheExpiry = self::integer($values, 'CACHE_EXPIRY');
         $config->negativeCacheTtl = self::integer($values, 'NEGATIVE_CACHE_TTL');
         $config->networkErrorTtl = self::integer($values, 'NETWORK_ERROR_TTL');
+        $config->circuitBreakerThreshold = self::integer($values, 'CIRCUIT_BREAKER_THRESHOLD');
         $config->upstreamTimeout = self::integer($values, 'UPSTREAM_TIMEOUT');
         $config->upstreamConnectTimeout = self::integer($values, 'UPSTREAM_CONNECT_TIMEOUT');
         $config->upstreamVerifyTls = self::boolean($values, 'UPSTREAM_VERIFY_TLS');
@@ -206,6 +212,7 @@ final class Config
             'CACHE_EXPIRY' => $this->cacheExpiry,
             'NEGATIVE_CACHE_TTL' => $this->negativeCacheTtl,
             'NETWORK_ERROR_TTL' => $this->networkErrorTtl,
+            'CIRCUIT_BREAKER_THRESHOLD' => $this->circuitBreakerThreshold,
             'UPSTREAM_TIMEOUT' => $this->upstreamTimeout,
             'UPSTREAM_CONNECT_TIMEOUT' => $this->upstreamConnectTimeout,
             'UPSTREAM_VERIFY_TLS' => $this->upstreamVerifyTls,
@@ -304,6 +311,15 @@ final class Config
     public function getNegativeCacheTtl(): int
     {
         return $this->negativeCacheTtl;
+    }
+
+    /**
+     * CIRCUIT_BREAKER_THRESHOLD: consecutive unavailability failures of the
+     * origin that open its circuit breaker.
+     */
+    public function getCircuitBreakerThreshold(): int
+    {
+        return $this->circuitBreakerThreshold;
     }
 
     /**

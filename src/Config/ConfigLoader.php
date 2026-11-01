@@ -28,7 +28,8 @@ final class ConfigLoader
     /**
      * The configuration keys: those of 2.x, plus UPSTREAM_MAX_SIZE and
      * UPSTREAM_USER_AGENT (PRX-4), QUERY_STRING_ALLOWLIST,
-     * QUERY_STRING_MODE, TRUSTED_PROXIES and PURGE_KEYS (PRX-5).
+     * QUERY_STRING_MODE, TRUSTED_PROXIES, PURGE_KEYS and
+     * CIRCUIT_BREAKER_THRESHOLD (PRX-5).
      */
     public const KEYS = [
         'DEBUG',
@@ -41,6 +42,7 @@ final class ConfigLoader
         'CACHE_EXPIRY',
         'NEGATIVE_CACHE_TTL',
         'NETWORK_ERROR_TTL',
+        'CIRCUIT_BREAKER_THRESHOLD',
         'UPSTREAM_TIMEOUT',
         'UPSTREAM_CONNECT_TIMEOUT',
         'UPSTREAM_VERIFY_TLS',
@@ -69,6 +71,7 @@ final class ConfigLoader
         'CACHE_EXPIRY' => '86400',
         'NEGATIVE_CACHE_TTL' => '300',
         'NETWORK_ERROR_TTL' => '30',
+        'CIRCUIT_BREAKER_THRESHOLD' => '5',
         'UPSTREAM_TIMEOUT' => '30',
         'UPSTREAM_CONNECT_TIMEOUT' => '5',
         'UPSTREAM_VERIFY_TLS' => 'true',
@@ -188,6 +191,7 @@ final class ConfigLoader
             'CACHE_EXPIRY' => (int) $value('CACHE_EXPIRY'),
             'NEGATIVE_CACHE_TTL' => (int) $value('NEGATIVE_CACHE_TTL'),
             'NETWORK_ERROR_TTL' => (int) $value('NETWORK_ERROR_TTL'),
+            'CIRCUIT_BREAKER_THRESHOLD' => (int) $value('CIRCUIT_BREAKER_THRESHOLD'),
             'UPSTREAM_TIMEOUT' => (int) $value('UPSTREAM_TIMEOUT'),
             'UPSTREAM_CONNECT_TIMEOUT' => (int) $value('UPSTREAM_CONNECT_TIMEOUT'),
             'UPSTREAM_VERIFY_TLS' => ConfigValidator::booleanOf($value('UPSTREAM_VERIFY_TLS')) === true,

@@ -31,7 +31,8 @@ ErrorDocument 403 "Access Forbidden"
     Require all denied
 </FilesMatch>
 
-# Deny access to negative-cache markers.
+# Deny access to the negative-cache markers that 2.x left next to the
+# cache files (3.0 keeps its state in var/ of the project).
 <FilesMatch "\.(404|netfail)$">
     Require all denied
 </FilesMatch>

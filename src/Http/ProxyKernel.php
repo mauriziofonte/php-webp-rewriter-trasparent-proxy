@@ -35,13 +35,14 @@ use Symfony\Component\HttpFoundation\Response;
  * 2. PURGE removes the entry when the request proves a purge key of the
  *    origin (PurgeAuthenticator); the anonymous "?purge=1" and
  *    "?purge_all=1" of 2.x get a 401 that explains the change (risk L-7);
- * 3. a fresh 404 marker or an open circuit breaker answers without asking
- *    the origin;
+ * 3. a fresh 404 or 410 of the negative cache answers without asking the
+ *    origin;
  * 4. the query string is reduced to the parameters of QueryStringPolicy,
  *    which key the entry and reach the origin as the client wrote them;
  *    a raster whose WEBP sibling exists is served as WEBP to clients that
  *    accept it; an entry on disk is served from disk;
- * 5. otherwise the asset is fetched from the origin (a failure is answered
+ * 5. otherwise, unless the circuit breaker of the origin is open, the
+ *    asset is fetched from the origin (a failure is answered
  *    by its kind, see failure(), finding P-13) and stored as the
  *    origin sent it (2.x rewrote stylesheets, findings P-2, P-3, P-4), a
  *    raster is converted to WEBP when a converter is configured, and the
@@ -253,7 +254,6 @@ final class ProxyKernel
 
         $isRaster = in_array($extension, self::RASTER_EXTENSIONS, true);
         $removed = $this->purger->purge($location, $isRaster);
-        $this->circuitBreaker->reset($location->getFile());
         $this->logger->notice('purge', [
             'path' => $path,
             'query' => $query->getCanonical(),
@@ -287,9 +287,6 @@ final class ProxyKernel
         if ($remembered !== null) {
             return $this->responses->error($path, $remembered === 410 ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
         }
-        if ($this->circuitBreaker->isOpen($file)) {
-            return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
-        }
 
         $acceptsWebp = stripos((string) $request->headers->get('Accept', ''), 'image/webp') !== false;
         $isRaster = in_array($extension, self::RASTER_EXTENSIONS, true);
@@ -312,6 +309,13 @@ final class ProxyKernel
             }
 
             return $this->files->respond($file, $extension);
+        }
+
+        // Finding P-14: one breaker for the origin, checked only before a
+        // fetch, so that the entries on disk are served while it is open.
+        $origin = RedirectTarget::originOf($this->config->getSourceOrigin());
+        if ($this->circuitBreaker->isOpen($origin)) {
+            return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
 
         // The scheme the client used, as a trusted proxy reports it (TRUSTED_PROXIES).
@@ -352,7 +356,7 @@ final class ProxyKernel
 
         // The asset is back: forget any stale failure.
         $this->negativeCache->forget($file);
-        $this->circuitBreaker->reset($file);
+        $this->circuitBreaker->reset($origin);
 
         return $this->responses->miss($body, $headers, $servedWebp, $extension);
     }
@@ -389,7 +393,7 @@ final class ProxyKernel
                 : $this->responses->redirect($fetched->getStatus(), $location);
         }
         if (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429) {
-            $this->circuitBreaker->recordFailure($file);
+            $this->circuitBreaker->recordFailure(RedirectTarget::originOf($this->config->getSourceOrigin()));
 
             return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }

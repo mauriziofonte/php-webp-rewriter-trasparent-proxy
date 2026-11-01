@@ -61,9 +61,10 @@ The one thing this project does that is genuinely cumbersome to replicate with o
         - Empty QS: `public/<path>`.
         - Non-empty QS: `public/_qs/<sha256_prefix>/<path>`.
     3. Answer an authenticated `PURGE` (see *Cache purge*); refuse the anonymous `?purge=` of 2.x with a 401.
-    4. Short-circuit to 404 or 503 if a negative-cache marker is still warm.
+    4. Short-circuit to 404 or 410 if the negative cache still remembers the entry.
     5. Serve from disk if the cache file exists (content-negotiated webp when applicable).
-    6. Otherwise, fetch the origin over HTTPS with cURL, distinguish a real 404 from a transient network failure, persist the bytes atomically, optionally convert to webp, and stream the response.
+    6. Answer 503 without a fetch while the circuit breaker of the origin is open.
+    7. Otherwise, fetch the origin over HTTPS with cURL, distinguish a real 404 from a transient network failure, persist the bytes atomically, optionally convert to webp, and stream the response.
 
 ## Installation
 
@@ -95,7 +96,8 @@ Every setting is read from the environment first and from `.env` second: a varia
 | `CACHEABLE_EXTENSIONS`            | CSV       | `css,js,...,ico`          | Whitelist of file extensions the proxy will serve. Any extension outside this list is rejected with a 404.                                                      |
 | `CACHE_EXPIRY`                    | seconds   | `31536000` (1y)           | `max-age` sent on first-hit responses and, via `.htaccess`, on cache hits. Combined with `must-revalidate` (not `immutable`), so a purge is effective.          |
 | `NEGATIVE_CACHE_TTL`              | seconds   | `300`                     | How long a 404 marker is honored before the proxy re-queries the origin.                                                                                        |
-| `NETWORK_ERROR_TTL`               | seconds   | `30`                      | Circuit-breaker window for transient upstream failures (timeout, DNS, TLS, 5xx).                                                                                |
+| `NETWORK_ERROR_TTL`               | seconds   | `30`                      | How long the circuit breaker of the origin stays open once it opens (see *Negative caching and circuit breaker*); `0` disables the breaker.                     |
+| `CIRCUIT_BREAKER_THRESHOLD`       | int       | `5`                       | Consecutive unavailability failures of the origin (5xx, 429, timeout, DNS, connection, TLS) that open its circuit breaker; 1 to 1000.                          |
 | `UPSTREAM_TIMEOUT`                | seconds   | `30`                      | Hard cap on a single upstream fetch. Combined with `CURLOPT_LOW_SPEED_LIMIT=1024` + `_TIME=10`, this also aborts stalled transfers. A stalled DNS lookup is bounded by the system resolver instead. |
 | `UPSTREAM_CONNECT_TIMEOUT`        | seconds   | `5`                       | Socket-level connect timeout.                                                                                                                                   |
 | `UPSTREAM_VERIFY_TLS`             | bool      | `true`                    | Verifies the origin TLS certificate and host name. 2.x defaulted to `false`; `check-env` notes the change when the key is unset and the origin is https.        |
@@ -155,7 +157,7 @@ curl -X PURGE -H "X-Purge-Timestamp: $ts" -H "X-Purge-Signature: $sig" \
     'https://static.mycdn.com/images/hero.jpg?v=42'
 ```
 
-A purge removes the entry of that exact URL (the `_qs/<hash>/` bucket of its allowlisted query string, or the path alone), the `.webp` variant converted from a raster entry, and what the negative cache and the circuit breaker remember for it. It does not fetch the asset again: the next request does. The answer is `200` with `{"purged":true,"path":"/images/hero.jpg","query":"v=42","removed":2}`; a request without a valid key gets `401` with `WWW-Authenticate: Bearer realm="proxy-cdn purge"`. Every purge is logged at `notice` level with the client address (read through `TRUSTED_PROXIES`); every refusal at `warning` level.
+A purge removes the entry of that exact URL (the `_qs/<hash>/` bucket of its allowlisted query string, or the path alone), the `.webp` variant converted from a raster entry, and what the negative cache remembers for them. It does not fetch the asset again: the next request does. The answer is `200` with `{"purged":true,"path":"/images/hero.jpg","query":"v=42","removed":2}`; a request without a valid key gets `401` with `WWW-Authenticate: Bearer realm="proxy-cdn purge"`. Every purge is logged at `notice` level with the client address (read through `TRUSTED_PROXIES`); every refusal at `warning` level.
 
 The anonymous `?purge=1` and `?purge_all=1` of 2.x were removed: anyone could empty the cache and send the load to the origin. Such a request now gets a `401` whose body explains the `PURGE` request, and purges nothing. `purge_all` also removed the files of other URLs that share the base name (`hero.png` for `hero.jpg`); purge those by their own URL.
 
@@ -187,12 +189,14 @@ Cons: on a QS-keyed hit, PHP runs (no pure-Apache fast path). For a static asset
 
 ## Negative caching and circuit breaker
 
-The proxy remembers two kinds of failure. A `404` is remembered in `var/negative/` of the project, outside the document root: one flat directory of at most 4096 slot files (`<3 hex digits of the SHA-256 of the entry>.neg`), so a flood of random paths creates no directory and no file below `public/` (in 2.x every missing path created its directories and a `<path>.404` marker). Two entries that share a slot replace each other's marker, which only costs one more origin request. The `.netfail` marker of the circuit breaker lives next to the cache file and is hidden from HTTP by a `FilesMatch "\.(404|netfail)$"` `Require all denied` rule in [public/.htaccess](public/.htaccess).
+The proxy remembers two kinds of failure. A `404` is remembered in `var/negative/` of the project, outside the document root: one flat directory of at most 4096 slot files (`<3 hex digits of the SHA-256 of the entry>.neg`), so a flood of random paths creates no directory and no file below `public/` (in 2.x every missing path created its directories and a `<path>.404` marker). Two entries that share a slot replace each other's marker, which only costs one more origin request.
+
+The circuit breaker belongs to the origin, not to a file (2.x kept a `<path>.netfail` marker per file, so a failing origin was contacted again for every other path). Its state is one small file per origin in `var/breaker/`, updated under a lock so that every PHP worker shares it. After `CIRCUIT_BREAKER_THRESHOLD` consecutive unavailability failures it opens: for `NETWORK_ERROR_TTL` seconds every request that would need a fetch is answered `503` with `Retry-After`, while the entries already on disk are still served. Then one request is let through as a probe: its success closes the breaker, its failure opens it again at once. A success, or a pause longer than `NETWORK_ERROR_TTL` between failures, starts the count again. The `FilesMatch "\.(404|netfail)$"` rule of [public/.htaccess](public/.htaccess) still hides the markers 2.x left on disk.
 
 | Marker           | Armed when origin returns...                                                                                     | TTL                                  | HTTP status served to the client |
 |------------------|------------------------------------------------------------------------------------------------------------------|--------------------------------------|----------------------------------|
 | `var/negative/`  | `404 Not Found` or `410 Gone`                                                                                    | `NEGATIVE_CACHE_TTL` (default 300 s) | `404` or `410`                   |
-| `<path>.netfail` | `5xx`, `429`, connection refused, DNS failure, TLS error, timeout, transfer stalled under the low-speed-limit threshold | `NETWORK_ERROR_TTL` (default 30 s)   | `503` + `Retry-After`            |
+| `var/breaker/`   | `CIRCUIT_BREAKER_THRESHOLD` consecutive `5xx`, `429`, connection refused, DNS failure, TLS error, timeout, or transfer stalled under the low-speed-limit threshold | `NETWORK_ERROR_TTL` (default 30 s), then a probe | `503` + `Retry-After`, for every path of the origin |
 
 The other answers of the origin arm nothing and are answered at once (2.x answered `503` for each and opened the breaker):
 
@@ -210,7 +214,7 @@ Rationale:
 - A real `404` is a persistent signal. 5 minutes of suppression prevents a single missing favicon requested a million times from hammering the origin a million times.
 - A network blip is a transient signal. 30 seconds of suppression is a tiny circuit breaker that protects the PHP worker pool (every upstream fetch uses one) without permanently hiding assets that are actually fine.
 
-On a successful re-fetch both markers are dropped. A `PURGE` also clears them.
+A successful fetch forgets the negative-cache entry of its file and closes the breaker of the origin. A `PURGE` forgets the negative-cache entry of the purged files.
 
 ## Content negotiation (Accept: image/webp)
 
@@ -262,11 +266,10 @@ For production, rotate `logs/proxy.log` with a standard tool:
 The proxy does not auto-clean stale negative markers or old cached files. Run maintenance via cron.
 
 ``` bash
-# Every hour: drop .netfail markers older than 1 day so that
-# resources which genuinely came back to life become retryable. The
-# negative cache in var/negative/ is bounded and needs no cleaning;
-# '*.404' files are markers left behind by 2.x.
-0 * * * * find /srv/sites/cdn/public \( -name '*.404' -o -name '*.netfail' \) -mtime +1 -delete
+# Once, after the upgrade from 2.x: drop the .404 / .netfail markers it
+# left next to the cache files. The state of 3.0 lives in var/negative/
+# (bounded) and var/breaker/ (one file per origin) and needs no cleaning.
+find /srv/sites/cdn/public \( -name '*.404' -o -name '*.netfail' \) -type f -delete
 
 # Every week: garbage-collect QS buckets not touched in the last 30 days.
 # The _qs/ layout is flat (one level of hash-dirs), so this is cheap.
@@ -306,13 +309,13 @@ ob_start(function ($html) {
 Read these before putting the proxy on the public Internet.
 
 - **Public cache surface.** Any HTTP client can cause the proxy to create a new file under `public/` by requesting an arbitrary path that resolves on the origin. Negative caching mitigates the same-URL case, but an attacker generating distinct random paths will still cause one origin fetch per request. Put a rate limiter in front of the CDN (nginx `limit_req`, Apache `mod_ratelimit`, fail2ban watching `index.php` invocations).
-- **Upstream-failure marker as an extra circuit breaker.** Even without a rate limiter, the `.netfail` marker bounds origin exposure: once the origin starts misbehaving, each path auto-suppresses for `NETWORK_ERROR_TTL` seconds.
+- **Circuit breaker per origin.** Even without a rate limiter, the breaker bounds origin exposure: once the origin keeps failing, no path is fetched from it for `NETWORK_ERROR_TTL` seconds, and the cached entries keep being served.
 - **`SOURCE_ORIGIN_SERVER` bypasses front-facing protections.** Pinning the cURL connection to a specific `ip:port` bypasses the origin's DNS-based CDN/WAF. If you rely on the WAF for security, leave the variable empty.
 - **`UPSTREAM_VERIFY_TLS` defaults to `true`** since 3.0 (2.x defaulted to `false`). An origin with a self-signed or mismatched certificate answers 503 after the upgrade: fix its certificate, or set `UPSTREAM_VERIFY_TLS=false` on a trusted network only. `composer check-env` prints a note while the key is unset.
 - **`UPSTREAM_FOLLOW_REDIRECTS` defaults to `false`.** A compromised origin that returns a 30x to an internal host would otherwise become an SSRF pivot. Enable redirects only when the origin legitimately uses them.
 - **`CACHEABLE_EXTENSIONS` can leak sessions.** If you add `html`, `htm`, `xml`, `json` or `php` to the list and the origin ever serves authenticated content on those paths (private profile pages, signed JSON APIs, etc.), the proxy will cache that content (captured without the client's cookies and with no user context) and serve it indiscriminately. The `check-env` step (`bin/proxy-cdn check-env`) emits a warning when a sensitive extension appears in the list.
 - **Purge is unauthenticated** (see above).
-- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, project-internal directories (`vendor/`, `src/`, `bin/`, `logs/`, `.git/`, and `var/` at the root), the internal QS-bucket layout (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and negative-cache markers (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply.
+- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, project-internal directories (`vendor/`, `src/`, `bin/`, `logs/`, `.git/`, and `var/` at the root), the internal QS-bucket layout (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and the negative-cache markers of 2.x (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply.
 - **HSTS** is enabled with `max-age=31536000` only by default. The wider `includeSubDomains` / `preload` variants are commented out in `.htaccess` because they affect sibling hostnames on the same eTLD+1. Enable them only when you understand the blast radius.
 
 ## Troubleshooting
@@ -321,7 +324,7 @@ Read these before putting the proxy on the public Internet.
 |---------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `cwebp binary not available in PATH`        | `IMAGE_CONVERSION_MODE=native` but `cwebp` is missing. Install it or switch to `api` / `none`.                                                                                            |
 | 404s for assets that do exist on the origin | A negative-cache marker in `var/negative/` is still warm. Wait `NEGATIVE_CACHE_TTL` seconds or send a `PURGE` for the URL.                                                                                          |
-| 503 with `Retry-After: 30`                  | A `.netfail` marker is warm (origin was unreachable recently). Either wait or re-check the origin and send a `PURGE` for the URL.                                                                |
+| 503 with `Retry-After: 30`                  | The circuit breaker of the origin is open (the origin failed `CIRCUIT_BREAKER_THRESHOLD` times in a row). Wait `NETWORK_ERROR_TTL` seconds for the probe, or delete `var/breaker/` once the origin is fixed.                                                                |
 | 500 `Image conversion failed`               | Origin returned something cURL accepted as 200 but `cwebp` refused. Inspect `public/<path>` and `logs/proxy.log`.                                                                         |
 | All responses HTTP (no HTTPS redirect)      | `mod_rewrite` off or the VirtualHost is behind a TLS-terminating proxy that does not forward `X-Forwarded-Proto: https`.                                                                  |
 | QS-keyed content always a cache miss        | QS parameters contain unique tokens per request (e.g. cache-breakers with timestamps). That is the expected behavior but it defeats the cache. Canonicalize on the origin before linking. |

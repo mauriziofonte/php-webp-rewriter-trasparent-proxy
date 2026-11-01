@@ -44,6 +44,7 @@ final class TestConfig
             'QUERY_STRING_MODE' => null,
             'TRUSTED_PROXIES' => null,
             'PURGE_KEYS' => null,
+            'CIRCUIT_BREAKER_THRESHOLD' => null,
             'IMAGE_CONVERSION_MODE' => 'none',
             'WEBP_API_SERVER' => null,
             'WEBP_API_KEY' => null,

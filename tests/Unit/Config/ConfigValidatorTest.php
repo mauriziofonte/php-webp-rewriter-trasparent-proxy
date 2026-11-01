@@ -97,6 +97,7 @@ final class ConfigValidatorTest extends TestCase
             'integer with newline' => [['UPSTREAM_TIMEOUT' => "5\n"], "UPSTREAM_TIMEOUT must be a non-negative integer (got: '5\n')"],
             'negative TTL above range' => [['NEGATIVE_CACHE_TTL' => '86401'], 'NEGATIVE_CACHE_TTL must be between 0 and 86400 (got: 86401)'],
             'network TTL above range' => [['NETWORK_ERROR_TTL' => '3601'], 'NETWORK_ERROR_TTL must be between 0 and 3600 (got: 3601)'],
+            'breaker threshold of zero' => [['CIRCUIT_BREAKER_THRESHOLD' => '0'], 'CIRCUIT_BREAKER_THRESHOLD must be between 1 and 1000 (got: 0)'],
             'timeout below range' => [['UPSTREAM_TIMEOUT' => '0'], 'UPSTREAM_TIMEOUT must be between 1 and 300 (got: 0)'],
             'timeout above range' => [['UPSTREAM_TIMEOUT' => '301'], 'UPSTREAM_TIMEOUT must be between 1 and 300 (got: 301)'],
             'connect timeout below range' => [
@@ -225,6 +226,7 @@ final class ConfigValidatorTest extends TestCase
             'allowlist of names' => [['QUERY_STRING_ALLOWLIST' => 'v, lang ,a[]']],
             'allowlist of none' => [['QUERY_STRING_ALLOWLIST' => 'None']],
             'reject mode' => [['QUERY_STRING_MODE' => 'reject']],
+            'breaker threshold limits' => [['CIRCUIT_BREAKER_THRESHOLD' => '1000']],
             'purge keys' => [['PURGE_KEYS' => 'origin.example.test=0123456789abcdef, *=fedcba9876543210']],
             'trusted proxies' => [['TRUSTED_PROXIES' => '10.0.0.0/8, 192.0.2.10, 2001:db8::/32, ::ffff:198.51.100.0/120']],
         ];

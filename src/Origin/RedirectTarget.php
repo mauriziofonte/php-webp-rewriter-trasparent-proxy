@@ -113,6 +113,15 @@ final class RedirectTarget
     }
 
     /**
+     * The scheme, host and port of an http or https URL, in one string
+     * ("https://origin.example.test:443"): the key of its origin.
+     */
+    public static function originOf(string $url): string
+    {
+        return self::origin($url);
+    }
+
+    /**
      * The scheme, host and port of an http or https URL, in one string.
      */
     private static function origin(string $url): string
