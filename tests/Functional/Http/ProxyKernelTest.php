@@ -193,6 +193,23 @@ final class ProxyKernelTest extends TestCase
         self::assertDirectoryDoesNotExist($this->directory->path('_qs'));
     }
 
+    /**
+     * A new build of Laravel Mix ("?id=<hash>") is fetched again by default,
+     * not served from the entry of the old build.
+     */
+    public function testALaravelMixVersionKeysTheCacheByDefault(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/css/app.css?id=old', 'old build', ['content-type' => 'text/css']);
+        $this->origin->serve(self::ORIGIN . '/css/app.css?id=new', 'new build', ['content-type' => 'text/css']);
+
+        $old = $this->kernel()->handle(Request::create('https://cdn.example.test/css/app.css?id=old'));
+        $new = $this->kernel()->handle(Request::create('https://cdn.example.test/css/app.css?id=new'));
+
+        self::assertSame('old build', $old->getContent());
+        self::assertSame('new build', $new->getContent());
+        self::assertCount(2, $this->origin->getRequests());
+    }
+
     public function testRejectModeRefusesOtherParameters(): void
     {
         $kernel = TestKernel::create(

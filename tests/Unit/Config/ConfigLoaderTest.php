@@ -130,7 +130,7 @@ final class ConfigLoaderTest extends TestCase
         self::assertFalse($config->shouldFollowUpstreamRedirects());
         self::assertSame(HttpClientOptions::DEFAULT_MAX_BODY_SIZE, $config->getUpstreamMaxSize());
         self::assertNull($config->getUpstreamUserAgent());
-        self::assertSame(['v', 'ver', 'version'], $config->getQueryStringAllowlist());
+        self::assertSame(['v', 'ver', 'version', 'id'], $config->getQueryStringAllowlist());
         self::assertSame('ignore', $config->getQueryStringMode());
         self::assertSame([], $config->getTrustedProxies());
         self::assertSame(Config::CONVERSION_NONE, $config->getImageConversionMode());

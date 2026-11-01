@@ -44,9 +44,10 @@ final class QueryStringPolicy
     public const ANY_PARAMETER = '*';
 
     /**
-     * The default allowlist: the usual cache-busting parameters.
+     * The default allowlist: the usual cache-busting parameters ("id" is
+     * the one of Laravel Mix: mix('/css/app.css') is "/css/app.css?id=<hash>").
      */
-    public const DEFAULT_ALLOWLIST = ['v', 'ver', 'version'];
+    public const DEFAULT_ALLOWLIST = ['v', 'ver', 'version', 'id'];
 
     /**
      * Parameters that controlled the 2.x proxy and never key an entry.

@@ -77,7 +77,7 @@ final class ConfigLoader
         'UPSTREAM_VERIFY_TLS' => 'true',
         'UPSTREAM_FOLLOW_REDIRECTS' => 'false',
         'UPSTREAM_MAX_SIZE' => '67108864',
-        'QUERY_STRING_ALLOWLIST' => 'v,ver,version',
+        'QUERY_STRING_ALLOWLIST' => 'v,ver,version,id',
         'QUERY_STRING_MODE' => QueryStringPolicy::MODE_IGNORE,
         'IMAGE_CONVERSION_MODE' => Config::CONVERSION_NONE,
     ];

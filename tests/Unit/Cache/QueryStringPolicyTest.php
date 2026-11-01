@@ -135,6 +135,8 @@ final class QueryStringPolicyTest extends TestCase
         $configured = QueryStringPolicy::fromConfig(TestConfig::create(['QUERY_STRING_ALLOWLIST' => 'lang, v', 'QUERY_STRING_MODE' => 'reject']));
 
         self::assertSame('ver=1', self::canonical($default->apply('ver=1&x=1')));
+        // Laravel Mix: mix('/css/app.css') is "/css/app.css?id=<hash>".
+        self::assertSame('id=8f3a', self::canonical($default->apply('id=8f3a&utm_source=x')));
         self::assertSame(QueryStringPolicy::MODE_IGNORE, $default->getMode());
         self::assertSame('lang=it&v=1', self::canonical($configured->apply('v=1&lang=it')));
         self::assertNull($configured->apply('ver=1'));
