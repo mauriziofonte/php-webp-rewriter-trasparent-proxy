@@ -86,39 +86,51 @@ final class ResponseFactoryTest extends TestCase
      * The failures of the proxy are 5xx, the refused requests 4xx (finding
      * P-21: 2.x answered 404 for every error but an unavailable origin).
      *
-     * @dataProvider provideErrors
+     * @dataProvider provideChangedErrors
      *
      * @group regression
      */
-    #[DataProvider('provideErrors')]
+    #[DataProvider('provideChangedErrors')]
     #[Group('regression')]
     public function testErrorP21(int $error, int $status, string $code): void
     {
-        $response = (new ResponseFactory(600, 45))->error('/css/site.css', $error);
-
-        self::assertSame($status, $response->getStatusCode());
-        self::assertSame(
-            "The request could not be processed.\nError code: " . $code . ".\nRay ID: " . md5('/css/site.css'),
-            $response->getContent()
-        );
-        self::assertSame('text/plain; charset=UTF-8', $response->headers->get('Content-Type'));
-        self::assertSame($error === ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE ? '45' : null, $response->headers->get('Retry-After'));
+        self::assertError($error, $status, $code);
     }
 
     /**
      * @return array<string, array{int, int, string}>
      */
-    public static function provideErrors(): array
+    public static function provideChangedErrors(): array
     {
         return [
             'refused' => [ResponseFactory::ERROR_REFUSED, 400, 'Cannot serve this request'],
             'cache directory' => [ResponseFactory::ERROR_CACHE_DIRECTORY, 500, 'Cannot create cache directory'],
             'cache file' => [ResponseFactory::ERROR_CACHE_FILE, 500, 'Cannot create cache file'],
+            'configuration' => [ResponseFactory::ERROR_CONFIGURATION, 503, 'ENV_FILE_LOAD_ERR'],
+            'unknown' => [42, 500, 'Unknown error'],
+        ];
+    }
+
+    /**
+     * The errors whose status 2.x already got right.
+     *
+     * @dataProvider provideUnchangedErrors
+     */
+    #[DataProvider('provideUnchangedErrors')]
+    public function testErrorKeepsTheStatusOf2x(int $error, int $status, string $code): void
+    {
+        self::assertError($error, $status, $code);
+    }
+
+    /**
+     * @return array<string, array{int, int, string}>
+     */
+    public static function provideUnchangedErrors(): array
+    {
+        return [
             'origin not found' => [ResponseFactory::ERROR_ORIGIN_NOT_FOUND, 404, 'Cannot read remote origin file'],
             'not cacheable' => [ResponseFactory::ERROR_NOT_CACHEABLE, 404, 'Request cannot be processed'],
             'upstream unavailable' => [ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE, 503, 'Upstream temporarily unavailable'],
-            'configuration' => [ResponseFactory::ERROR_CONFIGURATION, 503, 'ENV_FILE_LOAD_ERR'],
-            'unknown' => [42, 500, 'Unknown error'],
         ];
     }
 
@@ -275,5 +287,18 @@ final class ResponseFactoryTest extends TestCase
 
         self::assertSame('120', $responses->preflight('')->headers->get('Access-Control-Max-Age'));
         self::assertSame('7', $responses->error('/a.css', ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE)->headers->get('Retry-After'));
+    }
+
+    private static function assertError(int $error, int $status, string $code): void
+    {
+        $response = (new ResponseFactory(600, 45))->error('/css/site.css', $error);
+
+        self::assertSame($status, $response->getStatusCode());
+        self::assertSame(
+            "The request could not be processed.\nError code: " . $code . ".\nRay ID: " . md5('/css/site.css'),
+            $response->getContent()
+        );
+        self::assertSame('text/plain; charset=UTF-8', $response->headers->get('Content-Type'));
+        self::assertSame($error === ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE ? '45' : null, $response->headers->get('Retry-After'));
     }
 }

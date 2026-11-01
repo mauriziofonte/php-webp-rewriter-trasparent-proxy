@@ -72,10 +72,6 @@ final class PathSanitizerTest extends TestCase
     public static function provideRefusedPaths(): array
     {
         return [
-            'parent segment' => ['/css/../a.css'],
-            'leading parent segment' => ['/../etc/passwd'],
-            'trailing parent segment' => ['/css/..'],
-            'name starting with dots' => ['/css/..a.css'],
             'single dot segment' => ['/css/./a.css'],
             'hidden file' => ['/.htaccess'],
             'hidden directory' => ['/a/.git/config.css'],
@@ -104,6 +100,30 @@ final class PathSanitizerTest extends TestCase
             'path too long' => ['/' . str_repeat('a/', 2048) . 'a.css'],
             'relative' => ['a.css'],
             'empty' => [''],
+        ];
+    }
+
+    /**
+     * The paths 2.x refused too, for their "/..".
+     *
+     * @dataProvider provideParentSegments
+     */
+    #[DataProvider('provideParentSegments')]
+    public function testParentSegmentsAreStillRefused(string $path): void
+    {
+        self::assertNull((new PathSanitizer())->sanitize($path));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function provideParentSegments(): array
+    {
+        return [
+            'parent segment' => ['/css/../a.css'],
+            'leading parent segment' => ['/../etc/passwd'],
+            'trailing parent segment' => ['/css/..'],
+            'name starting with dots' => ['/css/..a.css'],
         ];
     }
 
