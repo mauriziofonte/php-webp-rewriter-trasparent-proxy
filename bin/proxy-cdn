@@ -45,7 +45,7 @@ if (class_exists(\Composer\InstalledVersions::class)) {
 
 $application = new Application('proxy-cdn', $version);
 $application->addCommands([
-    new CheckEnvCommand(new ConfigLoader($projectRoot . '/.env')),
+    new CheckEnvCommand(new ConfigLoader($projectRoot . '/.env'), null, null, null, $projectRoot),
 ]);
 
 exit($application->run());

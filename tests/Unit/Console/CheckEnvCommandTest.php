@@ -225,6 +225,33 @@ final class CheckEnvCommandTest extends TestCase
         self::assertSame(extension_loaded('curl') ? 0 : 1, $tester->getStatusCode(), $tester->getDisplay());
     }
 
+    public function testTheWebServerConfigurationsMustSendCacheExpiryOnHits(): void
+    {
+        $this->directory->write('.env', self::VALID_ENV . "CACHE_EXPIRY=86400\n");
+        $this->directory->write('public/.htaccess', "    Header set Cache-Control \"public, max-age=31536000, must-revalidate\" env=PCDN_HIT\n");
+        $this->directory->write('config/nginx/proxy-cdn-headers.conf', "add_header Cache-Control \"public, max-age=86400, must-revalidate\" always;\n");
+
+        list($exitCode, $display) = $this->runCommand([]);
+
+        self::assertSame(0, $exitCode, 'a warning');
+        self::assertSame(
+            "! WARNING: CACHE_EXPIRY is 86400, but public/.htaccess sends max-age=31536000\n"
+            . "    on the hits the web server serves. Set the same value in both.\n"
+            . "✓ Environment check passed.\n",
+            $display
+        );
+    }
+
+    public function testTheShippedConfigurationsSendTheCacheExpiryOfEnvExample(): void
+    {
+        $root = dirname(__DIR__, 3);
+        $env = (string) file_get_contents($root . '/.env.example');
+        self::assertSame(1, preg_match('/^CACHE_EXPIRY\s*=\s*([0-9]+)$/m', $env, $match));
+        foreach (CheckEnvCommand::WEB_SERVER_CONFIGS as $config) {
+            self::assertSame((int) $match[1], CheckEnvCommand::hitMaxAge($root . '/' . $config), $config);
+        }
+    }
+
     private function command(): CheckEnvCommand
     {
         return new CheckEnvCommand(
@@ -235,7 +262,8 @@ final class CheckEnvCommandTest extends TestCase
             },
             function (string $extension): bool {
                 return $extension === 'curl' && $this->curlLoaded;
-            }
+            },
+            $this->directory->path()
         );
     }
 

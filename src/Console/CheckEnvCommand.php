@@ -30,6 +30,13 @@ final class CheckEnvCommand extends Command
     public const NAME = 'check-env';
 
     /**
+     * The web server configurations of the installation, relative to its
+     * root, that send the Cache-Control of the hits they serve: its
+     * max-age is written there, and must equal CACHE_EXPIRY.
+     */
+    public const WEB_SERVER_CONFIGS = ['public/.htaccess', 'config/nginx/proxy-cdn-headers.conf'];
+
+    /**
      * @var ConfigLoader
      */
     private $loader;
@@ -50,17 +57,27 @@ final class CheckEnvCommand extends Command
     private $extensionLoaded;
 
     /**
+     * @var string|null
+     */
+    private $projectRoot;
+
+    /**
      * @param ConfigLoader                  $loader          reads the environment and the .env file of the installation
      * @param (callable(string): bool)|null $binaryExists    whether a binary is in PATH; "command -v" by default
      * @param (callable(string): bool)|null $extensionLoaded whether a PHP extension is loaded; extension_loaded() by default
+     * @param string|null                   $projectRoot     the installation, whose web server configurations
+     *                                                       (WEB_SERVER_CONFIGS) must send the CACHE_EXPIRY of PHP
+     *                                                       on hits; null to skip that check
      */
     public function __construct(
         ConfigLoader $loader,
         ?ConfigValidator $validator = null,
         ?callable $binaryExists = null,
-        ?callable $extensionLoaded = null
+        ?callable $extensionLoaded = null,
+        ?string $projectRoot = null
     ) {
         $this->loader = $loader;
+        $this->projectRoot = $projectRoot === null ? null : rtrim($projectRoot, '/');
         $this->validator = $validator ?? new ConfigValidator();
         $this->binaryExists = $binaryExists ?? static function (string $binary): bool {
             return self::commandExists($binary);
@@ -144,8 +161,38 @@ final class CheckEnvCommand extends Command
         if (($values['IMAGE_CONVERSION_MODE'] ?? null) === Config::CONVERSION_NATIVE && !($this->binaryExists)('cwebp')) {
             $validation = $validation->withError('cwebp binary not found in PATH (required when IMAGE_CONVERSION_MODE = "native")');
         }
+        if ($this->projectRoot !== null && $validation->isValid()) {
+            try {
+                $expiry = $this->loader->loadFromArray($values)->getCacheExpiry();
+            } catch (InvalidConfigurationException $exception) {
+                return $validation;
+            }
+            foreach (self::WEB_SERVER_CONFIGS as $config) {
+                $maxAge = self::hitMaxAge($this->projectRoot . '/' . $config);
+                if ($maxAge !== null && $maxAge !== $expiry) {
+                    $validation = $validation->withWarning(
+                        'WARNING: CACHE_EXPIRY is ' . $expiry . ', but ' . $config . ' sends max-age=' . $maxAge . "\n"
+                        . 'on the hits the web server serves. Set the same value in both.'
+                    );
+                }
+            }
+        }
 
         return $validation;
+    }
+
+    /**
+     * The max-age of the Cache-Control that a web server configuration
+     * sends on hits; null when the file is missing or sets none.
+     */
+    public static function hitMaxAge(string $file): ?int
+    {
+        $contents = is_file($file) ? @file_get_contents($file) : false;
+        if ($contents === false || preg_match('/^[ \t]*(?:Header[ \t]+set|add_header)[ \t]+Cache-Control[ \t]+"public, max-age=([0-9]{1,10}),/mi', $contents, $match) !== 1) {
+            return null;
+        }
+
+        return (int) $match[1];
     }
 
     /**
