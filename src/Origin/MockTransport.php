@@ -79,6 +79,7 @@ final class MockTransport implements HttpClient
         $this->requests[] = $request;
         $collector = new ResponseCollector($request, $this->options);
         $url = $request->getUrl();
+        $firstUrl = $url;
 
         for ($redirects = 0; ; ++$redirects) {
             if (isset($this->failures[$url])) {
@@ -104,6 +105,10 @@ final class MockTransport implements HttpClient
             }
             if ($redirects >= $this->options->getMaxRedirects()) {
                 return $collector->finish(HttpResponse::OUTCOME_REDIRECT, 0, 'Too many redirects', $url, 0.0);
+            }
+            $guard = RedirectGuard::check($this->options, $firstUrl, $next->getUrl());
+            if (!$guard['allowed']) {
+                return $collector->finish($guard['outcome'], $guard['code'], $guard['error'], $url, 0.0);
             }
             $request = $next;
             $url = $request->getUrl();

@@ -309,8 +309,13 @@ final class CurlTransport implements HttpClient
                     microtime(true) - $transfer->startedAt
                 );
             }
+            $guard = RedirectGuard::check($this->options, $transfer->originUrl, $next->getUrl());
+            if (!$guard['allowed']) {
+                return $collector->finish($guard['outcome'], $guard['code'], $guard['error'], $url, microtime(true) - $transfer->startedAt);
+            }
             ++$transfer->redirects;
             $transfer->request = $next;
+            $transfer->pinnedAddress = $guard['address'];
             $this->configure($transfer);
 
             return null;
@@ -367,11 +372,17 @@ final class CurlTransport implements HttpClient
         } else {
             $options[CURLOPT_HTTPGET] = true;
         }
+        $connectTo = [];
         if ($this->connectTo !== null) {
             // Pinned on the host and port of the first URL: libcurl ignores
             // the entry for a redirect to another one.
-            $options[CURLOPT_CONNECT_TO] = [self::connectToEntry($transfer->originUrl, $this->connectTo)];
+            $connectTo[] = self::connectToEntry($transfer->originUrl, $this->connectTo);
         }
+        if ($transfer->pinnedAddress !== null) {
+            // The address RedirectGuard checked, so that DNS is not asked again.
+            $connectTo[] = self::connectToEntry($request->getUrl(), [$transfer->pinnedAddress, null]);
+        }
+        $options[CURLOPT_CONNECT_TO] = $connectTo;
         curl_setopt_array($transfer->handle, $options);
     }
 

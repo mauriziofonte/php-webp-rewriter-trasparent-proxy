@@ -45,6 +45,15 @@ final class CurlTransfer
     public $startedAt;
 
     /**
+     * The address RedirectGuard checked for the host of the current
+     * request, which the connection is pinned to; null for the origin of
+     * the first request.
+     *
+     * @var string|null
+     */
+    public $pinnedAddress;
+
+    /**
      * Redirects followed so far.
      *
      * @var int

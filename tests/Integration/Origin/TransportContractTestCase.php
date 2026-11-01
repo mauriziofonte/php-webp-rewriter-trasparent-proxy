@@ -12,6 +12,7 @@ use Mfonte\ProxyCdn\Origin\ResponseBody;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\ScriptedServer;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestCertificate;
+use Mfonte\ProxyCdn\Tests\Fixtures\Origin\FixedHostResolver;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -296,7 +297,8 @@ abstract class TransportContractTestCase extends TestCase
         $port = self::server()->getPort();
         $otherPort = self::otherServer()->getPort();
         $location = strtr($target, ['{port}' => (string) $port, '{other}' => (string) $otherPort]);
-        $client = $this->createClient($this->options()->withRedirects(true, 5));
+        // Every server of the test is on the loopback interface.
+        $client = $this->createClient($this->options()->withRedirects(true, 5)->withPrivateRedirectTargets(true));
         $headers = [
             'Authorization' => 'Bearer s3cr3t',
             'Cookie' => 'session=abc',
@@ -340,12 +342,60 @@ abstract class TransportContractTestCase extends TestCase
         $port = self::server()->getPort();
         $back = 'http://127.0.0.1:' . $port . '/echo';
         $away = 'http://localhost:' . $port . '/redirect-to?location=' . rawurlencode($back);
-        $client = $this->createClient($this->options()->withRedirects(true, 5));
+        $client = $this->createClient($this->options()->withRedirects(true, 5)->withPrivateRedirectTargets(true));
 
         $response = $client->send(new HttpRequest($this->url('/redirect-to?location=' . rawurlencode($away)), ['Authorization' => 'Bearer s3cr3t']));
 
         self::assertSame($back, $response->getEffectiveUrl());
         self::assertArrayNotHasKey('authorization', self::json($response)['headers']);
+    }
+
+    /**
+     * A followed redirect never leads to a private address of another
+     * origin, whether the Location names the address or a host that
+     * resolves to it (SSRF); the redirect is reported, not followed.
+     *
+     * @dataProvider providePrivateRedirectTargets
+     */
+    #[DataProvider('providePrivateRedirectTargets')]
+    public function testARedirectToAPrivateAddressIsNotFollowed(string $target): void
+    {
+        $otherPort = self::otherServer()->getPort();
+        $before = count(self::otherServer()->getRequests());
+        $location = strtr($target, ['{other}' => (string) $otherPort]);
+        $resolver = new FixedHostResolver(['internal.example.test' => ['203.0.114.10', '127.0.0.1'], 'localhost' => ['127.0.0.1']]);
+        $client = $this->createClient($this->options()->withRedirects(true, 5)->withHostResolver($resolver));
+
+        $response = $client->send(new HttpRequest($this->url('/redirect-to?location=' . rawurlencode($location))));
+
+        self::assertSame(HttpResponse::OUTCOME_REDIRECT, $response->getOutcome());
+        self::assertStringContainsString('non-public address', $response->getError());
+        self::assertSame($location, $response->getRedirectLocation());
+        self::assertNull($response->getBody());
+        self::assertCount($before, self::otherServer()->getRequests(), 'the private target is not requested');
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function providePrivateRedirectTargets(): array
+    {
+        return [
+            'loopback address' => ['http://127.0.0.1:{other}/echo'],
+            'host resolving to loopback' => ['http://internal.example.test:{other}/echo'],
+            'localhost' => ['http://localhost:{other}/echo'],
+            'IPv4-mapped loopback' => ['http://[::ffff:127.0.0.1]:{other}/echo'],
+        ];
+    }
+
+    public function testARedirectToAHostThatDoesNotResolveIsADnsFailure(): void
+    {
+        $client = $this->createClient($this->options()->withRedirects(true, 5)->withHostResolver(new FixedHostResolver([])));
+
+        $response = $client->send(new HttpRequest($this->url('/redirect-to?location=' . rawurlencode('http://nowhere.example.test/echo'))));
+
+        self::assertSame(HttpResponse::OUTCOME_DNS, $response->getOutcome());
+        self::assertSame(6, $response->getErrorCode());
     }
 
     public function testA304WithALocationIsNotFollowed(): void

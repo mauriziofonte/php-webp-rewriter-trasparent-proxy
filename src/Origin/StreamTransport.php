@@ -113,10 +113,12 @@ final class StreamTransport implements HttpClient
             return true;
         }, E_WARNING | E_NOTICE);
 
+        $firstUrl = $url;
+        $pinnedAddress = null;
         try {
             for ($redirects = 0; ; ++$redirects) {
                 $warnings = [];
-                $failure = $this->exchange($request, $url, $origin, $collector, $deadline, $warnings);
+                $failure = $this->exchange($request, $url, $origin, $pinnedAddress, $collector, $deadline, $warnings);
                 if ($failure !== null) {
                     return $collector->finish($failure[0], $failure[1], $failure[2], $url, microtime(true) - $startedAt);
                 }
@@ -137,8 +139,13 @@ final class StreamTransport implements HttpClient
                         microtime(true) - $startedAt
                     );
                 }
+                $guard = RedirectGuard::check($this->options, $firstUrl, $next->getUrl());
+                if (!$guard['allowed']) {
+                    return $collector->finish($guard['outcome'], $guard['code'], $guard['error'], $url, microtime(true) - $startedAt);
+                }
                 $request = $next;
                 $url = $request->getUrl();
+                $pinnedAddress = $guard['address'];
             }
         } finally {
             restore_error_handler();
@@ -149,12 +156,13 @@ final class StreamTransport implements HttpClient
      * One request and its response, up to the end of the body. The
      * collector receives what arrives.
      *
-     * @param array{0: string, 1: int} $origin   host and port the connect-to pin applies to
-     * @param list<string>             $warnings the PHP warnings raised so far, filled by the error handler of send()
+     * @param array{0: string, 1: int} $origin        host and port the connect-to pin applies to
+     * @param string|null              $pinnedAddress the address RedirectGuard checked for the host of $url, null for none
+     * @param list<string>             $warnings      the PHP warnings raised so far, filled by the error handler of send()
      *
      * @return array{0: string, 1: int, 2: string}|null the outcome, error number and message of a failure; null on success
      */
-    private function exchange(HttpRequest $request, string $url, array $origin, ResponseCollector $collector, float $deadline, array &$warnings): ?array
+    private function exchange(HttpRequest $request, string $url, array $origin, ?string $pinnedAddress, ResponseCollector $collector, float $deadline, array &$warnings): ?array
     {
         list($host, $port) = self::hostAndPort($url);
         $secure = strtolower((string) parse_url($url, PHP_URL_SCHEME)) === 'https';
@@ -163,6 +171,8 @@ final class StreamTransport implements HttpClient
         if ($this->connectTo !== null && $host === $origin[0] && $port === $origin[1]) {
             $connectHost = $this->connectTo[0];
             $connectPort = $this->connectTo[1] ?? $port;
+        } elseif ($pinnedAddress !== null) {
+            $connectHost = $pinnedAddress;
         }
 
         $connectDeadline = min($deadline, microtime(true) + $this->options->getConnectTimeout());

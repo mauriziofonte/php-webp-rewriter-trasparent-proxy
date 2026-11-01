@@ -139,7 +139,8 @@ final class MultiClientTest extends TestCase
      */
     public function testRedirectsAreFollowedTransferByTransfer(): void
     {
-        $options = (new HttpClientOptions())->withTemporaryDirectory($this->directory->path('bodies'))->withRedirects(true, 3);
+        $options = (new HttpClientOptions())->withTemporaryDirectory($this->directory->path('bodies'))->withRedirects(true, 3)
+            ->withPrivateRedirectTargets(true);
         $client = new MultiClient(new CurlTransport($options), 2);
         $base = $this->servers[0]->getBaseUrl();
         $away = $this->servers[1]->getBaseUrl() . '/echo';

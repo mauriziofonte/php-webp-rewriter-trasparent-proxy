@@ -91,6 +91,16 @@ final class HttpClientOptions
     private $temporaryDirectory;
 
     /**
+     * @var bool
+     */
+    private $privateRedirectTargets = false;
+
+    /**
+     * @var HostResolver|null
+     */
+    private $hostResolver;
+
+    /**
      * Seconds the connection (TCP and TLS handshake) may take.
      */
     public function getConnectTimeout(): float
@@ -225,6 +235,46 @@ final class HttpClientOptions
         $copy = clone $this;
         $copy->followRedirects = $follow;
         $copy->maxRedirects = $maxRedirects;
+
+        return $copy;
+    }
+
+    /**
+     * Whether a followed redirect may lead to another origin on a private,
+     * loopback or otherwise non-public address (see RedirectGuard); false
+     * by default.
+     */
+    public function allowsPrivateRedirectTargets(): bool
+    {
+        return $this->privateRedirectTargets;
+    }
+
+    /**
+     * Lets followed redirects reach non-public addresses of other origins:
+     * for tests on the loopback interface only, since a redirect of the
+     * origin could then make the client fetch from the internal network.
+     */
+    public function withPrivateRedirectTargets(bool $allowed): self
+    {
+        $copy = clone $this;
+        $copy->privateRedirectTargets = $allowed;
+
+        return $copy;
+    }
+
+    /**
+     * The resolver RedirectGuard checks the host of a redirect with; the
+     * system resolver by default.
+     */
+    public function getHostResolver(): HostResolver
+    {
+        return $this->hostResolver ?? new SystemHostResolver();
+    }
+
+    public function withHostResolver(HostResolver $resolver): self
+    {
+        $copy = clone $this;
+        $copy->hostResolver = $resolver;
 
         return $copy;
     }

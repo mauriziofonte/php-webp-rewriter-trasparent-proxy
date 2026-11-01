@@ -104,6 +104,14 @@ final class RedirectTarget
     }
 
     /**
+     * Whether two http or https URLs have the same scheme, host and port.
+     */
+    public static function isSameOrigin(string $first, string $second): bool
+    {
+        return self::origin($first) === self::origin($second);
+    }
+
+    /**
      * The scheme, host and port of an http or https URL, in one string.
      */
     private static function origin(string $url): string
