@@ -13,6 +13,7 @@ use Mfonte\ProxyCdn\Origin\HttpClientOptions;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\Group;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -124,13 +125,28 @@ final class ConfigLoaderTest extends TestCase
         self::assertSame(30, $config->getNetworkErrorTtl());
         self::assertSame(30, $config->getUpstreamTimeout());
         self::assertSame(5, $config->getUpstreamConnectTimeout());
-        self::assertFalse($config->shouldVerifyUpstreamTls());
+        self::assertTrue($config->shouldVerifyUpstreamTls(), 'TLS is verified by default (risk L-6)');
         self::assertFalse($config->shouldFollowUpstreamRedirects());
         self::assertSame(HttpClientOptions::DEFAULT_MAX_BODY_SIZE, $config->getUpstreamMaxSize());
         self::assertNull($config->getUpstreamUserAgent());
         self::assertSame(Config::CONVERSION_NONE, $config->getImageConversionMode());
         self::assertNull($config->getWebpApiServer());
         self::assertNull($config->getWebpApiKey());
+    }
+
+    /**
+     * The origin certificate is verified unless UPSTREAM_VERIFY_TLS says
+     * otherwise; 2.x did not verify by default (risk L-6).
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testTlsIsVerifiedByDefaultL6(): void
+    {
+        $config = TestConfig::loader()->loadFromArray(['SOURCE_ORIGIN' => 'https://origin.example.test', 'CACHEABLE_EXTENSIONS' => 'css']);
+
+        self::assertTrue($config->shouldVerifyUpstreamTls());
+        self::assertFalse(TestConfig::create(['UPSTREAM_VERIFY_TLS' => 'false'])->shouldVerifyUpstreamTls());
     }
 
     public function testInvalidValuesAreRejectedWithEveryError(): void

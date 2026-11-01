@@ -138,9 +138,18 @@ final class ConfigValidator
                 . 'front of the origin hostname.';
         }
 
-        if (self::booleanOf($values['UPSTREAM_VERIFY_TLS'] ?? 'false') !== true) {
+        $verifyTls = $values['UPSTREAM_VERIFY_TLS'] ?? null;
+        if ($verifyTls !== null && self::booleanOf($verifyTls) === false) {
             $warnings[] = "NOTE: UPSTREAM_VERIFY_TLS is off. The origin TLS certificate\n"
                 . 'will NOT be validated. Acceptable on trusted networks only.';
+        } elseif ($verifyTls === null && $origin !== null && preg_match('#^https://#i', $origin) === 1) {
+            // Risk L-6: 2.x did not verify by default, so an upgrade can
+            // break an origin whose certificate is self-signed or mismatched.
+            $warnings[] = "NOTE: UPSTREAM_VERIFY_TLS is not set, so the origin TLS certificate\n"
+                . "is verified (the default since 3.0; 2.x did not verify). An origin\n"
+                . "with a self-signed or mismatched certificate now answers 503: fix\n"
+                . "the certificate, or set UPSTREAM_VERIFY_TLS=false on trusted\n"
+                . 'networks only.';
         }
 
         return new ConfigValidation($errors, $warnings);

@@ -298,7 +298,8 @@ final class Config
     }
 
     /**
-     * UPSTREAM_VERIFY_TLS: whether the origin certificate is verified.
+     * UPSTREAM_VERIFY_TLS: whether the origin certificate is verified; true
+     * unless it is set to false (2.x did not verify by default).
      */
     public function shouldVerifyUpstreamTls(): bool
     {

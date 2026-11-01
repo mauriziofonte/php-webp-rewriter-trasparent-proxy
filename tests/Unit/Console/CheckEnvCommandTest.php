@@ -162,8 +162,11 @@ final class CheckEnvCommandTest extends TestCase
             . "    the proxy will cache and re-serve it to unrelated clients.\n"
             . "! WARNING: DEBUG is enabled. MUST be disabled in production,\n"
             . "    or PHP warnings will poison asset bodies streamed to clients.\n"
-            . "! NOTE: UPSTREAM_VERIFY_TLS is off. The origin TLS certificate\n"
-            . "    will NOT be validated. Acceptable on trusted networks only.\n"
+            . "! NOTE: UPSTREAM_VERIFY_TLS is not set, so the origin TLS certificate\n"
+            . "    is verified (the default since 3.0; 2.x did not verify). An origin\n"
+            . "    with a self-signed or mismatched certificate now answers 503: fix\n"
+            . "    the certificate, or set UPSTREAM_VERIFY_TLS=false on trusted\n"
+            . "    networks only.\n"
             . "✓ Environment check passed.\n",
             $display
         );

@@ -51,8 +51,9 @@ final class ConfigLoader
     ];
 
     /**
-     * Defaults of the keys that may be left unset, as in 2.x. The default
-     * of UPSTREAM_MAX_SIZE is HttpClientOptions::DEFAULT_MAX_BODY_SIZE.
+     * Defaults of the keys that may be left unset, as in 2.x except
+     * UPSTREAM_VERIFY_TLS, true since 3.0 (risk L-6). The default of
+     * UPSTREAM_MAX_SIZE is HttpClientOptions::DEFAULT_MAX_BODY_SIZE.
      */
     private const DEFAULTS = [
         'DEBUG' => 'false',
@@ -64,7 +65,7 @@ final class ConfigLoader
         'NETWORK_ERROR_TTL' => '30',
         'UPSTREAM_TIMEOUT' => '30',
         'UPSTREAM_CONNECT_TIMEOUT' => '5',
-        'UPSTREAM_VERIFY_TLS' => 'false',
+        'UPSTREAM_VERIFY_TLS' => 'true',
         'UPSTREAM_FOLLOW_REDIRECTS' => 'false',
         'UPSTREAM_MAX_SIZE' => '67108864',
         'IMAGE_CONVERSION_MODE' => Config::CONVERSION_NONE,

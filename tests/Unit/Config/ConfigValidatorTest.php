@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Config\ConfigValidator;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -245,15 +246,45 @@ final class ConfigValidatorTest extends TestCase
     }
 
     /**
-     * @return array<string, array{string|null}>
+     * @return array<string, array{string}>
      */
     public static function provideUnverifiedTls(): array
     {
         return [
-            'unset' => [null],
             'false' => ['false'],
             'zero' => ['0'],
         ];
+    }
+
+    /**
+     * TLS is verified by default since 3.0; check-env tells the operator
+     * of an https origin who relied on the 2.x default (risk L-6).
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testTheTlsDefaultIsNotedForAnHttpsOriginL6(): void
+    {
+        $validation = (new ConfigValidator())->validate(TestConfig::rawValues(['UPSTREAM_VERIFY_TLS' => null]));
+
+        self::assertTrue($validation->isValid());
+        self::assertSame([
+            "NOTE: UPSTREAM_VERIFY_TLS is not set, so the origin TLS certificate\n"
+            . "is verified (the default since 3.0; 2.x did not verify). An origin\n"
+            . "with a self-signed or mismatched certificate now answers 503: fix\n"
+            . "the certificate, or set UPSTREAM_VERIFY_TLS=false on trusted\n"
+            . 'networks only.',
+        ], $validation->getWarnings());
+    }
+
+    public function testTheTlsDefaultIsNotNotedForAnHttpOrigin(): void
+    {
+        $validation = (new ConfigValidator())->validate(TestConfig::rawValues([
+            'UPSTREAM_VERIFY_TLS' => null,
+            'SOURCE_ORIGIN' => 'http://origin.example.test',
+        ]));
+
+        self::assertSame([], $validation->getWarnings());
     }
 
     /**
