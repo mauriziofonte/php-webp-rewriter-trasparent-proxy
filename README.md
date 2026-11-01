@@ -159,7 +159,7 @@ PURGE_KEYS = "origin.example.com=0f6c2e7d9a1b4c58e3f2a7d6b9c0e1f2"
 A request proves a key in one of two ways:
 
 - **Bearer**: `Authorization: Bearer <secret>`. Use it over HTTPS only: the secret travels with the request.
-- **HMAC**: `X-Purge-Timestamp: <unix seconds>` and `X-Purge-Signature: <hex HMAC-SHA256>` of `PURGE\n<host>\n<path and query>\n<timestamp>` under the secret, where `<host>` is the `Host` header in lower case (with its port, when not the default one) and `<path and query>` the request target as sent. The timestamp must be within 300 seconds of the proxy clock; within that window a signature can be replayed, which only repeats the same purge.
+- **HMAC**: `X-Purge-Timestamp: <unix seconds>` and `X-Purge-Signature: <hex HMAC-SHA256>` of `PURGE\n<host>\n<path and query>\n<timestamp>` under the secret, where `<host>` is the `Host` header in lower case (with its port, when not the default one) and `<path and query>` the request target as sent. The timestamp must be within 300 seconds of the proxy clock. Within that window a captured signature can be replayed; the proxy keeps no nonce on purpose: a purge is idempotent (a replay removes again what the same request removed, and makes the next request fetch from the origin once), a Bearer secret can be replayed for as long as it is valid anyway, and a nonce store shared by every PHP worker would be one more piece of state to secure. Use HTTPS, and rotate a key that may have leaked.
 
 ``` bash
 # Bearer

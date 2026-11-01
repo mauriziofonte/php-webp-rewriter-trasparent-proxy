@@ -28,6 +28,14 @@ use Symfony\Component\HttpFoundation\Request;
  *   MAX_CLOCK_SKEW seconds of the proxy clock; within that window a
  *   signature can be replayed, which only repeats the same purge.
  *
+ * Replays are accepted on purpose (decision of PRX-7, for the review of
+ * PRX-11): a purge is idempotent, its worst replayed effect is one more
+ * origin fetch per purged entry, which the circuit breaker bounds; a
+ * Bearer secret is replayable for as long as it is valid anyway; and a
+ * nonce store shared by every PHP worker would be new state to bound and
+ * secure. A nonce becomes worth it if purges ever gain side effects that
+ * are not idempotent (fan-out to peers, warm-up).
+ *
  * Secrets are compared with hash_equals(). Immutable.
  */
 final class PurgeAuthenticator
