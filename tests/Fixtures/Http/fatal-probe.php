@@ -27,6 +27,10 @@ use Mfonte\ProxyCdn\Origin\HttpClientOptions;
 use Mfonte\ProxyCdn\Origin\HttpRequest;
 use Mfonte\ProxyCdn\Origin\StreamTransport;
 
+// The arguments from $_SERVER: PHPStan leaves $argv undefined when
+// register_argc_argv is off, as on the php:8.5-cli image.
+$argv = array_values(array_filter(is_array($_SERVER['argv'] ?? null) ? $_SERVER['argv'] : [], 'is_string'));
+
 error_reporting(E_ALL);
 register_shutdown_function(static function () use ($argv): void {
     $error = error_get_last();

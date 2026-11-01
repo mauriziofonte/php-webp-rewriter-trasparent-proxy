@@ -14,6 +14,10 @@ use Mfonte\ProxyCdn\Origin\HttpClientFactory;
 use Mfonte\ProxyCdn\Origin\HttpClientOptions;
 use Mfonte\ProxyCdn\Origin\HttpRequest;
 
+// The arguments from $_SERVER: PHPStan leaves $argv undefined when
+// register_argc_argv is off, as on the php:8.5-cli image.
+$argv = array_values(array_filter(is_array($_SERVER['argv'] ?? null) ? $_SERVER['argv'] : [], 'is_string'));
+
 error_reporting(E_ALL);
 set_error_handler(static function (int $level, string $message, string $file, int $line): bool {
     throw new ErrorException($message, 0, $level, $file, $line);

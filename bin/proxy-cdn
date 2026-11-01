@@ -16,7 +16,10 @@ use Symfony\Component\Console\Application;
 $projectRoot = dirname(__DIR__);
 // The Composer install hooks pass --informational: whatever happens, they
 // must not fail the install (finding P-20).
-$failureExitCode = in_array('--informational', $argv, true) ? 0 : 1;
+// $_SERVER['argv'] rather than $argv: PHPStan leaves $argv undefined when
+// register_argc_argv is off, as on the php:8.5-cli image.
+$arguments = is_array($_SERVER['argv'] ?? null) ? $_SERVER['argv'] : [];
+$failureExitCode = in_array('--informational', $arguments, true) ? 0 : 1;
 
 if (!is_file($projectRoot . '/vendor/autoload.php')) {
     fwrite(STDERR, 'Dependencies are missing. Run: composer install' . PHP_EOL);
