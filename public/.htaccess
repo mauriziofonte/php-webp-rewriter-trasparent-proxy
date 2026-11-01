@@ -4,11 +4,12 @@
 # Serves cached static assets from disk and forwards everything else to
 # index.php (the transparent proxy).
 #
-# Design note: requests that carry a non-empty query string (other than the
-# proxy's own purge= / purge_all=) ALWAYS go through index.php, because
-# Apache cannot derive the QS-keyed cache path on its own (it would need an
-# md5 RewriteMap). PHP reads the cache entry from disk and serves it; the
-# extra PHP hop is the price of correctness for cache-busted URLs.
+# Design note: requests that carry a non-empty query string ALWAYS go
+# through index.php, because Apache cannot derive the QS-keyed cache path
+# on its own (the allowlisted parameters, sorted and hashed with SHA-256).
+# PHP reads the cache entry from disk and serves it; the extra PHP hop is
+# the price of correctness for cache-busted URLs. PURGE requests go there
+# too, to be authenticated.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
