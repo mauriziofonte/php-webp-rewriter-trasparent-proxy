@@ -2,7 +2,7 @@
 
 A self-contained PHP application that turns a VirtualHost into a **self-hosted CDN** for the static assets of another site.
 
-It acts as a **transparent proxy** between the origin server and the client's browser: on the first request a missing asset is fetched from the origin and cached on the local filesystem; on every subsequent request Apache serves the cached copy directly, without going through PHP. If the asset is a raster image (`jpg`, `jpeg`, `png`, `gif`, `bmp`) the proxy optionally generates a `.webp` variant alongside it and either permanent-redirects subsequent requests to the webp copy or serves it inline via content negotiation (see *Query string caching* below).
+It acts as a **transparent proxy** between the origin server and the client's browser: on the first request a missing asset is fetched from the origin and cached on the local filesystem; on every subsequent request the web server (Apache or nginx) serves the cached copy directly, without going through PHP. If the asset is a raster image (`jpg`, `jpeg`, `png`, `gif`, `bmp`) the proxy optionally generates a `.webp` variant alongside it, which the web server serves at the same URL to the clients that accept it (see *Content negotiation* below).
 
 > Historical note: the repository name (`php-webp-rewriter-trasparent-proxy`) contains a typo kept for backward-compatibility. The project is a transparent proxy, not a "trasparent" one.
 
@@ -27,7 +27,7 @@ This is a **small, hobbyist-to-small-production** project. It is appropriate for
 
 **Real value-add of this project over the alternatives:**
 
-The one thing this project does that is genuinely cumbersome to replicate with off-the-shelf tools is **on-the-fly WEBP conversion against an unmodifiable origin, with automatic 301 fallback for non-webp clients, served from an `.htaccess` + PHP stack**. If that specific combination matches your constraints, this is a reasonable starting point. Everything else (caching, HTTPS redirect, compression, ETags) is solved better elsewhere.
+The one thing this project does that is genuinely cumbersome to replicate with off-the-shelf tools is **on-the-fly WEBP conversion against an unmodifiable origin, negotiated per client at the same URL, served from an Apache or nginx + PHP stack without a cache daemon**. If that specific combination matches your constraints, this is a reasonable starting point. Everything else (caching, HTTPS redirect, compression, ETags) is solved better elsewhere.
 
 ## Table of contents
 
@@ -35,11 +35,12 @@ The one thing this project does that is genuinely cumbersome to replicate with o
 - [Request lifecycle](#request-lifecycle)
 - [Installation](#installation)
 - [Configuration](#configuration)
+- [Web server configuration](#web-server-configuration)
 - [Image conversion modes](#image-conversion-modes)
 - [Cache purge](#cache-purge)
 - [Query string caching](#query-string-caching)
 - [Negative caching and circuit breaker](#negative-caching-and-circuit-breaker)
-- [Content negotiation (Accept: image/webp)](#content-negotiation-accept-imagewebp)
+- [Content negotiation (Accept: image/avif, image/webp)](#content-negotiation-accept-imageavif-imagewebp)
 - [Logging](#logging)
 - [Cache maintenance](#cache-maintenance)
 - [Rewriting origin references to the CDN](#rewriting-origin-references-to-the-cdn)
@@ -51,25 +52,22 @@ The one thing this project does that is genuinely cumbersome to replicate with o
 
 1. The client requests a web page of `https://origin.example.com`.
 2. That page references a static asset as `https://cdn.example.com/images/whatever/resource.jpg` (instead of a relative path on the origin).
-3. The CDN receives the request. Apache then **decides who handles it**:
-    - **No query string** and the file **exists on disk**: Apache serves directly. PHP is not invoked.
-    - **No query string** and the file is **missing on disk**: Apache rewrites to `index.php` (cache miss path).
-    - **Any non-empty query string**: Apache always rewrites to `index.php`, because the cache key depends on the query string and Apache alone cannot compute it (see *Query string caching*).
+3. The CDN receives the request. The web server then **decides who handles it**:
+    - A `GET` or `HEAD` whose cache file **exists on disk** (`public/_cache/<host>/<path>`, or the directory of its query string, see *Query string caching*): the web server serves it, as its AVIF or WEBP variant or its Brotli or gzip encoding when the client accepts one. PHP is not invoked.
+    - Anything else (a miss, a query string the web server cannot map, `PURGE`, `OPTIONS`): the request reaches `index.php`.
 4. `index.php` runs [public/index.php](public/index.php). Its flow is:
-    1. Validate the request (traversal, extension whitelist).
-    2. Compute the cache location.
-        - Empty QS: `public/<path>`.
-        - Non-empty QS: `public/_qs/<sha256_prefix>/<path>`.
+    1. Refuse a host outside `PROXY_HOSTS` (`421`), then validate the request (traversal, extension whitelist).
+    2. Compute the cache location: `public/_cache/<host>/<path>`, or a directory of the query string below it.
     3. Answer an authenticated `PURGE` (see *Cache purge*); refuse the anonymous `?purge=` of 2.x with a 401.
     4. Short-circuit to 404 or 410 if the negative cache still remembers the entry.
-    5. Serve from disk if the cache file exists (content-negotiated webp when applicable).
+    5. Serve from disk if the cache file exists, negotiated as the web server does.
     6. Answer 503 without a fetch while the circuit breaker of the origin is open.
     7. Otherwise, fetch the origin over HTTPS with cURL, distinguish a real 404 from a transient network failure, persist the bytes atomically, optionally convert to webp, and stream the response.
 
 ## Installation
 
-1. Clone this repo onto a LAMP/LEMP server and point a VirtualHost's `DocumentRoot` at `./public`.
-2. Enable the required Apache modules: `sudo a2enmod rewrite headers expires deflate mime`.
+1. Clone this repo onto a LAMP/LEMP server and point a VirtualHost's `DocumentRoot` (nginx: `root`) at `./public`.
+2. Configure the web server (see *Web server configuration*). Apache: `sudo a2enmod rewrite headers setenvif deflate mime`.
 3. Make sure `curl` is available in your PHP build (`php -m | grep -i curl`).
 4. Install dependencies with `composer install`. The `post-install` hook runs `bin/proxy-cdn check-env --informational`, which validates every configuration key (including URL format, numeric ranges and suspicious extensions); `composer check-env` runs the same check and fails on any error.
 5. Copy `.env.example` to `.env` and adjust it. The defaults are safe for production (`DEBUG=false`, and the origin TLS certificate is verified; an origin with a self-signed certificate on a trusted network needs `UPSTREAM_VERIFY_TLS=false`).
@@ -92,9 +90,13 @@ Every setting is read from the environment first and from `.env` second: a varia
 |-----------------------------------|-----------|---------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `DEBUG`                           | bool      | `false`                   | When `true`, enables `display_errors`, `E_ALL` and info-level log entries. **Must be `false` in production** or PHP warnings will poison streamed asset bodies. |
 | `SOURCE_ORIGIN`                   | URL       | *required*                | Origin server from which missing assets are fetched. Validated at install time.                                                                                 |
-| `SOURCE_ORIGIN_SERVER`            | `ip:port` | *optional*                | Pins the cURL connection to a specific `host:port`, bypassing DNS (and therefore any CDN/WAF in front of the origin). See security notes.                       |
+| `SOURCE_ORIGIN_SERVER`            | `ip:port` | *optional*                | Pins the cURL connection to a specific `host:port`, bypassing DNS (and therefore any CDN/WAF in front of the origin). See security notes. Not with several origins in `PROXY_HOSTS`. |
+| `PROXY_HOSTS`                     | CSV       | *required*                | The host names the proxy answers for: `cdn.example.com` fetches from `SOURCE_ORIGIN`, `cdn.example.com=https://origin.example.com` from its own origin. Each host has a cache directory of its own, `public/_cache/<host>/`; any other `Host` gets `421 Unknown host`. A name matches itself only, in any letter case, without wildcards. |
+| `SENDFILE`                        | enum      | `none`                    | How PHP sends a cache file: `none` (PHP streams it), `x-sendfile` (Apache with mod_xsendfile) or `x-accel-redirect` (nginx).                                    |
+| `PRECOMPRESS`                     | bool      | `true`                    | Stores a gzip (ext-zlib) and a Brotli (ext-brotli) encoding of text, SVG, icon and font entries next to them, served to the clients that accept them.           |
+| `LEGACY_WEBP_URLS`                | bool      | `true`                    | Answers an `X.webp` URL, where the 301 of 2.x sent clients, with the WEBP variant of the raster `X.jpg`, `X.png`, ... (cached, or fetched when the origin has no `X.webp`), unless an `X.webp` entry is cached. |
 | `CACHEABLE_EXTENSIONS`            | CSV       | `css,js,...,ico`          | Whitelist of file extensions the proxy will serve. Any extension outside this list is rejected with a 404.                                                      |
-| `CACHE_EXPIRY`                    | seconds   | `31536000` (1y)           | `max-age` sent on first-hit responses and, via `.htaccess`, on cache hits. Combined with `must-revalidate` (not `immutable`), so a purge is effective.          |
+| `CACHE_EXPIRY`                    | seconds   | `86400` (1d); `.env.example` sets `31536000` | `max-age` sent on the responses of PHP. The web server configurations (`public/.htaccess`, `config/nginx/proxy-cdn-headers.conf`) send `31536000` on the hits they serve: change them with it; `composer check-env` warns when they differ. Combined with `must-revalidate` (not `immutable`), so a purge is effective. |
 | `NEGATIVE_CACHE_TTL`              | seconds   | `300`                     | How long a 404 marker is honored before the proxy re-queries the origin.                                                                                        |
 | `NETWORK_ERROR_TTL`               | seconds   | `30`                      | How long the circuit breaker of the origin stays open once it opens (see *Negative caching and circuit breaker*); `0` disables the breaker.                     |
 | `CIRCUIT_BREAKER_THRESHOLD`       | int       | `5`                       | Consecutive unavailability failures of the origin (5xx, 429, timeout, DNS, connection, TLS) that open its circuit breaker; 1 to 1000.                          |
@@ -110,6 +112,21 @@ Every setting is read from the environment first and from `.env` second: a varia
 | `WEBP_API_SERVER`                 | URL       | `null`                    | Only used when mode = `api`.                                                                                                                                    |
 | `WEBP_API_KEY`                    | string    | `null`                    | Only used when mode = `api`.                                                                                                                                    |
 | `CHARSET` / `TIMEZONE` / `LOCALE` | string    | `UTF-8` / `UTC` / `en_US` | Standard PHP locale setup.                                                                                                                                      |
+
+## Web server configuration
+
+The web server serves the hits; the official configurations are [public/.htaccess](public/.htaccess) (Apache, with the example virtual host [config/apache/proxy-cdn.conf](config/apache/proxy-cdn.conf)) and [config/nginx/](config/nginx/) (nginx: copy it to `/etc/nginx/proxy-cdn/` and start from [proxy-cdn.conf](config/nginx/proxy-cdn.conf)). Both send a hit with the headers PHP sends: `Cache-Control`, `X-Cache-Status: HIT`, `Access-Control-Allow-Origin: *`, `Cross-Origin-Resource-Policy: cross-origin`, `Timing-Allow-Origin: *`, `X-Content-Type-Options: nosniff`, the SVG policy, `Vary` and `Content-Encoding`; and both hand `PURGE`, `OPTIONS`, misses and unlisted hosts to PHP. `X-Cache-Status` is `HIT` on a file served from the cache, `MISS` on a file fetched from the origin, and absent on an error.
+
+**HTTPS redirect behind a proxy.** Plain-HTTP requests are redirected to https. Behind a TLS-terminating reverse proxy, the web server must believe the `X-Forwarded-Proto` of that proxy only, as PHP does with `TRUSTED_PROXIES`; 2.x believed any client. List the same addresses in the web server:
+
+- Apache, in the virtual host: `SetEnvIfExpr "-R '10.0.0.0/8' && %{HTTP:X-Forwarded-Proto} == 'https'" PROXYCDN_HTTPS=on`.
+- nginx, in the `geo $proxycdn_trusted_proxy` block of `proxy-cdn.conf`: `10.0.0.0/8 1;`.
+
+Without them `X-Forwarded-Proto` is ignored, which is the safe default: a TLS-terminating proxy then gets redirect loops until it is listed.
+
+**Sending files.** With `SENDFILE=x-accel-redirect` (nginx) or `SENDFILE=x-sendfile` (Apache with mod_xsendfile, `XSendFilePath` set to `public/_cache`), the files PHP chooses are sent by the web server too. PHP hands a file over only when the web server sets the variable `PROXYCDN_SENDFILE` to the same mode, as `config/nginx/proxy-cdn-fastcgi.conf` does, and the `mod_xsendfile` block of `config/apache/proxy-cdn.conf`; otherwise it streams the file itself, so that a missing module never yields empty responses.
+
+**Upgrading from 2.x.** 2.x stored entries at `public/<path>` and `public/_qs/`; 3.0 neither reads nor serves them. Delete them once the new layout is in place (everything in `public/` but `index.php`, `.htaccess` and `_cache/`). The `X.webp` URLs that 2.x redirected clients to keep working (`LEGACY_WEBP_URLS`).
 
 ## Image conversion modes
 
@@ -157,7 +174,7 @@ curl -X PURGE -H "X-Purge-Timestamp: $ts" -H "X-Purge-Signature: $sig" \
     'https://static.mycdn.com/images/hero.jpg?v=42'
 ```
 
-A purge removes the entry of that exact URL (the `_qs/<hash>/` bucket of its allowlisted query string, or the path alone), the `.webp` variant converted from a raster entry, and what the negative cache remembers for them. It does not fetch the asset again: the next request does. The answer is `200` with `{"purged":true,"path":"/images/hero.jpg","query":"v=42","removed":2}`; a request without a valid key gets `401` with `WWW-Authenticate: Bearer realm="proxy-cdn purge"`. Every purge is logged at `notice` level with the client address (read through `TRUSTED_PROXIES`); every refusal at `warning` level.
+A purge removes the entry of that exact URL (in the directory of its allowlisted query string, or of the path alone), its AVIF and WEBP variants, its Brotli and gzip encodings, and what the negative cache remembers for them. It does not fetch the asset again: the next request does. The answer is `200` with `{"purged":true,"path":"/images/hero.jpg","query":"v=42","removed":2}`; a request without a valid key gets `401` with `WWW-Authenticate: Bearer realm="proxy-cdn purge"`. Every purge is logged at `notice` level with the client address (read through `TRUSTED_PROXIES`); every refusal at `warning` level.
 
 The anonymous `?purge=1` and `?purge_all=1` of 2.x were removed: anyone could empty the cache and send the load to the origin. Such a request now gets a `401` whose body explains the `PURGE` request, and purges nothing. `purge_all` also removed the files of other URLs that share the base name (`hero.png` for `hero.jpg`); purge those by their own URL.
 
@@ -167,25 +184,22 @@ Cache-busted URLs (e.g. `/hero.jpg?v=42`) are a common origin idiom. A naive dis
 
 Only the parameters named in `QUERY_STRING_ALLOWLIST` (default `v,ver,version,id`, where `id` is the version hash of Laravel Mix, `mix('/css/app.css')` = `/css/app.css?id=<hash>`) count. Add the parameter your build tool uses (`hash`, `t`, ...) if it is another one, or a new build is served from the stale entry of the old one. The others, such as `utm_source` or a random `?_=<timestamp>`, are left out of the cache key and of the origin request (`QUERY_STRING_MODE=ignore`, the default) or refused with a 400 (`QUERY_STRING_MODE=reject`). In 2.x every distinct query string was a cache entry and an origin fetch of its own, so random query strings filled the disk and bypassed the cache.
 
-- A query string with **no allowlisted parameter** keys on the path: `public/<path>`. Apache serves directly on cache hit, zero PHP; when the request reaches PHP (because it carries a query string) the stored file is served from disk.
+- A query string with **no allowlisted parameter** keys on the path: `public/_cache/<host>/<path>`.
 
-- Otherwise the allowlisted parameters, sorted by name (repeated names keep their order, escapes in upper case), are hashed with SHA-256; the first 64 bits of the hash become a subdirectory under `public/_qs/`:
+- Otherwise the allowlisted parameters, sorted by name (repeated names keep their order, escapes in upper case), form the canonical query string. When it is made of letters, digits and `-._~=&` only (at most 200 characters), the entry lives in a directory named after it, which the web server finds by itself; any other one is hashed with SHA-256, and only PHP finds it:
 
   ``` text
-  /hero.jpg?v=1&ver=2         -> public/_qs/<sha256_prefix>/hero.jpg
-  /hero.jpg?ver=2&utm_x=1&v=1 -> same file (key v=1&ver=2)
-  /hero.jpg?v=42              -> public/_qs/<other_hash>/hero.jpg
+  /hero.jpg?v=42              -> public/_cache/<host>/.q/v=42/hero.jpg       (web server hit)
+  /hero.jpg?ver=2&utm_x=1&v=1 -> public/_cache/<host>/.q/v=1&ver=2/hero.jpg  (PHP hit: not the canonical form)
+  /hero.jpg?v=1&ver=2         -> the same file                               (web server hit)
+  /hero.jpg?v=a%2Fb           -> public/_cache/<host>/.qh/<sha256_prefix>/hero.jpg (PHP hit)
   ```
+
+  The web server looks up the query string exactly as the client sent it, so a request in canonical form is a hit without PHP; another form of the same parameters reaches PHP, which serves the same entry.
 
   The origin receives the allowlisted parameters as the client wrote them, in their order (`?ver=2&v=1` above); 2.x forwarded its canonical form, which turned `a.b=1` into `a_b=1` and `v` into `v=`.
 
-  Apache always routes such requests through `index.php` (the rewrite rule matches `QUERY_STRING .`), because it cannot compute the SHA-256 on its own. `index.php` reads or writes the correct bucket and serves.
-
-Direct HTTP access to `/_qs/...` is denied with 403 in `.htaccess`: the bucket layout is an internal implementation detail.
-
-Pros: every origin version is preserved as long as its query string is unique, and purges apply to the exact bucket.
-
-Cons: on a QS-keyed hit, PHP runs (no pure-Apache fast path). For a static asset this is still fast (opcode cache, file_get_contents), but it is not free.
+Direct HTTP access to `/_cache/...` and to the `_qs/` buckets of 2.x is denied: the layout is an internal implementation detail.
 
 ## Negative caching and circuit breaker
 
@@ -216,17 +230,17 @@ Rationale:
 
 A successful fetch forgets the negative-cache entry of its file and closes the breaker of the origin. A `PURGE` forgets the negative-cache entry of the purged files.
 
-## Content negotiation (Accept: image/webp)
+## Content negotiation (Accept: image/avif, image/webp)
 
-For **QS-less** requests the `.htaccess` does the classic trick: `request for foo.jpg` + `foo.webp exists on disk` -\> `301 -> foo.webp`.
+A raster entry (`jpg`, `jpeg`, `png`, `gif`, `bmp`) is always served at its own URL; 2.x answered `301 -> foo.webp` instead, which broke the clients that cached the redirect. The web server and PHP choose the same file from the `Accept` header:
 
-For **QS-keyed** requests Apache routes through PHP; the decision then is driven by the client's `Accept` header:
+- `image/avif` listed (without `q=0`) and an AVIF variant on disk (`<bucket>/.avif/<path>.avif`): the AVIF variant.
+- Otherwise `image/webp` listed and a WEBP variant on disk (`<bucket>/.webp/<path>.webp`): the WEBP variant, which PHP converts on the first such request.
+- Otherwise the original raster.
 
-- Client sends `Accept: image/webp` (Chrome, Firefox, Safari, Edge on modern versions): the proxy serves the `.webp` sibling if it exists (or generates it lazily on the first webp-capable hit).
-- Client does not advertise webp: the proxy serves the original raster.
-- In both cases the response carries `Vary: Accept` so intermediaries do not cross-pollute cached variants.
+Every raster response carries `Vary: Accept`, so that shared caches keep the variants apart. A bare `*/*` is intentionally NOT treated as support, because old UAs send it and then fail to decode the response.
 
-A bare `*/*` is intentionally NOT treated as webp support, because old UAs send it and then fail to decode the response.
+Text, SVG, icon and font entries get the same treatment for `Accept-Encoding`: the Brotli encoding (`<bucket>/.br/<path>`) to the clients that list `br`, the gzip one (`<bucket>/.gz/<path>`) to those that list `gzip`, with `Vary: Accept-Encoding` (see `PRECOMPRESS`).
 
 ## Logging
 
@@ -271,9 +285,9 @@ The proxy does not auto-clean stale negative markers or old cached files. Run ma
 # (bounded) and var/breaker/ (one file per origin) and needs no cleaning.
 find /srv/sites/cdn/public \( -name '*.404' -o -name '*.netfail' \) -type f -delete
 
-# Every week: garbage-collect QS buckets not touched in the last 30 days.
-# The _qs/ layout is flat (one level of hash-dirs), so this is cheap.
-15 3 * * 0 find /srv/sites/cdn/public/_qs -mindepth 1 -maxdepth 1 -type d -atime +30 -exec rm -rf {} +
+# Every week: garbage-collect the query-string directories not touched in
+# the last 30 days (one level below .q/ and .qh/ of each host).
+15 3 * * 0 find /srv/sites/cdn/public/_cache/*/.q /srv/sites/cdn/public/_cache/*/.qh -mindepth 1 -maxdepth 1 -type d -atime +30 -exec rm -rf {} +
 ```
 
 ## Rewriting origin references to the CDN
@@ -308,7 +322,8 @@ ob_start(function ($html) {
 
 Read these before putting the proxy on the public Internet.
 
-- **Public cache surface.** Any HTTP client can cause the proxy to create a new file under `public/` by requesting an arbitrary path that resolves on the origin. Negative caching mitigates the same-URL case and stays bounded (at most 4096 slot files in `var/negative/`), and query parameters outside `QUERY_STRING_ALLOWLIST` neither create entries nor reach the origin, but an attacker generating distinct random paths will still cause one origin fetch per request. Put a rate limiter in front of the CDN (nginx `limit_req`, Apache `mod_ratelimit`, fail2ban watching `index.php` invocations).
+- **Host allowlist.** Only the hosts of `PROXY_HOSTS` have a cache directory; any other `Host` header is answered `421` and creates nothing, so a random `Host` cannot fill the disk, and a host never reads or purges the entries of another. `X-Forwarded-Host` is never read.
+- **Public cache surface.** Any HTTP client can cause the proxy to create a new file under `public/_cache/` by requesting an arbitrary path that resolves on the origin. Negative caching mitigates the same-URL case and stays bounded (at most 4096 slot files in `var/negative/`), and query parameters outside `QUERY_STRING_ALLOWLIST` neither create entries nor reach the origin, but an attacker generating distinct random paths will still cause one origin fetch per request. Put a rate limiter in front of the CDN (nginx `limit_req`, Apache `mod_ratelimit`, fail2ban watching `index.php` invocations).
 - **Circuit breaker per origin.** Even without a rate limiter, the breaker bounds origin exposure: once the origin keeps failing, no path is fetched from it for `NETWORK_ERROR_TTL` seconds, and the cached entries keep being served.
 - **`SOURCE_ORIGIN_SERVER` bypasses front-facing protections.** Pinning the cURL connection to a specific `ip:port` bypasses the origin's DNS-based CDN/WAF. If you rely on the WAF for security, leave the variable empty.
 - **`UPSTREAM_VERIFY_TLS` defaults to `true`** since 3.0 (2.x defaulted to `false`). An origin with a self-signed or mismatched certificate answers 503 after the upgrade: fix its certificate, or set `UPSTREAM_VERIFY_TLS=false` on a trusted network only. `composer check-env` prints a note while the key is unset.
@@ -317,8 +332,8 @@ Read these before putting the proxy on the public Internet.
 - **Purge needs a key** of `PURGE_KEYS`, scoped to the origin (see *Cache purge*); without a key every purge is refused.
 - **Methods.** Only `GET`, `HEAD` and `OPTIONS` reach the cache (a valid CORS preflight, without credentials); `PURGE` is authenticated; every other method is a `405`, and `X-HTTP-Method-Override` is ignored.
 - **SVG** responses carry `Content-Security-Policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox`, so an SVG opened from the CDN origin runs no script. Every asset is sent with `X-Content-Type-Options: nosniff` and the media type of its extension, a miss included, whatever `Content-Type` the origin sent.
-- **Paths** are decoded once and refused (`400`) when they could name another file: encoded `/` or `\`, `..` and dot segments, control characters, invalid UTF-8, or the reserved `_qs` prefix.
-- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, project-internal directories (`vendor/`, `src/`, `bin/`, `logs/`, `.git/`) should the document root be mispointed at the project, the internal QS-bucket layout (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and the negative-cache markers of 2.x (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply.
+- **Paths** are decoded once and refused (`400`) when they could name another file: encoded `/` or `\`, `..` and dot segments, control characters, invalid UTF-8, or the reserved `_cache` and `_qs` prefixes.
+- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, project-internal directories (`vendor/`, `src/`, `bin/`, `logs/`, `.git/`) should the document root be mispointed at the project, the cache directory read directly (`_cache/`) and the buckets of 2.x (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and the negative-cache markers of 2.x (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply.
 - **HSTS** is enabled with `max-age=31536000` only by default. The wider `includeSubDomains` / `preload` variants are commented out in `.htaccess` because they affect sibling hostnames on the same eTLD+1. Enable them only when you understand the blast radius.
 
 ## Troubleshooting
@@ -328,8 +343,10 @@ Read these before putting the proxy on the public Internet.
 | `cwebp binary not available in PATH`        | `IMAGE_CONVERSION_MODE=native` but `cwebp` is missing. Install it or switch to `api` / `none`.                                                                                            |
 | 404s for assets that do exist on the origin | A negative-cache marker in `var/negative/` is still warm. Wait `NEGATIVE_CACHE_TTL` seconds or send a `PURGE` for the URL.                                                                                          |
 | 503 with `Retry-After: 30`                  | The circuit breaker of the origin is open (the origin failed `CIRCUIT_BREAKER_THRESHOLD` times in a row). Wait `NETWORK_ERROR_TTL` seconds for the probe, or delete `var/breaker/` once the origin is fixed.                                                                |
-| 500 `Image conversion failed`               | Origin returned something cURL accepted as 200 but `cwebp` refused. Inspect `public/<path>` and `logs/proxy.log`.                                                                         |
-| All responses HTTP (no HTTPS redirect)      | `mod_rewrite` off or the VirtualHost is behind a TLS-terminating proxy that does not forward `X-Forwarded-Proto: https`.                                                                  |
+| 500 `Image conversion failed`               | Origin returned something cURL accepted as 200 but `cwebp` refused. Inspect `public/_cache/<host>/<path>` and `logs/proxy.log`.                                                                         |
+| All responses HTTP (no HTTPS redirect)      | `mod_rewrite` off.                                                                                                                                                                        |
+| Redirect loop behind a load balancer        | The TLS-terminating proxy is not listed as trusted in the web server (see *Web server configuration*), so its `X-Forwarded-Proto: https` is ignored.                                      |
+| `421 Unknown host`                          | The `Host` header is not in `PROXY_HOSTS`.                                                                                                                                                |
 | QS-keyed content always a cache miss        | QS parameters contain unique tokens per request (e.g. cache-breakers with timestamps). That is the expected behavior but it defeats the cache. Canonicalize on the origin before linking. |
 | `logs/proxy.log` not appearing              | Web server user cannot write to project root. `chown -R www-data:www-data /srv/sites/cdn`.                                                                                                |
 
