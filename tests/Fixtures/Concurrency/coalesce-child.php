@@ -7,9 +7,11 @@ declare(strict_types=1);
  * start time, sends GET <url> through a kernel built as the front controller
  * builds it, whose origin takes <delay> milliseconds and records each fetch
  * as a line of <fetch log>, then prints the status, X-Cache-Status and
- * SHA-256 of the body as JSON. The origin answers with the stylesheet
- * (mode "ok", the default), with a 503 ("fail") or with the stylesheet
- * marked "Cache-Control: private" ("private").
+ * SHA-256 of the body and the Location as JSON. The origin answers with
+ * the stylesheet (mode "ok", the default), with a 503 ("fail"), with the
+ * stylesheet marked "Cache-Control: private" ("private"), with a 302 to
+ * "/css/moved.css" ("redirect"), or with a 404 ("notfound", with
+ * NEGATIVE_CACHE_TTL 0, so that only the coalescer can share it).
  *
  * Usage: php coalesce-child.php <directory> <fetch log> <url> <delay ms> <start time> [<mode>]
  */
@@ -65,6 +67,12 @@ $origin = new class ($fetchLog, (int) $delay, $mode) implements OriginFetcher {
         if ($this->mode === 'fail') {
             return OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 503);
         }
+        if ($this->mode === 'redirect') {
+            return OriginResponse::redirect(302, 'https://origin.example.test/css/moved.css');
+        }
+        if ($this->mode === 'notfound') {
+            return OriginResponse::failure(OriginResponse::FAILURE_NOT_FOUND, 404);
+        }
         $headers = ['content-type' => 'text/css'];
         if ($this->mode === 'private') {
             $headers['cache-control'] = 'private, max-age=60';
@@ -75,7 +83,7 @@ $origin = new class ($fetchLog, (int) $delay, $mode) implements OriginFetcher {
 };
 
 $kernel = TestKernel::create(
-    TestConfig::create(['SOURCE_ORIGIN' => 'https://origin.example.test']),
+    TestConfig::create(['SOURCE_ORIGIN' => 'https://origin.example.test'] + ($mode === 'notfound' ? ['NEGATIVE_CACHE_TTL' => '0'] : [])),
     $directory,
     $origin,
     null,
@@ -95,4 +103,5 @@ echo json_encode([
     'status' => $response->getStatusCode(),
     'cache' => $response->headers->get('X-Cache-Status'),
     'hash' => hash('sha256', $body),
+    'location' => $response->headers->get('Location'),
 ]), "\n";

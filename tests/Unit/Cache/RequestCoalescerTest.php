@@ -260,6 +260,26 @@ final class RequestCoalescerTest extends TestCase
         self::assertTrue($coalescer->isRecentlyUncacheable($second), 'not the outcome of another key');
     }
 
+    /**
+     * A redirect is shared with its status and target; a target that
+     * could not be one line of the slot is not recorded.
+     */
+    public function testARedirectIsSharedWithItsTarget(): void
+    {
+        $coalescer = $this->coalescer($this->lock(), 1.0);
+        self::assertNull($coalescer->recentRedirect('key'));
+
+        $coalescer->recordRedirect('key', 302, '/css/moved.css?v=2');
+        self::assertSame([302, '/css/moved.css?v=2'], $coalescer->recentRedirect('key'));
+        self::assertNull($coalescer->recentFailure('key'));
+        self::assertNull($coalescer->recentRedirect('other'));
+
+        $coalescer->recordRedirect('spaced', 301, "/a b\n");
+        self::assertNull($coalescer->recentRedirect('spaced'));
+        $coalescer->recordFailure('key', ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
+        self::assertNull($coalescer->recentRedirect('key'), 'replaced');
+    }
+
     public function testWithoutALockNoOutcomeIsRecorded(): void
     {
         $coalescer = $this->coalescer(null, 1.0);

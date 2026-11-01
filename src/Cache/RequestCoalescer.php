@@ -22,10 +22,14 @@ use Psr\Log\LoggerInterface;
  * the leader has left an outcome, or the lock is free, and never holds the
  * lock just to look: a burst is not serialized behind it.
  *
- * At most one fetch per entry is in flight, also when the leader fails:
- * - a leader that the origin failed records the failure, and its waiters
- *   answer with it instead of fetching in turn; the record holds for
- *   OUTCOME_WINDOW seconds, and the next leader clears it;
+ * At most one fetch per entry is in flight, also when the leader stores
+ * nothing:
+ * - a leader that the origin failed, or answered with a 403, 404 or 410,
+ *   records the error it answered, and its waiters answer with it instead
+ *   of fetching in turn; the record holds for OUTCOME_WINDOW seconds, and
+ *   the next leader clears it;
+ * - a leader that the origin redirected records the redirect it passed
+ *   on, and its waiters pass on the same one, for the same window;
  * - a leader whose response the origin forbids storing (no-store,
  *   private) records that, and for OUTCOME_WINDOW seconds the requests of
  *   the entry fetch without the lock, in parallel: each needs its own
@@ -62,6 +66,8 @@ final class RequestCoalescer
     private const UNCACHEABLE = 'uncacheable';
 
     private const FAILED = 'failed';
+
+    private const REDIRECTED = 'redirect';
 
     /**
      * Hexadecimal digits of the hash that name a slot: 16^3 = 4096 slots.
@@ -223,6 +229,18 @@ final class RequestCoalescer
     }
 
     /**
+     * Records that the leader of $key answered with a redirect to $target,
+     * a path and query string on the proxy without spaces or control
+     * characters (ProxyKernel::proxyLocation()).
+     */
+    public function recordRedirect(string $key, int $status, string $target): void
+    {
+        if ($this->lock !== null && preg_match('/\A\S{1,4096}\z/', $target) === 1) {
+            $this->storage->write($this->slotOf($key), self::REDIRECTED . ' ' . $status . ' ' . hash('sha256', $key) . ' ' . $target . "\n");
+        }
+    }
+
+    /**
      * Records that the origin forbids storing the response of $key.
      */
     public function recordUncacheable(string $key): void
@@ -241,6 +259,19 @@ final class RequestCoalescer
         $outcome = $this->outcomeOf($key);
 
         return $outcome !== null && $outcome[0] === self::FAILED ? $outcome[1] : null;
+    }
+
+    /**
+     * The status and target of the redirect a leader recorded for $key
+     * within the window; null when there is none.
+     *
+     * @return array{int, string}|null
+     */
+    public function recentRedirect(string $key): ?array
+    {
+        $outcome = $this->outcomeOf($key);
+
+        return $outcome !== null && $outcome[0] === self::REDIRECTED ? [$outcome[1], $outcome[2]] : null;
     }
 
     /**
@@ -266,10 +297,11 @@ final class RequestCoalescer
     }
 
     /**
-     * The outcome recorded for $key within the window, as its kind and
-     * error; null when there is none.
+     * The outcome recorded for $key within the window, as its kind, its
+     * error or status, and the target of a redirect; null when there is
+     * none.
      *
-     * @return array{string, int}|null
+     * @return array{string, int, string}|null
      *
      * @phpstan-impure
      */
@@ -291,18 +323,22 @@ final class RequestCoalescer
      * The outcome the slot of $key holds for $key, fresh or not; null when
      * it holds none or the one of another key.
      *
-     * @return array{string, int}|null
+     * @return array{string, int, string}|null
      *
      * @phpstan-impure
      */
     private function recordedIn(string $key): ?array
     {
         $contents = $this->storage->read($this->slotOf($key));
-        if ($contents === null || preg_match('/\A(failed|uncacheable) ([0-9]{1,9}) ([0-9a-f]{64})\n\z/', $contents, $match) !== 1) {
+        if ($contents === null || preg_match('/\A(failed|uncacheable|redirect) ([0-9]{1,9}) ([0-9a-f]{64})(?: (\S{1,4096}))?\n\z/', $contents, $match) !== 1) {
+            return null;
+        }
+        $target = $match[4] ?? '';
+        if ($match[3] !== hash('sha256', $key) || ($match[1] === self::REDIRECTED) !== ($target !== '')) {
             return null;
         }
 
-        return $match[3] === hash('sha256', $key) ? [$match[1], (int) $match[2]] : null;
+        return [$match[1], (int) $match[2], $target];
     }
 
     private function slotOf(string $key): string

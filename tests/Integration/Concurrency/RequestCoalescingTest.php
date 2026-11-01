@@ -18,7 +18,8 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
  * fails, the waiters share its failure: the origin still sees one fetch
  * (one per RequestCoalescer::OUTCOME_WINDOW while it keeps failing). When
  * the origin forbids storing, the waiters fetch in parallel instead of in
- * turn. The harness of tests/Integration/docker proves the first with 500
+ * turn. A redirect or a 404 is shared as a failure is: one fetch, and no
+ * waiter answers after another. The harness of tests/Integration/docker proves the first with 500
  * requests through Apache and nginx.
  *
  * @covers \Mfonte\ProxyCdn\Cache\RequestCoalescer
@@ -105,12 +106,50 @@ final class RequestCoalescingTest extends TestCase
     }
 
     /**
+     * A key the origin redirects: one fetch, and every request passes on
+     * the same redirect at once, instead of each taking the lock in turn
+     * and fetching again (which took PROCESSES * ORIGIN_DELAY_MS).
+     */
+    public function testTheWaitersOfARedirectedLeaderShareItsRedirectP24(): void
+    {
+        $started = microtime(true);
+        $results = $this->burst('https://cdn.example.test/css/redirected.css', 'redirect');
+        $elapsed = microtime(true) - $started;
+
+        $fetches = file($this->directory->path('fetches.log'), FILE_IGNORE_NEW_LINES) ?: [];
+        self::assertSame(['https://origin.example.test/css/redirected.css'], $fetches, 'one origin fetch');
+        foreach ($results as $result) {
+            self::assertSame(302, $result['status']);
+            self::assertSame('/css/moved.css', $result['location']);
+        }
+        self::assertLessThan(self::PROCESSES * self::ORIGIN_DELAY_MS / 2000, $elapsed, 'not one after the other');
+    }
+
+    /**
+     * A key the origin does not have, without the negative cache
+     * (NEGATIVE_CACHE_TTL 0): the 404 is shared by the coalescer alone.
+     */
+    public function testTheWaitersOfANotFoundLeaderShareIts404P24(): void
+    {
+        $started = microtime(true);
+        $results = $this->burst('https://cdn.example.test/css/missing.css', 'notfound');
+        $elapsed = microtime(true) - $started;
+
+        $fetches = file($this->directory->path('fetches.log'), FILE_IGNORE_NEW_LINES) ?: [];
+        self::assertSame(['https://origin.example.test/css/missing.css'], $fetches, 'one origin fetch');
+        foreach ($results as $result) {
+            self::assertSame(404, $result['status']);
+        }
+        self::assertLessThan(self::PROCESSES * self::ORIGIN_DELAY_MS / 2000, $elapsed, 'not one after the other');
+    }
+
+    /**
      * Runs PROCESSES requests for $url at the same moment, each in its own
      * PHP process, and returns what each printed.
      *
      * @param string $mode what the origin answers (see coalesce-child.php)
      *
-     * @return list<array{status: int, cache: string, hash: string}>
+     * @return list<array{status: int, cache: string, hash: string, location: string|null}>
      */
     private function burst(string $url, string $mode = 'ok'): array
     {
@@ -149,6 +188,7 @@ final class RequestCoalescingTest extends TestCase
                 'status' => $result['status'],
                 'cache' => isset($result['cache']) && is_string($result['cache']) ? $result['cache'] : 'none',
                 'hash' => $result['hash'],
+                'location' => isset($result['location']) && is_string($result['location']) ? $result['location'] : null,
             ];
         }
 

@@ -64,8 +64,9 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    finding P-15, opportunity O-D);
  * 6. otherwise, unless the circuit breaker of the origin is open, one
  *    request of those that miss the entry together fetches it while the
- *    others wait for it (RequestCoalescer, finding P-24); a failure is
- *    answered by its kind (see failure(), finding P-13); a response the
+ *    others wait for it (RequestCoalescer, finding P-24), and answer as
+ *    it did when it stored nothing; a failure is answered by its kind
+ *    (see failure(), finding P-13); a response the
  *    origin forbids storing (no-store, private) is streamed to the client
  *    only; any other is stored as the origin sent it, streamed from its
  *    temporary file (finding P-17), in the tier its lifetime calls for,
@@ -406,10 +407,10 @@ final class ProxyKernel
                 if ($stored !== null) {
                     return $stored;
                 }
-                // A request that waited for a leader the origin failed.
-                $failed = $lease === null ? $this->coalescer->recentFailure($key) : null;
-                if ($failed !== null) {
-                    return $this->responses->error($path, $failed);
+                // A request that waited for a leader that stored nothing.
+                $shared = $lease === null ? $this->sharedOutcome($key, $path) : null;
+                if ($shared !== null) {
+                    return $shared;
                 }
 
                 $fetched = $this->fetch($request, $origin, $path, $query);
@@ -528,6 +529,10 @@ final class ProxyKernel
             $failed = $lease === null ? $this->coalescer->recentFailure($key) : null;
             if ($failed !== null) {
                 return $this->staleOrError($request, $managed, $extension, $path, $metadata, $failed);
+            }
+            $redirect = $lease === null ? $this->coalescer->recentRedirect($key) : null;
+            if ($redirect !== null) {
+                return $this->responses->redirect($redirect[0], $redirect[1]);
             }
 
             return $this->revalidate($request, $managed, $extension, $origin, $path, $query, $metadata);
@@ -696,7 +701,7 @@ final class ProxyKernel
 
         $result = $this->storeFetched($location, $extension, $fetched, $freshness);
         if (is_int($result)) {
-            return $this->responses->error($path, $result);
+            return $this->sharedError($location, $path, $result);
         }
         list($stored, $maxAge) = $result;
 
@@ -966,20 +971,39 @@ final class ProxyKernel
             $gone = $reason === OriginResponse::FAILURE_GONE;
             $this->negativeCache->remember($file, $gone ? 410 : 404);
 
-            return $this->responses->error($path, $gone ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
+            // Shared also when NEGATIVE_CACHE_TTL is 0.
+            return $this->sharedError($location, $path, $gone ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
         }
         if ($reason === OriginResponse::FAILURE_FORBIDDEN) {
             return $this->sharedError($location, $path, ResponseFactory::ERROR_ORIGIN_FORBIDDEN);
         }
         if ($reason === OriginResponse::FAILURE_REDIRECT) {
             $target = $this->proxyLocation($origin, $fetched->getLocation());
+            if ($target === null) {
+                return $this->sharedError($location, $path, ResponseFactory::ERROR_BAD_GATEWAY);
+            }
+            $this->coalescer->recordRedirect($location->getKey(), $fetched->getStatus(), $target);
 
-            return $target === null
-                ? $this->responses->error($path, ResponseFactory::ERROR_BAD_GATEWAY)
-                : $this->responses->redirect($fetched->getStatus(), $target);
+            return $this->responses->redirect($fetched->getStatus(), $target);
         }
 
         return $this->sharedError($location, $path, ResponseFactory::ERROR_BAD_GATEWAY);
+    }
+
+    /**
+     * The answer a leader recorded for the entry of $key within the window
+     * of RequestCoalescer, when it stored nothing: its error, or the
+     * redirect it passed on; null when there is none.
+     */
+    private function sharedOutcome(string $key, string $path): ?Response
+    {
+        $failed = $this->coalescer->recentFailure($key);
+        if ($failed !== null) {
+            return $this->responses->error($path, $failed);
+        }
+        $redirect = $this->coalescer->recentRedirect($key);
+
+        return $redirect === null ? null : $this->responses->redirect($redirect[0], $redirect[1]);
     }
 
     /**
