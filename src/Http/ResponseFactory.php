@@ -314,7 +314,8 @@ final class ResponseFactory
      * extension (finding P-23: one table of media types, whatever the
      * origin claims), the Cache-Control of CACHE_EXPIRY, X-Cache-Status
      * (finding P-18: only on assets, with what really happened), CORS,
-     * nosniff, and the SVG policy for an SVG.
+     * Cross-Origin-Resource-Policy and Timing-Allow-Origin (opportunity
+     * O-G), nosniff, and the SVG policy for an SVG.
      *
      * @param string $extension   lower-case extension that types the body
      * @param string $cacheStatus one of the CACHE_* constants
@@ -345,6 +346,8 @@ final class ResponseFactory
     {
         return [
             'Access-Control-Allow-Origin' => '*',
+            'Cross-Origin-Resource-Policy' => 'cross-origin',
+            'Timing-Allow-Origin' => '*',
             'X-Content-Type-Options' => 'nosniff',
         ];
     }

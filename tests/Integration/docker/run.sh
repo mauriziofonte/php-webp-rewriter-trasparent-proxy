@@ -312,9 +312,10 @@ fpm_quiet() {
 # hit_headers <label> <headers file>: the headers PHP sends with an asset,
 # each once, on a file the web server served.
 hit_headers() {
-    cors_once "$1" "$2" Access-Control-Allow-Origin X-Content-Type-Options \
-        X-Cache-Status Cache-Control
+    cors_once "$1" "$2" Access-Control-Allow-Origin Cross-Origin-Resource-Policy \
+        Timing-Allow-Origin X-Content-Type-Options X-Cache-Status Cache-Control
     expect "$1: nosniff" "$(header_of X-Content-Type-Options "$2")" nosniff
+    expect "$1: cross-origin resource policy" "$(header_of Cross-Origin-Resource-Policy "$2")" cross-origin
     case "$(header_of X-Powered-By "$2")" in
         *[0-9]*) die "$1: X-Powered-By carries a version: $(header_of X-Powered-By "$2")" ;;
     esac

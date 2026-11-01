@@ -189,7 +189,7 @@ final class ResponseFactoryTest extends TestCase
     /**
      * The headers of an asset, which the web server configurations send on
      * a hit too: the type of the extension (finding P-23), X-Cache-Status
-     * (finding P-18), CORS and nosniff.
+     * (finding P-18), CORS, CORP and Timing-Allow-Origin (opportunity O-G).
      */
     public function testAssetHeaders(): void
     {
@@ -200,6 +200,8 @@ final class ResponseFactoryTest extends TestCase
             'Cache-Control' => 'public, max-age=600, must-revalidate',
             'X-Cache-Status' => 'MISS',
             'Access-Control-Allow-Origin' => '*',
+            'Cross-Origin-Resource-Policy' => 'cross-origin',
+            'Timing-Allow-Origin' => '*',
             'X-Content-Type-Options' => 'nosniff',
         ], $headers);
     }

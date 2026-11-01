@@ -38,7 +38,8 @@ final class FileResponderTest extends TestCase
 
     /**
      * The file is streamed with the headers of a web-server hit: the type
-     * of the extension, the entity tag nginx computes, CORS and nosniff.
+     * of the extension, the entity tag nginx computes, CORS, CORP and
+     * Timing-Allow-Origin (opportunity O-G).
      */
     public function testTheFileIsStreamedWithTheHeadersOfAHit(): void
     {
@@ -57,6 +58,8 @@ final class FileResponderTest extends TestCase
         self::assertSame('Accept', $response->headers->get('vary'));
         self::assertSame('max-age=600, must-revalidate, public', $response->headers->get('cache-control'));
         self::assertSame('*', $response->headers->get('access-control-allow-origin'));
+        self::assertSame('cross-origin', $response->headers->get('cross-origin-resource-policy'));
+        self::assertSame('*', $response->headers->get('timing-allow-origin'));
         self::assertSame('nosniff', $response->headers->get('x-content-type-options'));
         self::assertFalse($response->headers->has('content-security-policy'));
     }

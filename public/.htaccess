@@ -153,6 +153,8 @@ ErrorDocument 403 "Access Forbidden"
     Header set Cache-Control "public, max-age=31536000, must-revalidate" env=PCDN_HIT
     Header set X-Cache-Status "HIT" env=PCDN_HIT
     Header set Access-Control-Allow-Origin "*" env=PCDN_HIT
+    Header set Cross-Origin-Resource-Policy "cross-origin" env=PCDN_HIT
+    Header set Timing-Allow-Origin "*" env=PCDN_HIT
     Header set X-Content-Type-Options "nosniff" env=PCDN_HIT
     Header unset Set-Cookie env=PCDN_HIT
     # An SVG opened from this origin is sandboxed and runs no script
