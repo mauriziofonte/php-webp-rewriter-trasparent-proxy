@@ -16,6 +16,8 @@ use Mfonte\ProxyCdn\Image\WebpConverter;
 use Mfonte\ProxyCdn\Origin\CircuitBreaker;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Origin\OriginRequest;
+use Mfonte\ProxyCdn\Origin\OriginResponse;
+use Mfonte\ProxyCdn\Origin\RedirectTarget;
 use Mfonte\ProxyCdn\Security\PathSanitizer;
 use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 use Psr\Log\LoggerInterface;
@@ -39,7 +41,8 @@ use Symfony\Component\HttpFoundation\Response;
  *    which key the entry and reach the origin as the client wrote them;
  *    a raster whose WEBP sibling exists is served as WEBP to clients that
  *    accept it; an entry on disk is served from disk;
- * 5. otherwise the asset is fetched from the origin and stored as the
+ * 5. otherwise the asset is fetched from the origin (a failure is answered
+ *    by its kind, see failure(), finding P-13) and stored as the
  *    origin sent it (2.x rewrote stylesheets, findings P-2, P-3, P-4), a
  *    raster is converted to WEBP when a converter is configured, and the
  *    asset is answered.
@@ -50,6 +53,19 @@ use Symfony\Component\HttpFoundation\Response;
 final class ProxyKernel
 {
     private const RASTER_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'bmp'];
+
+    /**
+     * The failures that mean the origin is unavailable, which open the
+     * circuit breaker.
+     */
+    private const UNAVAILABLE = [
+        OriginResponse::FAILURE_SERVER_ERROR,
+        OriginResponse::FAILURE_TIMEOUT,
+        OriginResponse::FAILURE_DNS,
+        OriginResponse::FAILURE_CONNECT,
+        OriginResponse::FAILURE_TLS,
+        OriginResponse::FAILURE_NETWORK,
+    ];
 
     /**
      * @var Config
@@ -267,8 +283,9 @@ final class ProxyKernel
             return $this->responses->error($path, ResponseFactory::ERROR_PURGE_UNAUTHORIZED);
         }
 
-        if ($this->negativeCache->isFresh($file)) {
-            return $this->responses->error($path, ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
+        $remembered = $this->negativeCache->lookup($file);
+        if ($remembered !== null) {
+            return $this->responses->error($path, $remembered === 410 ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
         }
         if ($this->circuitBreaker->isOpen($file)) {
             return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
@@ -304,16 +321,7 @@ final class ProxyKernel
         $fetched = $this->origin->fetch(new OriginRequest($originUrl, ['Referer' => $server]));
 
         if (!$fetched->isSuccessful()) {
-            if ($fetched->isNotFound()) {
-                $this->negativeCache->remember($file);
-
-                return $this->responses->error($path, ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
-            }
-            // Every other failure opens the breaker, redirects, 403 and 410
-            // included (finding P-13, resolved by PRX-5).
-            $this->circuitBreaker->recordFailure($file);
-
-            return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+            return $this->failure($path, $file, $fetched);
         }
 
         $body = $fetched->getBody();
@@ -347,6 +355,68 @@ final class ProxyKernel
         $this->circuitBreaker->reset($file);
 
         return $this->responses->miss($body, $headers, $servedWebp, $extension);
+    }
+
+    /**
+     * The answer to a failed origin fetch (finding P-13: 2.x answered 503
+     * and opened the breaker for every failure but 404):
+     *
+     * - 404 and 410 are answered as such and remembered by the negative
+     *   cache; 403 is answered as such;
+     * - a redirect within SOURCE_ORIGIN is passed on with its Location
+     *   rewritten to the proxy, so that the client never leaves it; a
+     *   redirect anywhere else, another 4xx or a body too large is a 502;
+     * - only unavailability (5xx, 429, timeout, DNS, connection, TLS and
+     *   network failures) opens the breaker and answers 503.
+     */
+    private function failure(string $path, string $file, OriginResponse $fetched): Response
+    {
+        $reason = $fetched->getFailureReason();
+        if ($reason === OriginResponse::FAILURE_NOT_FOUND || $reason === OriginResponse::FAILURE_GONE) {
+            $gone = $reason === OriginResponse::FAILURE_GONE;
+            $this->negativeCache->remember($file, $gone ? 410 : 404);
+
+            return $this->responses->error($path, $gone ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
+        }
+        if ($reason === OriginResponse::FAILURE_FORBIDDEN) {
+            return $this->responses->error($path, ResponseFactory::ERROR_ORIGIN_FORBIDDEN);
+        }
+        if ($reason === OriginResponse::FAILURE_REDIRECT) {
+            $location = $this->proxyLocation($fetched->getLocation());
+
+            return $location === null
+                ? $this->responses->error($path, ResponseFactory::ERROR_BAD_GATEWAY)
+                : $this->responses->redirect($fetched->getStatus(), $location);
+        }
+        if (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429) {
+            $this->circuitBreaker->recordFailure($file);
+
+            return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+        }
+
+        return $this->responses->error($path, ResponseFactory::ERROR_BAD_GATEWAY);
+    }
+
+    /**
+     * The path and query string on the proxy of an origin URL below
+     * SOURCE_ORIGIN; null for any other URL, which the client must not be
+     * sent to (it may be a private host: SSRF through the client).
+     */
+    private function proxyLocation(?string $target): ?string
+    {
+        $origin = $this->config->getSourceOrigin();
+        if ($target === null || !RedirectTarget::isSameOrigin($target, $origin)) {
+            return null;
+        }
+        $basePath = rtrim((string) parse_url($origin, PHP_URL_PATH), '/');
+        $path = (string) parse_url($target, PHP_URL_PATH);
+        if ($basePath !== '' && strpos($path, $basePath . '/') !== 0) {
+            return null;
+        }
+        $path = (string) substr($path, strlen($basePath));
+        $query = parse_url($target, PHP_URL_QUERY);
+
+        return ($path === '' ? '/' : $path) . (is_string($query) && $query !== '' ? '?' . $query : '');
     }
 
     /**

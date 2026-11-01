@@ -46,6 +46,18 @@ final class ResponseFactory
     /** A purge without a valid purge key: PURGE, or the "?purge=1" of 2.x (risk L-7). */
     public const ERROR_PURGE_UNAUTHORIZED = 8;
 
+    /** The origin answered 403 (finding P-13: 2.x answered 503 and opened the breaker). */
+    public const ERROR_ORIGIN_FORBIDDEN = 9;
+
+    /** The origin answered 410, now or less than NEGATIVE_CACHE_TTL ago. */
+    public const ERROR_ORIGIN_GONE = 10;
+
+    /**
+     * The origin answered what the proxy cannot serve: a redirect to
+     * another origin, another 4xx, or a body over UPSTREAM_MAX_SIZE.
+     */
+    public const ERROR_BAD_GATEWAY = 11;
+
     /**
      * The realm of the WWW-Authenticate challenge of a refused purge.
      */
@@ -82,6 +94,9 @@ final class ResponseFactory
         self::ERROR_PURGE_UNAUTHORIZED => 401,
         self::ERROR_NOT_CACHEABLE => 404,
         self::ERROR_ORIGIN_NOT_FOUND => 404,
+        self::ERROR_ORIGIN_FORBIDDEN => 403,
+        self::ERROR_ORIGIN_GONE => 410,
+        self::ERROR_BAD_GATEWAY => 502,
         self::ERROR_METHOD_NOT_ALLOWED => 405,
         self::ERROR_CACHE_DIRECTORY => 500,
         self::ERROR_CACHE_FILE => 500,
@@ -103,6 +118,9 @@ final class ResponseFactory
         self::ERROR_METHOD_NOT_ALLOWED => 'Method not allowed',
         self::ERROR_QUERY_NOT_ALLOWED => 'Query parameter not allowed',
         self::ERROR_PURGE_UNAUTHORIZED => 'Purge requires a purge key',
+        self::ERROR_ORIGIN_FORBIDDEN => 'Remote origin refused the file',
+        self::ERROR_ORIGIN_GONE => 'Remote origin file is gone',
+        self::ERROR_BAD_GATEWAY => 'Bad response from the remote origin',
     ];
 
     /**
@@ -206,6 +224,22 @@ final class ResponseFactory
         }
 
         return new Response(self::errorBody($path, $error), self::statusOf($error), $headers);
+    }
+
+    /**
+     * A redirect of the origin passed on to the client, with the origin's
+     * status and the Location rewritten to the path on the proxy (finding
+     * P-13: 2.x answered 503 and opened the breaker). It is not cached.
+     *
+     * @param int    $status   the 3xx status of the origin
+     * @param string $location the path and query string on the proxy, starting with "/"
+     */
+    public function redirect(int $status, string $location): Response
+    {
+        $response = new Response('', $status, ['Location' => $location, 'Cache-Control' => 'no-store', 'Content-Length' => '0']);
+        $this->protect($response, false);
+
+        return $response;
     }
 
     /**

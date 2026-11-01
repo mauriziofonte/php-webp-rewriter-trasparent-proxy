@@ -121,16 +121,48 @@ final class HttpOriginFetcherTest extends TestCase
     }
 
     /**
+     * @return array<string, array{int, string, string|null}>
+     */
+    public static function provideRedirects(): array
+    {
+        return [
+            'status 301, relative' => [301, '/elsewhere.css', 'https://origin.example.test/elsewhere.css'],
+            'status 302, absolute' => [302, 'https://other.example.test/a.css', 'https://other.example.test/a.css'],
+            'status 307, relative to the directory' => [307, 'b.css', 'https://origin.example.test/css/b.css'],
+            'status 308, unsupported scheme' => [308, 'ftp://origin.example.test/a.css', null],
+        ];
+    }
+
+    /**
+     * A redirect that was not followed carries its Location, made absolute
+     * against the URL that answered it, for the kernel (finding P-13).
+     *
+     * @dataProvider provideRedirects
+     */
+    #[DataProvider('provideRedirects')]
+    public function testARedirectCarriesItsAbsoluteLocationP13(int $status, string $location, ?string $absolute): void
+    {
+        $this->transport->respond(self::URL, $status, ['Location' => $location], 'body');
+
+        $response = $this->fetcher()->fetch(new OriginRequest(self::URL));
+
+        self::assertSame(OriginResponse::FAILURE_REDIRECT, $response->getFailureReason());
+        self::assertSame($status, $response->getStatus());
+        self::assertSame($absolute, $response->getLocation());
+        self::assertSame(
+            [['level' => 'notice', 'message' => 'upstream redirect', 'context' => ['url' => self::URL, 'response_code' => $status, 'location' => $absolute]]],
+            $this->logger->getRecords()
+        );
+    }
+
+    /**
      * @return array<string, array{int, string}>
      */
     public static function provideStatuses(): array
     {
         return [
             'status 201' => [201, OriginResponse::FAILURE_OTHER],
-            'status 301' => [301, OriginResponse::FAILURE_REDIRECT],
-            'status 302' => [302, OriginResponse::FAILURE_REDIRECT],
             'status 304' => [304, OriginResponse::FAILURE_OTHER],
-            'status 307' => [307, OriginResponse::FAILURE_REDIRECT],
             'status 400' => [400, OriginResponse::FAILURE_CLIENT_ERROR],
             'status 403' => [403, OriginResponse::FAILURE_FORBIDDEN],
             'status 410' => [410, OriginResponse::FAILURE_GONE],

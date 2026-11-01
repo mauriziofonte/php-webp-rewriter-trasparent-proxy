@@ -85,6 +85,11 @@ final class OriginResponse
     private $transportError;
 
     /**
+     * @var string|null
+     */
+    private $location;
+
+    /**
      * @param array<string, string> $headers
      */
     private function __construct(int $status, array $headers, string $body, ?string $failureReason, int $transportErrorCode, string $transportError)
@@ -95,6 +100,21 @@ final class OriginResponse
         $this->failureReason = $failureReason;
         $this->transportErrorCode = $transportErrorCode;
         $this->transportError = $transportError;
+    }
+
+    /**
+     * A redirect the client did not follow (UPSTREAM_FOLLOW_REDIRECTS is
+     * off, a redirect led to a non-public address, or too many followed).
+     *
+     * @param int         $status   the 3xx status
+     * @param string|null $location the absolute http or https URL of the Location, null when there is none
+     */
+    public static function redirect(int $status, ?string $location): self
+    {
+        $response = new self($status, [], '', self::FAILURE_REDIRECT, 0, '');
+        $response->location = $location;
+
+        return $response;
     }
 
     /**
@@ -165,6 +185,15 @@ final class OriginResponse
     public function getFailureReason(): ?string
     {
         return $this->failureReason;
+    }
+
+    /**
+     * The absolute URL a redirect points to; null for anything else, or a
+     * redirect without a usable Location.
+     */
+    public function getLocation(): ?string
+    {
+        return $this->location;
     }
 
     public function getTransportErrorCode(): int

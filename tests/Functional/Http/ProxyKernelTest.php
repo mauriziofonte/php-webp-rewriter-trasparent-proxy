@@ -302,15 +302,91 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
-     * A redirect opens the breaker like a network failure (finding P-13,
-     * resolved by PRX-5).
+     * @return array<string, array{OriginResponse, int, bool}>
      */
-    public function testARedirectOpensTheBreakerP13(): void
+    public static function provideOriginFailures(): array
     {
-        $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_REDIRECT, 301));
+        return [
+            'status 403' => [OriginResponse::failure(OriginResponse::FAILURE_FORBIDDEN, 403), 403, false],
+            'status 410' => [OriginResponse::failure(OriginResponse::FAILURE_GONE, 410), 410, false],
+            'redirect to another origin' => [OriginResponse::redirect(302, 'https://elsewhere.example.test/js/app.js'), 502, false],
+            'redirect to a private host' => [OriginResponse::redirect(302, 'http://127.0.0.1/js/app.js'), 502, false],
+            'redirect to another port of the origin' => [OriginResponse::redirect(302, self::ORIGIN . ':8443/js/app.js'), 502, false],
+            'redirect without a location' => [OriginResponse::redirect(301, null), 502, false],
+            'other 4xx' => [OriginResponse::failure(OriginResponse::FAILURE_CLIENT_ERROR, 400), 502, false],
+            'body too large' => [OriginResponse::failure(OriginResponse::FAILURE_TOO_LARGE, 200), 502, false],
+            'other failure' => [OriginResponse::failure(OriginResponse::FAILURE_OTHER, 201), 502, false],
+            'status 429' => [OriginResponse::failure(OriginResponse::FAILURE_CLIENT_ERROR, 429), 503, true],
+            '5xx' => [OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 500), 503, true],
+            'connection refused' => [OriginResponse::failure(OriginResponse::FAILURE_CONNECT, 0, 7, 'refused'), 503, true],
+        ];
+    }
 
-        self::assertSame(503, $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
-        self::assertFileExists($this->directory->path('js/app.js.netfail'));
+    /**
+     * Each origin failure is answered by its kind, and only unavailability
+     * opens the breaker (finding P-13: 2.x answered 503 and opened the
+     * breaker for redirects, 403 and 410 alike).
+     *
+     * @dataProvider provideOriginFailures
+     *
+     * @group regression
+     */
+    #[DataProvider('provideOriginFailures')]
+    #[Group('regression')]
+    public function testOriginFailuresAreAnsweredByTheirKindP13(OriginResponse $failure, int $status, bool $opensTheBreaker): void
+    {
+        $this->origin->respond(self::ORIGIN . '/js/app.js', $failure);
+
+        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'));
+
+        self::assertSame($status, $response->getStatusCode());
+        self::assertFalse($response->headers->has('location'));
+        self::assertStringContainsString('no-store', (string) $response->headers->get('cache-control'));
+        self::assertSame($opensTheBreaker, is_file($this->directory->path('js/app.js.netfail')));
+    }
+
+    /**
+     * A redirect within the origin is passed on, its Location rewritten to
+     * the path on the proxy (finding P-13).
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testARedirectWithinTheOriginIsPassedOnP13(): void
+    {
+        $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::redirect(301, self::ORIGIN . '/js/app.min.js?v=2'));
+
+        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'));
+
+        self::assertSame(301, $response->getStatusCode());
+        self::assertSame('/js/app.min.js?v=2', $response->headers->get('location'));
+        self::assertStringContainsString('no-store', (string) $response->headers->get('cache-control'));
+        self::assertSame('', $response->getContent());
+        self::assertFileDoesNotExist($this->directory->path('js/app.js.netfail'));
+        self::assertFileDoesNotExist($this->directory->path('js/app.js'));
+    }
+
+    public function testARedirectOutsideTheOriginPathIsRefused(): void
+    {
+        $origin = new FakeOriginFetcher();
+        $origin->respond(self::ORIGIN . '/assets/js/app.js', OriginResponse::redirect(302, self::ORIGIN . '/admin/js/app.js'));
+        $origin->respond(self::ORIGIN . '/assets/js/b.js', OriginResponse::redirect(302, self::ORIGIN . '/assets/js/c.js'));
+        $kernel = TestKernel::create(TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/assets/']), $this->directory->path(), $origin, null, $this->logger);
+
+        self::assertSame(502, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+        self::assertSame('/js/c.js', $kernel->handle(Request::create('https://cdn.example.test/js/b.js'))->headers->get('location'));
+    }
+
+    public function testA410IsRemembered(): void
+    {
+        $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_GONE, 410));
+
+        $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'));
+        $second = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'));
+
+        self::assertSame(410, $second->getStatusCode());
+        self::assertStringContainsString('Error code: Remote origin file is gone.', (string) $second->getContent());
+        self::assertCount(1, $this->origin->getRequests());
     }
 
     public function testASuccessClearsStaleMarkers(): void

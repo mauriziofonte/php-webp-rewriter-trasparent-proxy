@@ -191,8 +191,19 @@ The proxy remembers two kinds of failure. A `404` is remembered in `var/negative
 
 | Marker           | Armed when origin returns...                                                                                     | TTL                                  | HTTP status served to the client |
 |------------------|------------------------------------------------------------------------------------------------------------------|--------------------------------------|----------------------------------|
-| `var/negative/`  | A semantic `404 Not Found`                                                                                       | `NEGATIVE_CACHE_TTL` (default 300 s) | `404`                            |
-| `<path>.netfail` | `5xx`, connection refused, DNS failure, TLS error, timeout, transfer stalled under the low-speed-limit threshold | `NETWORK_ERROR_TTL` (default 30 s)   | `503` + `Retry-After`            |
+| `var/negative/`  | `404 Not Found` or `410 Gone`                                                                                    | `NEGATIVE_CACHE_TTL` (default 300 s) | `404` or `410`                   |
+| `<path>.netfail` | `5xx`, `429`, connection refused, DNS failure, TLS error, timeout, transfer stalled under the low-speed-limit threshold | `NETWORK_ERROR_TTL` (default 30 s)   | `503` + `Retry-After`            |
+
+The other answers of the origin arm nothing and are answered at once (2.x answered `503` for each and opened the breaker):
+
+| Origin answer                                         | HTTP status served to the client                                          |
+|-------------------------------------------------------|---------------------------------------------------------------------------|
+| `403`                                                 | `403`                                                                     |
+| `3xx` to a URL below `SOURCE_ORIGIN`                  | the same `3xx`, its `Location` rewritten to the path on the proxy         |
+| `3xx` anywhere else, or without a usable `Location`   | `502`: the client is never sent to another host, which could be internal |
+| another `4xx`, a body over `UPSTREAM_MAX_SIZE`        | `502`                                                                     |
+
+With `UPSTREAM_FOLLOW_REDIRECTS=true` the proxy follows the redirects itself (see the key) and only the last answer counts.
 
 Rationale:
 

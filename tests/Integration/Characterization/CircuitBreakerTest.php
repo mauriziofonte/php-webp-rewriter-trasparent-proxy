@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Tests\Integration\Characterization;
 
 use PHPUnit\Framework\Attributes\CoversNothing;
-use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
@@ -89,35 +88,57 @@ final class CircuitBreakerTest extends CharacterizationTestCase
     }
 
     /**
-     * @return array<string, array{int}>
+     * A redirect within the origin is passed on with its Location on the
+     * proxy, a redirect elsewhere is a 502, 403 is a 403, and 410 is a 410
+     * remembered like a 404; none opens the breaker (finding P-13: 2.x
+     * answered 503 for each and kept answering it for NETWORK_ERROR_TTL).
+     *
+     * @group regression
      */
-    public static function provideNonFailureStatuses(): array
+    #[Group('regression')]
+    public function testRedirectsForbiddenAndGoneAreAnsweredAsSuchP13(): void
     {
-        return [
-            'status 301' => [301],
-            'status 302' => [302],
-            'status 403' => [403],
-            'status 410' => [410],
-        ];
+        $this->origin->setRule('/images/moved.png', 301, '/images/gradient.png?v=2');
+        $this->origin->setRule('/images/away.png', 302, 'http://127.0.0.1:1/internal.png');
+        $this->origin->setRule('/images/forbidden.png', 403);
+        $this->origin->setRule('/images/gone.png', 410);
+
+        $moved = $this->get('/images/moved.png');
+        $away = $this->get('/images/away.png');
+        $forbidden = $this->get('/images/forbidden.png');
+        $gone = $this->get('/images/gone.png');
+        $goneAgain = $this->get('/images/gone.png');
+
+        self::assertSame(301, $moved->getStatus());
+        self::assertSame('/images/gradient.png?v=2', $moved->getHeader('Location'));
+        self::assertErrorResponse($away, 502, 'Bad response from the remote origin', '/images/away.png');
+        self::assertErrorResponse($forbidden, 403, 'Remote origin refused the file', '/images/forbidden.png');
+        self::assertErrorResponse($gone, 410, 'Remote origin file is gone', '/images/gone.png');
+        self::assertErrorResponse($goneAgain, 410, 'Remote origin file is gone', '/images/gone.png');
+        self::assertSame(1, $this->origin->countRequestsFor('/images/gone.png'));
+        foreach (['moved', 'away', 'forbidden', 'gone'] as $name) {
+            self::assertFileDoesNotExist($this->publicPath('images/' . $name . '.png.netfail'));
+        }
+        self::assertSame(0, $this->origin->countRequestsFor('/images/gradient.png'));
     }
 
     /**
-     * Redirects, 403 and 410 are treated like network failures (finding
-     * P-13). Since PRX-4 the fetcher reports each with a reason of its own;
-     * PRX-5 changes how the kernel treats them.
+     * The 3xx answer of the origin is retried at once: it never keeps the
+     * file unavailable (finding P-13).
      *
-     * @dataProvider provideNonFailureStatuses
+     * @group regression
      */
-    #[DataProvider('provideNonFailureStatuses')]
-    public function testOtherOriginStatusesOpenTheBreakerP13(int $status): void
+    #[Group('regression')]
+    public function testARedirectDoesNotOpenTheBreakerP13(): void
     {
-        $this->origin->setRule('/images/gradient.png', $status, '/images/elsewhere.png');
+        $this->origin->setRule('/images/gradient.png', 302, '/images/elsewhere.png');
+        $this->get('/images/gradient.png');
+        $this->origin->removeRule('/images/gradient.png');
 
         $response = $this->get('/images/gradient.png');
 
-        self::assertErrorResponse($response, 503, 'Upstream temporarily unavailable', '/images/gradient.png');
-        self::assertFileExists($this->publicPath('images/gradient.png.netfail'));
-        self::assertSame(0, $this->origin->countRequestsFor('/images/elsewhere.png'));
+        self::assertSame(200, $response->getStatus());
+        self::assertSame(2, $this->origin->countRequestsFor('/images/gradient.png'));
     }
 
     public function testUnreachableOriginOpensTheBreaker(): void

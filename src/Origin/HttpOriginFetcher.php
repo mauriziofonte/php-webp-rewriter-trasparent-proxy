@@ -125,6 +125,15 @@ final class HttpOriginFetcher implements OriginFetcher
             return OriginResponse::failure(OriginResponse::FAILURE_NOT_FOUND, 404);
         }
 
+        if ($outcome === HttpResponse::OUTCOME_REDIRECT) {
+            $answeredBy = $response->getEffectiveUrl();
+            $location = $response->getRedirectLocation();
+            $target = $location === null ? null : RedirectTarget::resolve($answeredBy !== '' ? $answeredBy : $url, $location);
+            $this->logger->notice('upstream redirect', ['url' => $url, 'response_code' => $status, 'location' => $target]);
+
+            return OriginResponse::redirect($status, $target);
+        }
+
         $reason = self::REASONS[$outcome] ?? OriginResponse::FAILURE_OTHER;
         if ($response->isTransportFailure()) {
             return $this->transportFailure($url, $reason, $status, $response->getErrorCode(), $response->getError());

@@ -11,7 +11,8 @@ use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
  * resolved against the URL that answered it (RFC 3986, section 5.2), and
  * the header fields bound to an origin are not sent to another one.
  *
- * @internal used by the transports of this namespace
+ * Used by the transports of this namespace, and by the kernel to keep the
+ * redirects it passes on within the origin.
  */
 final class RedirectTarget
 {
