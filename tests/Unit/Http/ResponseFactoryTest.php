@@ -83,12 +83,16 @@ final class ResponseFactoryTest extends TestCase
     }
 
     /**
-     * Every error but an unavailable origin is a 404 (finding P-21).
+     * The failures of the proxy are 5xx, the refused requests 4xx (finding
+     * P-21: 2.x answered 404 for every error but an unavailable origin).
      *
      * @dataProvider provideErrors
+     *
+     * @group regression
      */
     #[DataProvider('provideErrors')]
-    public function testError(int $error, int $status, string $code): void
+    #[Group('regression')]
+    public function testErrorP21(int $error, int $status, string $code): void
     {
         $response = (new ResponseFactory(600, 45))->error('/css/site.css', $error);
 
@@ -98,7 +102,7 @@ final class ResponseFactoryTest extends TestCase
             $response->getContent()
         );
         self::assertSame('text/plain; charset=UTF-8', $response->headers->get('Content-Type'));
-        self::assertSame($status === 503 ? '45' : null, $response->headers->get('Retry-After'));
+        self::assertSame($error === ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE ? '45' : null, $response->headers->get('Retry-After'));
     }
 
     /**
@@ -107,14 +111,14 @@ final class ResponseFactoryTest extends TestCase
     public static function provideErrors(): array
     {
         return [
-            'refused' => [ResponseFactory::ERROR_REFUSED, 404, 'Cannot serve this request'],
-            'cache directory' => [ResponseFactory::ERROR_CACHE_DIRECTORY, 404, 'Cannot create cache directory'],
-            'cache file' => [ResponseFactory::ERROR_CACHE_FILE, 404, 'Cannot create cache file'],
+            'refused' => [ResponseFactory::ERROR_REFUSED, 400, 'Cannot serve this request'],
+            'cache directory' => [ResponseFactory::ERROR_CACHE_DIRECTORY, 500, 'Cannot create cache directory'],
+            'cache file' => [ResponseFactory::ERROR_CACHE_FILE, 500, 'Cannot create cache file'],
             'origin not found' => [ResponseFactory::ERROR_ORIGIN_NOT_FOUND, 404, 'Cannot read remote origin file'],
             'not cacheable' => [ResponseFactory::ERROR_NOT_CACHEABLE, 404, 'Request cannot be processed'],
             'upstream unavailable' => [ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE, 503, 'Upstream temporarily unavailable'],
-            'configuration' => [ResponseFactory::ERROR_CONFIGURATION, 404, 'ENV_FILE_LOAD_ERR'],
-            'unknown' => [42, 404, 'Unknown error'],
+            'configuration' => [ResponseFactory::ERROR_CONFIGURATION, 503, 'ENV_FILE_LOAD_ERR'],
+            'unknown' => [42, 500, 'Unknown error'],
         ];
     }
 
@@ -128,13 +132,16 @@ final class ResponseFactoryTest extends TestCase
     }
 
     /**
-     * The answer while the configuration is invalid (finding P-21).
+     * The answer while the configuration is invalid is a 503 (finding P-21).
+     *
+     * @group regression
      */
+    #[Group('regression')]
     public function testConfigurationErrorP21(): void
     {
         $response = ResponseFactory::configurationError();
 
-        self::assertSame(404, $response->getStatusCode());
+        self::assertSame(503, $response->getStatusCode());
         self::assertMatchesRegularExpression(
             '/\AThe request could not be processed.\nError code: ENV_FILE_LOAD_ERR.\nRay ID: [0-9a-f]{32}\z/',
             (string) $response->getContent()
@@ -149,6 +156,15 @@ final class ResponseFactoryTest extends TestCase
         self::assertSame(500, $response->getStatusCode());
         self::assertSame("The request could not be processed.\nInternal server error: Cannot read cached file from disk.", $response->getContent());
         self::assertSame('text/plain; charset=UTF-8', $response->headers->get('Content-Type'));
+        self::assertSame('no-store, private', $response->headers->get('Cache-Control'));
+    }
+
+    public function testUnexpectedError(): void
+    {
+        $response = ResponseFactory::unexpectedError('Unexpected error');
+
+        self::assertSame(500, $response->getStatusCode());
+        self::assertSame("The request could not be processed.\nInternal server error: Unexpected error.", $response->getContent());
     }
 
     public function testForwardedHeaders(): void

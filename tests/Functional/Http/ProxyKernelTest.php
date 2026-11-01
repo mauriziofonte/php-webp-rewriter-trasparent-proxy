@@ -184,11 +184,11 @@ final class ProxyKernelTest extends TestCase
      * @dataProvider provideRefusedRequests
      */
     #[DataProvider('provideRefusedRequests')]
-    public function testRefusedRequestsNeverReachTheOrigin(string $uri, string $path, string $code): void
+    public function testRefusedRequestsNeverReachTheOrigin(string $uri, string $path, string $code, int $status): void
     {
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test' . $uri));
 
-        self::assertSame(404, $response->getStatusCode());
+        self::assertSame($status, $response->getStatusCode());
         self::assertSame(
             "The request could not be processed.\nError code: " . $code . ".\nRay ID: " . md5($path),
             $response->getContent()
@@ -198,14 +198,14 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
-     * @return array<string, array{string, string, string}>
+     * @return array<string, array{string, string, string, int}>
      */
     public static function provideRefusedRequests(): array
     {
         return [
-            'traversal' => ['/css/../secret.css', '/css/../secret.css', 'Cannot serve this request'],
-            'php' => ['/app/config.php', '/app/config.php', 'Request cannot be processed'],
-            'no extension' => ['/images/gradient', '/images/gradient', 'Request cannot be processed'],
+            'traversal' => ['/css/../secret.css', '/css/../secret.css', 'Cannot serve this request', 400],
+            'php' => ['/app/config.php', '/app/config.php', 'Request cannot be processed', 404],
+            'no extension' => ['/images/gradient', '/images/gradient', 'Request cannot be processed', 404],
         ];
     }
 
@@ -383,7 +383,7 @@ final class ProxyKernelTest extends TestCase
 
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
 
-        self::assertSame(404, $response->getStatusCode());
+        self::assertSame(500, $response->getStatusCode());
         self::assertStringContainsString('Error code: Cannot create cache directory.', (string) $response->getContent());
     }
 
@@ -393,7 +393,7 @@ final class ProxyKernelTest extends TestCase
 
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
 
-        self::assertSame(404, $response->getStatusCode());
+        self::assertSame(500, $response->getStatusCode());
         self::assertStringContainsString('Error code: Cannot create cache file.', (string) $response->getContent());
     }
 

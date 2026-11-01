@@ -35,7 +35,8 @@ final class ConfigurationSourcesTest extends CharacterizationTestCase
     /**
      * Without .env and without configuration in the environment every
      * request gets the configuration error (finding P-20, resolved by PRX-3:
-     * 2.x answered a bare message with status 200; the 404 is finding P-21).
+     * 2.x answered a bare message with status 200), a 503 since PRX-5
+     * (finding P-21).
      */
     public function testMissingConfigurationIsAConfigurationErrorP20(): void
     {
@@ -43,7 +44,7 @@ final class ConfigurationSourcesTest extends CharacterizationTestCase
 
         $response = $this->get('/images/gradient.png');
 
-        self::assertSame(404, $response->getStatus());
+        self::assertSame(503, $response->getStatus());
         self::assertMatchesRegularExpression(
             '/\AThe request could not be processed.\nError code: ENV_FILE_LOAD_ERR.\nRay ID: [0-9a-f]{32}\z/',
             $response->getBody()

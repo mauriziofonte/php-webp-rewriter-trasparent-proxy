@@ -57,19 +57,25 @@ $logger = new JsonLogger($logFile, $config->isDebug() ? LogLevel::DEBUG : LogLev
 $negativeCache = new NegativeCache($storage, $config->getNegativeCacheTtl());
 $responses = ResponseFactory::fromConfig($config);
 
-$kernel = new ProxyKernel(
-    $config,
-    new PathSanitizer(),
-    new CacheKeyResolver(__DIR__),
-    $storage,
-    $negativeCache,
-    new MarkerFileCircuitBreaker($storage, $config->getNetworkErrorTtl()),
-    new Purger($storage, $negativeCache),
-    HttpOriginFetcher::fromConfig($config, $logger),
-    LegacyConverterFactory::fromConfig($config, $storage, $logger),
-    $responses,
-    new FileResponder($storage, $responses),
-    $logger
-);
-
-$kernel->handle(Request::createFromGlobals())->send();
+try {
+    $kernel = new ProxyKernel(
+        $config,
+        new PathSanitizer(),
+        new CacheKeyResolver(__DIR__),
+        $storage,
+        $negativeCache,
+        new MarkerFileCircuitBreaker($storage, $config->getNetworkErrorTtl()),
+        new Purger($storage, $negativeCache),
+        HttpOriginFetcher::fromConfig($config, $logger),
+        LegacyConverterFactory::fromConfig($config, $storage, $logger),
+        $responses,
+        new FileResponder($storage, $responses),
+        $logger
+    );
+    $response = $kernel->handle(Request::createFromGlobals());
+} catch (\Throwable $exception) {
+    // Finding P-21: an internal error is a 5xx, never an asset or a 404.
+    $logger->error('unhandled exception', ['exception' => $exception]);
+    $response = ResponseFactory::unexpectedError('Unexpected error');
+}
+$response->send();

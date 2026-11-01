@@ -61,6 +61,22 @@ final class ResponseFactory
     public const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox";
 
     /**
+     * The status of each error: 5xx for the failures of the proxy or of the
+     * origin, 4xx for what the client asked (finding P-21: 2.x answered 404
+     * for its own failures). An error that is not listed is a 500.
+     */
+    private const STATUSES = [
+        self::ERROR_REFUSED => 400,
+        self::ERROR_NOT_CACHEABLE => 404,
+        self::ERROR_ORIGIN_NOT_FOUND => 404,
+        self::ERROR_METHOD_NOT_ALLOWED => 405,
+        self::ERROR_CACHE_DIRECTORY => 500,
+        self::ERROR_CACHE_FILE => 500,
+        self::ERROR_UPSTREAM_UNAVAILABLE => 503,
+        self::ERROR_CONFIGURATION => 503,
+    ];
+
+    /**
      * The "Error code" text of each error, as in 2.x.
      */
     private const MESSAGES = [
@@ -148,36 +164,44 @@ final class ResponseFactory
     }
 
     /**
-     * A plain-text error: 503 with Retry-After for ERROR_UPSTREAM_UNAVAILABLE,
-     * 405 with Allow for ERROR_METHOD_NOT_ALLOWED, 404 for every other
-     * error (finding P-21).
+     * A plain-text error with the status of STATUSES: Retry-After comes with
+     * ERROR_UPSTREAM_UNAVAILABLE, Allow with ERROR_METHOD_NOT_ALLOWED.
      *
      * @param string|null $path  the request path, hashed into the Ray ID; null for a random Ray ID
      * @param int         $error one of the ERROR_* constants
      */
     public function error(?string $path, int $error): Response
     {
-        $headers = ['Content-Type' => 'text/plain; charset=UTF-8'];
-        $status = 404;
+        $headers = ['Content-Type' => 'text/plain; charset=UTF-8', 'Cache-Control' => 'no-store'];
         if ($error === self::ERROR_UPSTREAM_UNAVAILABLE) {
-            $status = 503;
             $headers['Retry-After'] = (string) $this->networkErrorTtl;
         } elseif ($error === self::ERROR_METHOD_NOT_ALLOWED) {
-            $status = 405;
             $headers['Allow'] = self::ALLOWED_METHODS;
         }
 
-        return new Response(self::errorBody($path, $error), $status, $headers);
+        return new Response(self::errorBody($path, $error), self::statusOf($error), $headers);
+    }
+
+    /**
+     * The status code of an ERROR_* constant.
+     */
+    public static function statusOf(int $error): int
+    {
+        return self::STATUSES[$error] ?? 500;
     }
 
     /**
      * The answer to every request while the configuration cannot be loaded:
-     * a 404 with the ENV_FILE_LOAD_ERR code and a random Ray ID, as in 2.x
-     * (finding P-21). It needs no configuration.
+     * a 503 with the ENV_FILE_LOAD_ERR code and a random Ray ID (2.x
+     * answered 404, finding P-21). It needs no configuration.
      */
     public static function configurationError(): Response
     {
-        return new Response(self::errorBody(null, self::ERROR_CONFIGURATION), 404, ['Content-Type' => 'text/plain; charset=UTF-8']);
+        return new Response(
+            self::errorBody(null, self::ERROR_CONFIGURATION),
+            self::statusOf(self::ERROR_CONFIGURATION),
+            ['Content-Type' => 'text/plain; charset=UTF-8', 'Cache-Control' => 'no-store']
+        );
     }
 
     /**
@@ -187,10 +211,21 @@ final class ResponseFactory
      */
     public function internalError(string $reason): Response
     {
+        return self::unexpectedError($reason);
+    }
+
+    /**
+     * A plain-text 500 that needs no configuration: the answer of the front
+     * controller when the kernel throws.
+     *
+     * @param string $reason shown to the client; never an exception message, which may hold paths
+     */
+    public static function unexpectedError(string $reason): Response
+    {
         return new Response(
             "The request could not be processed.\nInternal server error: " . $reason . '.',
             500,
-            ['Content-Type' => 'text/plain; charset=UTF-8']
+            ['Content-Type' => 'text/plain; charset=UTF-8', 'Cache-Control' => 'no-store']
         );
     }
 

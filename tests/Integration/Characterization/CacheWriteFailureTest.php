@@ -20,30 +20,36 @@ use PHPUnit\Framework\Attributes\Group;
 final class CacheWriteFailureTest extends CharacterizationTestCase
 {
     /**
-     * An internal error is answered with 404 (finding P-21, resolved by
-     * PRX-5).
+     * An internal error is answered with 500 (finding P-21: 2.x answered
+     * 404).
+     *
+     * @group regression
      */
-    public function testCacheDirectoryFailureAnswers404P21(): void
+    #[Group('regression')]
+    public function testCacheDirectoryFailureAnswers500P21(): void
     {
         file_put_contents($this->publicPath('nested'), 'a file where a directory is needed');
 
         $response = $this->get('/nested/deep.css');
 
-        self::assertErrorResponse($response, 404, 'Cannot create cache directory', '/nested/deep.css');
+        self::assertErrorResponse($response, 500, 'Cannot create cache directory', '/nested/deep.css');
         self::assertSame(1, $this->origin->countRequestsFor('/nested/deep.css'));
     }
 
     /**
-     * An internal error is answered with 404 (finding P-21, resolved by
-     * PRX-5), and the temporary file of the atomic write is removed.
+     * An internal error is answered with 500 (finding P-21: 2.x answered
+     * 404), and the temporary file of the atomic write is removed.
+     *
+     * @group regression
      */
-    public function testCacheFileFailureAnswers404P21(): void
+    #[Group('regression')]
+    public function testCacheFileFailureAnswers500P21(): void
     {
         mkdir($this->publicPath('css/site.css'), 0777, true);
 
         $response = $this->get('/css/site.css');
 
-        self::assertErrorResponse($response, 404, 'Cannot create cache file', '/css/site.css');
+        self::assertErrorResponse($response, 500, 'Cannot create cache file', '/css/site.css');
         self::assertSame(['.', '..', 'site.css'], scandir($this->publicPath('css')));
     }
 }

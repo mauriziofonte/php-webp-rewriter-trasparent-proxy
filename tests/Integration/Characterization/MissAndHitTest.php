@@ -340,7 +340,7 @@ final class MissAndHitTest extends CharacterizationTestCase
     {
         $response = $this->get($path);
 
-        self::assertErrorResponse($response, 404, 'Cannot serve this request', $path);
+        self::assertErrorResponse($response, 400, 'Cannot serve this request', $path);
         self::assertSame([], $this->origin->getRequests());
     }
 

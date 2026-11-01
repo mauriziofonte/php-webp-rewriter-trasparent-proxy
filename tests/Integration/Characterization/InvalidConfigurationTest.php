@@ -24,15 +24,18 @@ final class InvalidConfigurationTest extends CharacterizationTestCase
     }
 
     /**
-     * Every request, OPTIONS included, gets the configuration error as 404
-     * (finding P-21, resolved by PRX-5) with a random Ray ID.
+     * Every request, OPTIONS included, gets the configuration error as 503
+     * (finding P-21: 2.x answered 404) with a random Ray ID.
+     *
+     * @group regression
      */
+    #[Group('regression')]
     public function testEveryRequestAnswersWithTheLoadErrorP21(): void
     {
         foreach (['GET', 'OPTIONS'] as $method) {
             $response = $this->send($method, '/images/gradient.png');
 
-            self::assertSame(404, $response->getStatus());
+            self::assertSame(503, $response->getStatus());
             self::assertSame('text/plain; charset=UTF-8', $response->getHeader('Content-Type'));
             self::assertMatchesRegularExpression(
                 '/^The request could not be processed\\.\\nError code: ENV_FILE_LOAD_ERR\\.\\nRay ID: [0-9a-f]{32}$/',

@@ -85,7 +85,7 @@ The first request after a fresh install compiles the configuration into a small 
 
 ## Configuration
 
-Every setting is read from the environment first and from `.env` second: a variable set (and not empty) in the environment of PHP wins over the same key in `.env`, and `.env` is optional when the environment carries the whole configuration. An empty value or the literal `null` means "not set". Defaults come from [.env.example](.env.example). The values are validated when the proxy starts, with the same rules as `composer check-env`; an invalid configuration answers every request with a 404 `ENV_FILE_LOAD_ERR` and is logged to `logs/proxy.log`.
+Every setting is read from the environment first and from `.env` second: a variable set (and not empty) in the environment of PHP wins over the same key in `.env`, and `.env` is optional when the environment carries the whole configuration. An empty value or the literal `null` means "not set". Defaults come from [.env.example](.env.example). The values are validated when the proxy starts, with the same rules as `composer check-env`; an invalid configuration answers every request with a 503 `ENV_FILE_LOAD_ERR` and is logged to `logs/proxy.log`.
 
 | Key                               | Type      | Default                   | Description                                                                                                                                                     |
 |-----------------------------------|-----------|---------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
