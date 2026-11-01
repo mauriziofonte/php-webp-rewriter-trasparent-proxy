@@ -225,6 +225,206 @@ final class FileResponderTest extends TestCase
         self::assertSame('image/png', $response->headers->get('content-type'));
     }
 
+    /**
+     * Finding S-6: a single byte range of a file PHP streams gets 206 with
+     * Content-Range, whether it names both ends, only the first byte
+     * (open-ended) or the last bytes (suffix); a last byte past the end is
+     * cut to the end.
+     *
+     * @param array{int, int} $bounds
+     *
+     * @dataProvider provideSatisfiableRanges
+     */
+    #[DataProvider('provideSatisfiableRanges')]
+    public function testASingleRangeIsPartialContent(string $range, string $body, array $bounds): void
+    {
+        $response = $this->responder()->respond(self::withRange($range), $this->rangeFile(), 'js', 'HIT');
+
+        self::assertSame(206, $response->getStatusCode());
+        self::assertSame($body, self::body($response));
+        self::assertSame(sprintf('bytes %d-%d/10', $bounds[0], $bounds[1]), $response->headers->get('content-range'));
+        self::assertSame((string) strlen($body), $response->headers->get('content-length'));
+        self::assertSame('bytes', $response->headers->get('accept-ranges'));
+    }
+
+    /**
+     * @return array<string, array{string, string, array{int, int}}>
+     */
+    public static function provideSatisfiableRanges(): array
+    {
+        return [
+            'both ends' => ['bytes=2-5', '2345', [2, 5]],
+            'one byte' => ['bytes=0-0', '0', [0, 0]],
+            'open-ended' => ['bytes=7-', '789', [7, 9]],
+            'suffix' => ['bytes=-3', '789', [7, 9]],
+            'suffix longer than the file' => ['bytes=-50', '0123456789', [0, 9]],
+            'last byte past the end' => ['bytes=8-99', '89', [8, 9]],
+            'unit in upper case' => ['BYTES=1-2', '12', [1, 2]],
+        ];
+    }
+
+    /**
+     * A range that selects no byte of the file gets 416, no body, and a
+     * Content-Range of "bytes", "*", "/" and the length of the file.
+     *
+     * @dataProvider provideUnsatisfiableRanges
+     */
+    #[DataProvider('provideUnsatisfiableRanges')]
+    public function testAnUnsatisfiableRangeIs416(string $range): void
+    {
+        $response = $this->responder()->respond(self::withRange($range), $this->rangeFile(), 'js', 'HIT');
+
+        self::assertSame(416, $response->getStatusCode());
+        self::assertSame('bytes */10', $response->headers->get('content-range'));
+        self::assertSame('', self::body($response));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function provideUnsatisfiableRanges(): array
+    {
+        return [
+            'first byte at the end' => ['bytes=10-'],
+            'first byte past the end' => ['bytes=20-30'],
+            'first byte after the last' => ['bytes=5-2'],
+            'empty suffix' => ['bytes=-0'],
+        ];
+    }
+
+    /**
+     * A Range header that is not a single "bytes=" range is ignored, as
+     * RFC 9110 allows: the whole file, 200. That includes a multi-range
+     * request: PHP never answers multipart/byteranges.
+     *
+     * @dataProvider provideIgnoredRanges
+     */
+    #[DataProvider('provideIgnoredRanges')]
+    public function testAMalformedOrMultipleRangeGetsTheWholeFile(string $range): void
+    {
+        $response = $this->responder()->respond(self::withRange($range), $this->rangeFile(), 'js', 'HIT');
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('0123456789', self::body($response));
+        self::assertNull($response->headers->get('content-range'));
+        self::assertSame('10', $response->headers->get('content-length'));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function provideIgnoredRanges(): array
+    {
+        return [
+            'not a number' => ['bytes=abc'],
+            'no bounds' => ['bytes=-'],
+            'another unit' => ['items=0-1'],
+            'no unit' => ['0-1'],
+            'two ranges' => ['bytes=0-1,4-5'],
+            'two ranges with a space' => ['bytes=0-1, 4-5'],
+        ];
+    }
+
+    /**
+     * If-Range: the range is honoured when it names the current version,
+     * by entity tag or by Last-Modified; otherwise the client gets the
+     * whole current file.
+     *
+     * @dataProvider provideIfRange
+     */
+    #[DataProvider('provideIfRange')]
+    public function testIfRangeSendsTheRangeOnlyForTheCurrentVersion(string $ifRange, int $status, string $body): void
+    {
+        $request = self::withRange('bytes=2-5', ['HTTP_IF_RANGE' => $ifRange]);
+
+        $response = $this->responder()->respond($request, $this->rangeFile(), 'js', 'HIT');
+
+        self::assertSame($status, $response->getStatusCode());
+        self::assertSame($body, self::body($response));
+    }
+
+    /**
+     * @return array<string, array{string, int, string}>
+     */
+    public static function provideIfRange(): array
+    {
+        return [
+            'matching entity tag' => ['"6553f100-a"', 206, '2345'],
+            'matching Last-Modified' => ['Tue, 14 Nov 2023 22:13:20 GMT', 206, '2345'],
+            'other entity tag' => ['"6553f100-b"', 200, '0123456789'],
+            'weak entity tag' => ['W/"6553f100-a"', 200, '0123456789'],
+            'other date' => ['Tue, 14 Nov 2023 22:13:21 GMT', 200, '0123456789'],
+        ];
+    }
+
+    /**
+     * A conditional request whose copy is current gets 304 also when it
+     * asks for a range; when its copy is not current, the range applies.
+     *
+     * @dataProvider provideConditionalRanges
+     */
+    #[DataProvider('provideConditionalRanges')]
+    public function testAConditionalRangeRequest(string $header, string $value, int $status, string $body): void
+    {
+        $request = self::withRange('bytes=2-5', [$header => $value]);
+
+        $response = $this->responder()->respond($request, $this->rangeFile(), 'js', 'HIT');
+
+        self::assertSame($status, $response->getStatusCode());
+        self::assertSame($body, self::body($response));
+        if ($status === 304) {
+            self::assertNull($response->headers->get('content-range'));
+            self::assertSame('"6553f100-a"', $response->headers->get('etag'));
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, int, string}>
+     */
+    public static function provideConditionalRanges(): array
+    {
+        return [
+            'If-None-Match current' => ['HTTP_IF_NONE_MATCH', '"6553f100-a"', 304, ''],
+            'If-None-Match weak and current' => ['HTTP_IF_NONE_MATCH', 'W/"6553f100-a"', 304, ''],
+            'If-None-Match among others' => ['HTTP_IF_NONE_MATCH', '"x", "6553f100-a"', 304, ''],
+            'If-None-Match any' => ['HTTP_IF_NONE_MATCH', '*', 304, ''],
+            'If-None-Match outdated' => ['HTTP_IF_NONE_MATCH', '"6553f100-b"', 206, '2345'],
+            'If-Modified-Since current' => ['HTTP_IF_MODIFIED_SINCE', 'Tue, 14 Nov 2023 22:13:20 GMT', 304, ''],
+            'If-Modified-Since outdated' => ['HTTP_IF_MODIFIED_SINCE', 'Tue, 14 Nov 2023 22:13:19 GMT', 206, '2345'],
+        ];
+    }
+
+    /**
+     * If-None-Match takes precedence over If-Modified-Since (RFC 9110).
+     */
+    public function testIfNoneMatchOverridesIfModifiedSince(): void
+    {
+        $request = self::withRange('bytes=2-5', [
+            'HTTP_IF_NONE_MATCH' => '"6553f100-b"',
+            'HTTP_IF_MODIFIED_SINCE' => 'Tue, 14 Nov 2023 22:13:20 GMT',
+        ]);
+
+        $response = $this->responder()->respond($request, $this->rangeFile(), 'js', 'HIT');
+
+        self::assertSame(206, $response->getStatusCode());
+    }
+
+    /**
+     * HEAD ignores Range, as it may: the headers of the whole file, without
+     * body.
+     */
+    public function testHeadIgnoresTheRange(): void
+    {
+        $request = Request::create('/a.js', 'HEAD', [], [], [], ['HTTP_RANGE' => 'bytes=2-5']);
+
+        $response = $this->responder()->respond($request, $this->rangeFile(), 'js', 'HIT');
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('', self::body($response));
+        self::assertSame('10', $response->headers->get('content-length'));
+        self::assertNull($response->headers->get('content-range'));
+    }
+
     public function testAMissingFileIsAnInternalError(): void
     {
         $response = $this->responder()->respond(Request::create('/missing.css'), $this->directory->path('missing.css'), 'css', 'HIT');
@@ -236,6 +436,27 @@ final class FileResponderTest extends TestCase
     /**
      * A request whose web server declares that it takes the files with $mode.
      */
+    /**
+     * A GET of "/a.js" with $range, and the other server variables.
+     *
+     * @param array<string, string> $server
+     */
+    private static function withRange(string $range, array $server = []): Request
+    {
+        return Request::create('/a.js', 'GET', [], [], [], ['HTTP_RANGE' => $range] + $server);
+    }
+
+    /**
+     * The ten bytes "0123456789", whose entity tag is "6553f100-a".
+     */
+    private function rangeFile(): string
+    {
+        $file = $this->directory->write('a.js', '0123456789');
+        touch($file, 1700000000);
+
+        return $file;
+    }
+
     private static function fromServer(string $uri, string $mode): Request
     {
         return Request::create($uri, 'GET', [], [], [], ['PROXYCDN_SENDFILE' => $mode]);
