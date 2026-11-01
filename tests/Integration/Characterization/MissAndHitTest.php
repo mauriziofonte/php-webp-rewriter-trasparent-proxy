@@ -37,6 +37,7 @@ final class MissAndHitTest extends CharacterizationTestCase
         self::assertSame(self::etagOf($this->cachePath('images/gradient.png')), $response->getHeader('ETag'));
         self::assertSame(gmdate('D, d M Y H:i:s', (int) filemtime($this->cachePath('images/gradient.png'))) . ' GMT', $response->getHeader('Last-Modified'));
         self::assertSame('Accept', $response->getHeader('Vary'));
+        self::assertSame('bytes', $response->getHeader('Accept-Ranges'));
         self::assertStringEqualsFile($this->cachePath('images/gradient.png'), $png);
         self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
     }

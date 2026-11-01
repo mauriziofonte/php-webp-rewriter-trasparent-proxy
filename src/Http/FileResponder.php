@@ -18,7 +18,9 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * the same file on a hit (opportunity O-F, finding P-17):
  *
  * - SENDFILE "none": PHP streams the file in chunks, never reading it into
- *   memory;
+ *   memory, and answers a single byte range ("Range: bytes=...", with
+ *   If-Range) with 206 or 416, and If-None-Match or If-Modified-Since
+ *   with 304;
  * - "x-sendfile": an empty response with "X-Sendfile: <absolute path>",
  *   which Apache mod_xsendfile replaces with the file;
  * - "x-accel-redirect": an empty response with "X-Accel-Redirect:
@@ -30,9 +32,10 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * inside <IfModule mod_xsendfile.c>; config/nginx/proxy-cdn-fastcgi.conf
  * passes it). Without it, an empty response would reach the client, so
  * PHP streams the file instead. A client cannot set it: request headers
- * become HTTP_* variables. The entity tag is the one nginx computes for a
- * static file, "<mtime>-<size>" in hexadecimal, and Last-Modified the time
- * of the file.
+ * become HTTP_* variables. The web server answers ranges and conditional
+ * requests itself when it takes the file. The entity tag is the one nginx
+ * computes for a static file, "<mtime>-<size>" in hexadecimal, and
+ * Last-Modified the time of the file.
  * When the client accepts it, the Brotli or gzip sibling of the file is
  * sent instead, with Content-Encoding.
  */
@@ -190,20 +193,47 @@ final class FileResponder
      */
     private function stream(Request $request, string $file, int $size, int $modified, array $headers): Response
     {
-        $headers['ETag'] = sprintf('"%x-%x"', $modified, $size);
-        $headers['Last-Modified'] = gmdate('D, d M Y H:i:s', $modified) . ' GMT';
-        $headers['Content-Length'] = (string) $size;
+        $etag = sprintf('"%x-%x"', $modified, $size);
+        $lastModified = gmdate('D, d M Y H:i:s', $modified) . ' GMT';
+        $headers['ETag'] = $etag;
+        $headers['Last-Modified'] = $lastModified;
+        $headers['Accept-Ranges'] = 'bytes';
 
-        if ($request->getRealMethod() === 'HEAD' || $size === 0) {
-            return new Response('', 200, $headers);
+        if (self::isNotModified($request, $etag, $modified)) {
+            unset($headers['Content-Type'], $headers['Content-Encoding']);
+
+            return new Response('', 304, $headers);
         }
 
-        return new StreamedResponse(static function () use ($file, $size): void {
+        $start = 0;
+        $end = $size - 1;
+        $status = 200;
+        $range = self::rangeOf($request, $etag, $lastModified);
+        if ($range !== null) {
+            $bounds = self::boundsOf($range, $size);
+            if ($bounds === null) {
+                $headers['Content-Range'] = 'bytes */' . $size;
+                unset($headers['Content-Encoding']);
+
+                return new Response('', 416, $headers);
+            }
+            list($start, $end) = $bounds;
+            $status = 206;
+            $headers['Content-Range'] = sprintf('bytes %d-%d/%d', $start, $end, $size);
+        }
+        $length = $size === 0 ? 0 : $end - $start + 1;
+        $headers['Content-Length'] = (string) $length;
+
+        if ($request->getRealMethod() === 'HEAD' || $length === 0) {
+            return new Response('', $status, $headers);
+        }
+
+        return new StreamedResponse(static function () use ($file, $start, $length): void {
             $input = @fopen($file, 'rb');
             $output = @fopen('php://output', 'wb');
             if ($input !== false && $output !== false) {
                 // Copied in chunks by the stream layer: the file is never held in memory.
-                stream_copy_to_stream($input, $output, $size);
+                stream_copy_to_stream($input, $output, $length, $start);
             }
             if ($input !== false) {
                 fclose($input);
@@ -211,6 +241,90 @@ final class FileResponder
             if ($output !== false) {
                 fclose($output);
             }
-        }, 200, $headers);
+        }, $status, $headers);
+    }
+
+    /**
+     * Whether the client's copy is current: If-None-Match lists the entity
+     * tag (weak comparison, or "*"), or, without If-None-Match,
+     * If-Modified-Since is not earlier than the file.
+     */
+    private static function isNotModified(Request $request, string $etag, int $modified): bool
+    {
+        if (!in_array($request->getRealMethod(), ['GET', 'HEAD'], true)) {
+            return false;
+        }
+        $ifNoneMatch = $request->headers->get('If-None-Match');
+        if ($ifNoneMatch !== null) {
+            foreach (explode(',', $ifNoneMatch) as $candidate) {
+                $candidate = trim($candidate);
+                if ($candidate === '*' || preg_replace('#\AW/#', '', $candidate) === $etag) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        $ifModifiedSince = $request->headers->get('If-Modified-Since');
+        if ($ifModifiedSince === null) {
+            return false;
+        }
+        $since = strtotime($ifModifiedSince);
+
+        return $since !== false && $since >= $modified;
+    }
+
+    /**
+     * The "bytes=" range of the request, or null when the whole file must
+     * be sent: no Range, or an If-Range that names another version.
+     */
+    private static function rangeOf(Request $request, string $etag, string $lastModified): ?string
+    {
+        if ($request->getRealMethod() !== 'GET') {
+            return null;
+        }
+        $range = $request->headers->get('Range');
+        if ($range === null) {
+            return null;
+        }
+        $ifRange = $request->headers->get('If-Range');
+        if ($ifRange !== null && trim($ifRange) !== $etag && trim($ifRange) !== $lastModified) {
+            return null;
+        }
+        // A syntactically invalid or multiple range is answered with the whole file, as RFC 9110 allows.
+        $range = trim($range);
+        if (preg_match('/\Abytes=(\d*)-(\d*)\z/i', $range, $match) !== 1 || ($match[1] === '' && $match[2] === '')) {
+            return null;
+        }
+
+        return $range;
+    }
+
+    /**
+     * The first and last byte of a single "bytes=first-last" range, as
+     * rangeOf() returns it; null when it is not satisfiable.
+     *
+     * @return array{int, int}|null
+     */
+    private static function boundsOf(string $range, int $size): ?array
+    {
+        if (preg_match('/\Abytes=(\d*)-(\d*)\z/i', $range, $match) !== 1) {
+            return null;
+        }
+        if ($match[1] === '') {
+            $suffix = (int) $match[2];
+            if ($suffix === 0 || $size === 0) {
+                return null;
+            }
+
+            return [max(0, $size - $suffix), $size - 1];
+        }
+        $start = (int) $match[1];
+        $end = $match[2] === '' ? $size - 1 : min((int) $match[2], $size - 1);
+        if ($start >= $size || $start > $end) {
+            return null;
+        }
+
+        return [$start, $end];
     }
 }

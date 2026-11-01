@@ -18,7 +18,8 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
  * What the origin says about caching, honoured by the kernel (finding P-15,
- * opportunity O-D): no-store and private are never stored.
+ * opportunity O-D): no-store and private are never stored; Range and
+ * conditional requests are answered on the PHP path (finding S-6).
  *
  * @covers \Mfonte\ProxyCdn\Http\ProxyKernel
  *
@@ -99,6 +100,27 @@ final class OriginSemanticsTest extends TestCase
 
         self::assertSame('', self::body($response));
         self::assertSame('9', $response->headers->get('content-length'));
+    }
+
+    /**
+     * Range and conditional requests of a file PHP serves: a single range
+     * gets 206, If-None-Match with the current entity tag gets 304.
+     */
+    public function testRangeAndConditionalRequestsOnThePhpPath(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, '0123456789');
+        $this->kernel()->handle(Request::create(self::URL));
+
+        $range = $this->kernel()->handle(Request::create(self::URL, 'GET', [], [], [], ['HTTP_RANGE' => 'bytes=2-5']));
+        self::assertSame(206, $range->getStatusCode());
+        self::assertSame('2345', self::body($range));
+        self::assertSame('bytes 2-5/10', $range->headers->get('content-range'));
+
+        $etag = (string) $range->headers->get('etag');
+        $conditional = $this->kernel()->handle(Request::create(self::URL, 'GET', [], [], [], ['HTTP_IF_NONE_MATCH' => $etag]));
+        self::assertSame(304, $conditional->getStatusCode());
+        self::assertSame('', self::body($conditional));
+        self::assertCount(1, $this->origin->getRequests());
     }
 
     /**

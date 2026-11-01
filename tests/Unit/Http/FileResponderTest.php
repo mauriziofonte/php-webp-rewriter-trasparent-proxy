@@ -57,6 +57,7 @@ final class FileResponderTest extends TestCase
         self::assertSame('10', $response->headers->get('content-length'));
         self::assertSame('"6553f100-a"', $response->headers->get('etag'));
         self::assertSame('Tue, 14 Nov 2023 22:13:20 GMT', $response->headers->get('last-modified'));
+        self::assertSame('bytes', $response->headers->get('accept-ranges'));
         self::assertSame('HIT', $response->headers->get('x-cache-status'));
         self::assertSame('Accept', $response->headers->get('vary'));
         self::assertSame('max-age=600, must-revalidate, public', $response->headers->get('cache-control'));
