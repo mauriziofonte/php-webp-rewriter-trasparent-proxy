@@ -30,9 +30,10 @@ use Symfony\Component\HttpFoundation\Response;
  *    the origin;
  * 4. a raster whose WEBP sibling exists is served as WEBP to clients that
  *    accept it; an entry of a query-string bucket is served from disk;
- * 5. otherwise the asset is fetched from the origin, CSS is rewritten
- *    (findings P-2, P-3, P-4), the asset is stored, a raster is converted to
- *    WEBP when a converter is configured, and the asset is answered.
+ * 5. otherwise the asset is fetched from the origin and stored as the
+ *    origin sent it (2.x rewrote stylesheets, findings P-2, P-3, P-4), a
+ *    raster is converted to WEBP when a converter is configured, and the
+ *    asset is answered.
  *
  * The kernel only builds the response: it never sends it, never exits and
  * reads nothing but the Request, so that a host framework can mount it.
@@ -211,10 +212,6 @@ final class ProxyKernel
         $body = $fetched->getBody();
         $headers = $this->responses->forwardedHeaders($fetched->getHeaders());
 
-        if ($extension === 'css') {
-            $body = self::rewriteRootRelativeUrls($body, rtrim($server, '/'));
-        }
-
         if (!$this->storage->ensureDirectory($location->getDirectory())) {
             return $this->responses->error($path, ResponseFactory::ERROR_CACHE_DIRECTORY);
         }
@@ -251,19 +248,5 @@ final class ProxyKernel
     private static function hasFlag(string $rawQuery, string $name): bool
     {
         return preg_match('/(?:^|&)' . $name . '=(?:1|true)(?:&|$)/i', $rawQuery) === 1;
-    }
-
-    /**
-     * Prefixes the root-relative url() references of a stylesheet with the
-     * scheme and host the client used (findings P-2 and P-3; the origin
-     * Content-Length is kept, finding P-4).
-     */
-    private static function rewriteRootRelativeUrls(string $css, string $base): string
-    {
-        return str_replace(
-            ['url(/', "url('/", 'url("/'],
-            ['url(' . $base . '/', "url('" . $base . '/', 'url("' . $base . '/'],
-            $css
-        );
     }
 }

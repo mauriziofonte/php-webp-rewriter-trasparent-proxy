@@ -14,6 +14,7 @@ use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
 use Mfonte\ProxyCdn\Tests\Fixtures\Origin\FakeOriginFetcher;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
@@ -277,22 +278,22 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
-     * The host of the request ends up in the stored stylesheet (findings
-     * P-2 and P-3) and the origin Content-Length is kept (finding P-4).
+     * Stylesheets are stored and answered as the origin sent them: the host
+     * of the request never ends up in them (findings P-2 and P-3) and the
+     * Content-Length is the one of the body (finding P-4).
+     *
+     * @group regression
      */
-    public function testRootRelativeCssUrlsAreRewrittenP2P3P4(): void
+    #[Group('regression')]
+    public function testStylesheetsAreNotRewrittenP2P3P4(): void
     {
         $css = "a { background: url(/a.png); }\nb { background: url('/b.png'); }\nc { background: url(\"/c.png\"); }\nd { background: url(//cdn/d.png); }\n";
         $this->origin->serve(self::ORIGIN . '/css/rewrite.css', $css, ['content-length' => (string) strlen($css)]);
 
         $response = $this->kernel()->handle(Request::create('https://attacker.example.test/css/rewrite.css'));
 
-        $expected = "a { background: url(https://attacker.example.test/a.png); }\n"
-            . "b { background: url('https://attacker.example.test/b.png'); }\n"
-            . "c { background: url(\"https://attacker.example.test/c.png\"); }\n"
-            . "d { background: url(https://attacker.example.test//cdn/d.png); }\n";
-        self::assertSame($expected, $response->getContent());
-        self::assertSame($expected, file_get_contents($this->directory->path('css/rewrite.css')));
+        self::assertSame($css, $response->getContent());
+        self::assertSame($css, file_get_contents($this->directory->path('css/rewrite.css')));
         self::assertSame((string) strlen($css), $response->headers->get('content-length'));
     }
 
