@@ -689,17 +689,36 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
-     * A purge applies to its own bucket only (finding P-16, resolved by
-     * PRX-7).
+     * A purge of a URL without query string removes the entries of every
+     * query string of its path, with their variants and
+     * encodings (finding P-16: 2.x left them); a purge of a URL with a
+     * query string removes that entry only.
+     *
+     * @group regression
      */
-    public function testPurgeIgnoresQueryStringVariantsP16(): void
+    #[Group('regression')]
+    public function testPurgeCoversEveryQueryStringVariantP16(): void
     {
-        $this->origin->serve(self::ORIGIN . '/js/app.js?v=1', 'versioned');
-        $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'));
+        $this->origin->serve(self::ORIGIN . '/js/app.js?v=1', str_repeat('versioned;', 100));
+        $this->origin->serve(self::ORIGIN . '/js/app.js?v=2', 'short-lived', ['cache-control' => 'max-age=60']);
+        $this->origin->serve(self::ORIGIN . '/js/app.js?id=a%2Fb', 'hashed');
+        $this->origin->serve(self::ORIGIN . '/js/app.js', 'plain');
+        foreach (['?v=1', '?v=2', '?id=a%2Fb', ''] as $query) {
+            $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js' . $query));
+        }
+        self::assertFileExists($this->cachePath('.q/v=1/.gz/js/app.js'));
+        self::assertFileExists($this->cachePath('.q/v=2/js/app.js'));
 
-        $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
+        $one = $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
+        self::assertStringContainsString('"removed":2', self::body($one), 'the entry and its gzip encoding');
+        self::assertSame('HIT', $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=2'))->headers->get('x-cache-status'));
 
-        self::assertSame('HIT', $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'))->headers->get('x-cache-status'));
+        $all = $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
+        self::assertSame(200, $all->getStatusCode());
+        foreach (['?v=1', '?v=2', '?id=a%2Fb', ''] as $query) {
+            self::assertSame('MISS', $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js' . $query))->headers->get('x-cache-status'), $query);
+        }
+        self::assertCount(8, $this->origin->getRequests());
     }
 
     /**

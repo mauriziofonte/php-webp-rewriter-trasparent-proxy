@@ -127,6 +127,18 @@ final class CacheLocation
     }
 
     /**
+     * The same entry in the other query-string bucket $bucket.
+     */
+    public function withBucket(string $bucket, string $canonicalQuery): self
+    {
+        $copy = clone $this;
+        $copy->bucket = $bucket;
+        $copy->canonicalQuery = $canonicalQuery;
+
+        return $copy;
+    }
+
+    /**
      * The directory of the host.
      */
     public function getHostDirectory(): string

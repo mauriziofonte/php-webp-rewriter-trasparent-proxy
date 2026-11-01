@@ -5,18 +5,27 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Cache;
 
 /**
- * Removes a cache entry on an authenticated purge (see
+ * Removes cache entries on an authenticated purge (see
  * Security\PurgeAuthenticator).
  *
- * A purge removes the entry, its AVIF and WEBP variants, its Brotli and
- * gzip encodings (CacheLocation::getFiles()), and what the negative cache
- * remembers for the entry. 2.x also had "purge_all", which removed the files of other URLs
- * that share the base name ("a.jpg" for "a.png"); those are other
- * entries, purged by their own URL. Entries of other query-string buckets
- * are left alone (finding P-16, resolved by PRX-7).
+ * A purge removes the entry, its AVIF and WEBP variants and its Brotli
+ * and gzip encodings (CacheLocation::getFiles()), and what the negative
+ * cache remembers for it. A purge of a URL without query string also removes the entries of
+ * every query string of the same path, in ".q/" and ".qh/" (finding P-16:
+ * 2.x left them, so "PURGE /app.css" kept serving "/app.css?v=2"); a purge
+ * of a URL with a query string removes that entry only.
+ *
+ * 2.x also had "purge_all", which removed the files of other URLs that
+ * share the base name ("a.jpg" for "a.png"); those are other entries,
+ * purged by their own URL.
  */
 final class Purger
 {
+    /**
+     * The bucket directories of the query strings, below a host directory.
+     */
+    private const QUERY_DIRECTORIES = [CacheKeyResolver::QUERY_DIRECTORY, CacheKeyResolver::HASHED_QUERY_DIRECTORY];
+
     /**
      * @var CacheStorage
      */
@@ -34,19 +43,47 @@ final class Purger
     }
 
     /**
-     * @return list<string> the files of the entry that existed and were removed
+     * @param CacheLocation $location the entry of the purged URL
+     *
+     * @return list<string> the files that existed and were removed
      */
     public function purge(CacheLocation $location): array
     {
-        $removed = [];
-        foreach ($location->getFiles() as $file) {
-            if ($this->storage->isFile($file)) {
-                $this->storage->delete($file);
-                $removed[] = $file;
-            }
+        $entries = [$location];
+        if (!$location->isQueryStringBucket()) {
+            $entries = array_merge($entries, $this->queryEntries($location));
         }
-        $this->negativeCache->forget($location->getFile());
+
+        $removed = [];
+        foreach ($entries as $entry) {
+            foreach ($entry->getFiles() as $file) {
+                if ($this->storage->isFile($file)) {
+                    $this->storage->delete($file);
+                    $removed[] = $file;
+                }
+            }
+            $this->negativeCache->forget($entry->getFile());
+        }
 
         return $removed;
+    }
+
+    /**
+     * The entries of the path of $location in every query-string bucket
+     * that exists.
+     *
+     * @return list<CacheLocation>
+     */
+    private function queryEntries(CacheLocation $location): array
+    {
+        $entries = [];
+        $hostDirectory = $location->getHostDirectory();
+        foreach (self::QUERY_DIRECTORIES as $directory) {
+            foreach ($this->storage->listDirectory($hostDirectory . DIRECTORY_SEPARATOR . $directory) as $name) {
+                $entries[] = $location->withBucket($directory . DIRECTORY_SEPARATOR . $name, $directory === CacheKeyResolver::QUERY_DIRECTORY ? $name : '');
+            }
+        }
+
+        return $entries;
     }
 }

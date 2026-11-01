@@ -23,6 +23,16 @@ interface CacheStorage
     public function import(string $path, string $source): bool;
 
     /**
+     * The names of the entries of $directory, "." and ".." excluded; empty
+     * when it does not exist or cannot be read.
+     *
+     * @return list<string>
+     *
+     * @phpstan-impure
+     */
+    public function listDirectory(string $directory): array;
+
+    /**
      * Whether $path is an existing regular file.
      *
      * @phpstan-impure

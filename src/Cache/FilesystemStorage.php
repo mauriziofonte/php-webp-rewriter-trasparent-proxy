@@ -110,6 +110,16 @@ final class FilesystemStorage implements CacheStorage
         return is_file($path);
     }
 
+    public function listDirectory(string $directory): array
+    {
+        $names = is_dir($directory) ? @scandir($directory) : false;
+        if ($names === false) {
+            return [];
+        }
+
+        return array_values(array_diff($names, ['.', '..']));
+    }
+
     public function ensureDirectory(string $directory): bool
     {
         if (is_dir($directory)) {

@@ -102,6 +102,17 @@ final class CacheKeyResolverTest extends TestCase
         self::assertSame('img/a.png', $location->getRelativePath());
     }
 
+    /**
+     * A purge of a path finds the entries of its other query strings
+     * (finding P-16).
+     */
+    public function testWithBucketNamesTheSameEntryInAnotherBucket(): void
+    {
+        $location = (new CacheKeyResolver('/srv/c'))->resolve('h', '/img/a.png', 'v=1');
+
+        self::assertSame('/srv/c/h/.qh/abc/img/a.png', $location->withBucket('.qh/abc', '')->getFile());
+    }
+
     public function testTheCacheDirectory(): void
     {
         $resolver = new CacheKeyResolver('/srv/c/');

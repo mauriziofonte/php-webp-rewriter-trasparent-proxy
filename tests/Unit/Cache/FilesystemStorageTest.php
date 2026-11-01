@@ -51,13 +51,18 @@ final class FilesystemStorageTest extends TestCase
         self::assertSame(str_repeat('x', 300000), file_get_contents($file));
         self::assertSame(0644, fileperms($file) & 0777);
         self::assertFileExists($source, 'the source is the caller\'s');
-        self::assertSame(['.', '..', 'c.css'], scandir($this->directory->path('a/b')));
+        self::assertSame(['c.css'], $this->storage->listDirectory($this->directory->path('a/b')));
     }
 
     public function testImportFailsWithoutSourceAndCleansUp(): void
     {
         self::assertFalse($this->storage->import($this->directory->path('a/c.css'), $this->directory->path('missing')));
-        self::assertSame(['.', '..'], scandir($this->directory->path('a')));
+        self::assertSame([], $this->storage->listDirectory($this->directory->path('a')));
+    }
+
+    public function testListDirectoryOfAMissingDirectory(): void
+    {
+        self::assertSame([], $this->storage->listDirectory($this->directory->path('missing')));
     }
 
     public function testWriteCreatesTheDirectoriesAndTheFile(): void

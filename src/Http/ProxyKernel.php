@@ -38,8 +38,10 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    the path is decoded by PathSanitizer, and a refused path or a path
  *    whose extension is not cacheable gets an error; HEAD gets the headers
  *    of the GET;
- * 2. PURGE removes the entry and its siblings when the request proves a
- *    purge key of the origin (PurgeAuthenticator); the anonymous
+ * 2. PURGE removes the entry and its siblings, and without query string
+ *    the entries of every query string of the path (Purger, finding P-16),
+ *    when the request proves a purge key of the origin
+ *    (PurgeAuthenticator); the anonymous
  *    "?purge=1" and "?purge_all=1" of 2.x get a 401 that explains the
  *    change (risk L-7);
  * 3. a request for "X.webp" that the cache does not hold is answered from
