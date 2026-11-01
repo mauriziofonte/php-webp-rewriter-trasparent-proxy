@@ -14,7 +14,7 @@ This is a **small, hobbyist-to-small-production** project. It is appropriate for
 
 - You are on a **LAMP / LEMP** VPS, no ops team, no budget for a third-party CDN, and want WEBP conversion plus a filesystem cache in front of an origin you do not want to modify.
 - Traffic is **moderate and predictable** (roughly: a personal site, a portfolio, a small business site, internal tools). Order of magnitude: up to a few dozen requests per second, not hundreds.
-- **Simplicity wins over performance**: you want one `git clone`, one `composer install`, one `.env`, and you are willing to pay the cost of PHP being in the serving path for query-string-keyed hits.
+- **Simplicity wins over performance**: you want one `git clone`, one `composer install`, one `.env`, and you accept PHP in the serving path for misses and for the entries the origin wants revalidated.
 - You want the deployment to be a single box you fully control (no external DNS dependency, no vendor account, no egress to someone else's network).
 
 **Do NOT use this project when:**
@@ -22,7 +22,7 @@ This is a **small, hobbyist-to-small-production** project. It is appropriate for
 - You need **production-grade CDN semantics**: Cloudflare's free tier (Polish for WEBP, cache, WAF, DDoS protection, anycast) does all of this, properly, for zero euros and five minutes of DNS work. Use that instead.
 - You expect **hundreds of requests per second or more**, or traffic spikes from bots/scanners. PHP-FPM worker pools cap concurrency well below what `nginx proxy_cache` or Varnish deliver with a tenth of the memory.
 - You need **horizontal scaling** behind a load balancer. The on-disk cache is per-instance; purges and warm-up do not propagate. Building shared state on top of this project is more work than starting from nginx/Varnish.
-- You need **features this project deliberately does not implement**: Range request handling (partial content), Accept-Encoding negotiation (Brotli vs gzip), conditional requests past what Apache provides, size-capped or LRU cache eviction, metrics/observability endpoints, HTTP/2 push, HTTP/3.
+- You need **features this project deliberately does not implement** yet: size-capped or LRU cache eviction, metrics/observability endpoints, HTTP/2 push, HTTP/3. (Range and conditional requests, Brotli and gzip negotiation, revalidation with the origin and request coalescing are covered: see *Origin cache semantics*.)
 - You need an **audited security posture**. This repository has no automated test suite and has not undergone a formal security review. The codebase has been manually hardened (atomic writes, circuit breaker, query-string caching, whitelist header mirroring, structured logging) but manual hardening is not the same as a track record in the wild.
 
 **Real value-add of this project over the alternatives:**
@@ -38,6 +38,7 @@ The one thing this project does that is genuinely cumbersome to replicate with o
 - [Web server configuration](#web-server-configuration)
 - [Image conversion modes](#image-conversion-modes)
 - [Cache purge](#cache-purge)
+- [Origin cache semantics](#origin-cache-semantics)
 - [Query string caching](#query-string-caching)
 - [Negative caching and circuit breaker](#negative-caching-and-circuit-breaker)
 - [Content negotiation (Accept: image/avif, image/webp)](#content-negotiation-accept-imageavif-imagewebp)
@@ -96,6 +97,8 @@ Every setting is read from the environment first and from `.env` second: a varia
 | `PRECOMPRESS`                     | bool      | `true`                    | Stores a gzip (ext-zlib) and a Brotli (ext-brotli) encoding of text, SVG, icon and font entries next to them, served to the clients that accept them.           |
 | `LEGACY_WEBP_URLS`                | bool      | `true`                    | Answers an `X.webp` URL, where the 301 of 2.x sent clients, with the WEBP variant of the raster `X.jpg`, `X.png`, ... (cached, or fetched when the origin has no `X.webp`), unless an `X.webp` entry is cached. |
 | `CACHEABLE_EXTENSIONS`            | CSV       | `css,js,...,ico`          | Whitelist of file extensions the proxy will serve. Any extension outside this list is rejected with a 404.                                                      |
+| `CACHE_REVALIDATE_BELOW`          | seconds   | `3600`                    | An entry whose origin lifetime (`s-maxage`, `max-age`, `Expires`) is shorter is kept where only PHP serves it, and revalidated with the origin once expired (see *Origin cache semantics*); `0` keeps every entry until purged, as 2.x did. |
+| `STALE_WHILE_REVALIDATE`          | seconds   | `60`                      | How long such an expired entry is still served while PHP revalidates it after the response, when the origin sends no `stale-while-revalidate`.                 |
 | `CACHE_EXPIRY`                    | seconds   | `86400` (1d); `.env.example` sets `31536000` | `max-age` sent on the responses of PHP. The web server configurations (`public/.htaccess`, `config/nginx/proxy-cdn-headers.conf`) send `31536000` on the hits they serve: change them with it; `composer check-env` warns when they differ. Combined with `must-revalidate` (not `immutable`), so a purge is effective. |
 | `NEGATIVE_CACHE_TTL`              | seconds   | `300`                     | How long a 404 marker is honored before the proxy re-queries the origin.                                                                                        |
 | `NETWORK_ERROR_TTL`               | seconds   | `30`                      | How long the circuit breaker of the origin stays open once it opens (see *Negative caching and circuit breaker*); `0` disables the breaker.                     |
@@ -174,9 +177,21 @@ curl -X PURGE -H "X-Purge-Timestamp: $ts" -H "X-Purge-Signature: $sig" \
     'https://static.mycdn.com/images/hero.jpg?v=42'
 ```
 
-A purge removes the entry of that exact URL (in the directory of its allowlisted query string, or of the path alone), its AVIF and WEBP variants, its Brotli and gzip encodings, and what the negative cache remembers for them. It does not fetch the asset again: the next request does. The answer is `200` with `{"purged":true,"path":"/images/hero.jpg","query":"v=42","removed":2}`; a request without a valid key gets `401` with `WWW-Authenticate: Bearer realm="proxy-cdn purge"`. Every purge is logged at `notice` level with the client address (read through `TRUSTED_PROXIES`); every refusal at `warning` level.
+A purge removes the entry of that URL with its metadata, its AVIF and WEBP variants and its Brotli and gzip encodings, wherever it is stored (the tier the web server serves and the one PHP revalidates), and what the negative cache remembers for it. A purge of a URL **without** query string also removes the entries of **every query string** of the same path (`/app.css?v=1`, `/app.css?v=2`, ...: 2.x left them); a purge of a URL with a query string removes that entry only. It does not fetch the asset again: the next request does. The answer is `200` with `{"purged":true,"path":"/images/hero.jpg","query":"v=42","removed":2}`; a request without a valid key gets `401` with `WWW-Authenticate: Bearer realm="proxy-cdn purge"`. Every purge is logged at `notice` level with the client address (read through `TRUSTED_PROXIES`); every refusal at `warning` level.
 
 The anonymous `?purge=1` and `?purge_all=1` of 2.x were removed: anyone could empty the cache and send the load to the origin. Such a request now gets a `401` whose body explains the `PURGE` request, and purges nothing. `purge_all` also removed the files of other URLs that share the base name (`hero.png` for `hero.jpg`); purge those by their own URL.
+
+## Origin cache semantics
+
+The proxy is a shared cache, and reads the response headers of the origin as one (RFC 9111):
+
+- **`no-store` and `private`** responses are never stored: they are streamed to the client with `X-Cache-Status: BYPASS` and `Cache-Control: no-store` (or `private, no-cache`), and every request fetches them again.
+- **Lifetime.** `s-maxage`, else `max-age`, else `Expires` minus `Date`, minus `Age`; `no-cache` means 0. Without any of them, or with a lifetime of `CACHE_REVALIDATE_BELOW` (1 hour) or more, the entry is stored where the web server serves it, and kept until it is purged, as in 2.x: the long-lived assets of a site never touch PHP again. A shorter lifetime puts the entry in `public/_cache/<host>/.m/`, which only PHP serves, with its metadata (`.m/.meta/<path>.json`), and with the `max-age` it has left.
+- **Revalidation.** Once such an entry expires, PHP asks the origin with `If-None-Match` and `If-Modified-Since` (the `ETag` and `Last-Modified` the origin sent): a `304` renews it (`X-Cache-Status: REVALIDATED`), a `200` replaces it, a `404` or `410` removes it. Within its `stale-while-revalidate` (the origin's, else `STALE_WHILE_REVALIDATE`) the expired entry is served at once (`STALE`) and revalidated after the response has been sent. When the origin is unavailable (5xx, timeout, open circuit breaker), the expired entry keeps being served (`STALE`), for at most its `stale-if-error` when the origin sets one. `must-revalidate` and `proxy-revalidate` forbid any stale use.
+- **Request coalescing.** Of the requests that miss the same entry at the same time, one fetches it from the origin while the others wait for it (at most `UPSTREAM_TIMEOUT` plus 30 seconds, then `503`), then serve what it stored: a burst of 500 requests on a cold URL costs one origin fetch. When that fetch fails, the waiters answer with the same error instead of fetching in turn, and when the origin forbids storing the response, the requests of that URL fetch in parallel; either outcome is remembered for 5 seconds. The lock is a file of `var/locks/`, which must not be writable by other users (the proxy logs a warning and fetches without coalescing otherwise).
+- **Streaming.** An origin body goes to a temporary file, then to the cache, in chunks: never into PHP memory. Files PHP serves are streamed too, with `ETag`, `Last-Modified`, `304` to `If-None-Match` and `If-Modified-Since`, and `206` to a single `Range` (with `If-Range`).
+
+`X-Cache-Status` is therefore `HIT`, `MISS`, `REVALIDATED`, `STALE` or `BYPASS` on an asset, and absent on an error.
 
 ## Query string caching
 
