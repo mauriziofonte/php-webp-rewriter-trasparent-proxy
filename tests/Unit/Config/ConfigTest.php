@@ -188,6 +188,7 @@ final class ConfigTest extends TestCase
             'QUERY_STRING_ALLOWLIST' => ['v', 'lang'],
             'QUERY_STRING_MODE' => 'reject',
             'TRUSTED_PROXIES' => ['192.0.2.0/24', '2001:db8::/32'],
+            'PURGE_KEYS' => ['origin.example.test=0123456789abcdef'],
             'IMAGE_CONVERSION_MODE' => Config::CONVERSION_API,
             'WEBP_API_SERVER' => 'https://api.example.test/convert',
             'WEBP_API_KEY' => 'secret',

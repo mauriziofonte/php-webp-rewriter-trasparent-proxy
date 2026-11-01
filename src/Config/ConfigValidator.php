@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
 use Mfonte\ProxyCdn\Http\IpRange;
 use Mfonte\ProxyCdn\Origin\HttpClientOptions;
+use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 
 /**
  * Validates the raw configuration values, as read from the environment and
@@ -124,6 +125,12 @@ final class ConfigValidator
             $errors[] = 'TRUSTED_PROXIES must list IP addresses and CIDR blocks separated by commas: ' . $exception->getMessage();
         }
 
+        // The value holds secrets: the error never quotes it.
+        if (PurgeAuthenticator::parseKeys(self::entryList($values['PURGE_KEYS'] ?? null)) === null) {
+            $errors[] = 'PURGE_KEYS must list "scope=secret" pairs separated by commas: the scope is the host name of an origin or "*", '
+                . 'the secret ' . PurgeAuthenticator::MIN_SECRET_BYTES . ' or more printable ASCII characters without spaces or commas';
+        }
+
         $mode = $values['IMAGE_CONVERSION_MODE'] ?? Config::CONVERSION_NONE;
         if (!in_array($mode, self::CONVERSION_MODES, true)) {
             $errors[] = 'IMAGE_CONVERSION_MODE must be one of: native, api, none (got: ' . var_export($mode, true) . ')';
@@ -192,6 +199,25 @@ final class ConfigValidator
         }
 
         return new ConfigValidation($errors, $warnings);
+    }
+
+    /**
+     * The trimmed, non-empty entries of a comma-separated value; [] for
+     * null.
+     *
+     * @return list<string>
+     */
+    public static function entryList(?string $raw): array
+    {
+        $entries = [];
+        foreach (explode(',', (string) $raw) as $entry) {
+            $entry = trim($entry);
+            if ($entry !== '') {
+                $entries[] = $entry;
+            }
+        }
+
+        return $entries;
     }
 
     /**

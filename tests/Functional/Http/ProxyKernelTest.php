@@ -6,6 +6,7 @@ namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
 use Mfonte\ProxyCdn\Http\ProxyKernel;
 use Mfonte\ProxyCdn\Origin\OriginResponse;
+use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
@@ -29,6 +30,8 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 final class ProxyKernelTest extends TestCase
 {
     private const ORIGIN = 'https://origin.example.test';
+
+    private const PURGE_SECRET = 'purge-secret-0123456789';
 
     private const CSS = "body { background: url(/images/bg.png); }\n";
 
@@ -214,6 +217,14 @@ final class ProxyKernelTest extends TestCase
         self::assertSame([], $this->origin->getRequests());
     }
 
+    public function testAMethodOverrideIsIgnored(): void
+    {
+        $request = Request::create('https://cdn.example.test/css/site.css', 'POST', [], [], [], ['HTTP_X_HTTP_METHOD_OVERRIDE' => 'GET']);
+
+        self::assertSame(405, $this->kernel()->handle($request)->getStatusCode());
+        self::assertSame([], $this->origin->getRequests());
+    }
+
     public function testOtherMethodsAreRefused(): void
     {
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'POST'));
@@ -322,37 +333,129 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
-     * Anyone can purge (finding L-7, resolved by PRX-5).
+     * The anonymous "?purge=1" of 2.x purges nothing and answers a 401
+     * that explains how to purge (risk L-7: 2.x purged for anyone).
+     *
+     * @group regression
      */
-    public function testPurgeRemovesTheEntryAndItsMarkers(): void
+    #[Group('regression')]
+    public function testAnonymousPurgeIsRefusedWithGuidanceL7(): void
     {
         $this->origin->serve(self::ORIGIN . '/js/app.js?v=1', 'old');
         $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'));
-        $bucket = $this->directory->path('_qs/' . substr(hash('sha256', 'v=1'), 0, 16));
-        $this->directory->write(substr($bucket, strlen($this->directory->path())) . '/js/app.js.netfail', '');
         $this->origin->serve(self::ORIGIN . '/js/app.js?v=1', 'new');
 
-        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1&purge=TRUE'));
+        foreach (['v=1&purge=TRUE', 'v=1&purge_all=1'] as $query) {
+            $response = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js?' . $query));
 
-        self::assertSame('new', $response->getContent());
-        self::assertSame('miss', $response->headers->get('x-cache-status'));
-        self::assertCount(2, $this->origin->getRequests());
-        self::assertSame(
-            [['level' => 'info', 'message' => 'purge', 'context' => ['file' => $bucket . '/js/app.js', 'aggressive' => false]]],
-            $this->logger->getRecords()
-        );
+            self::assertSame(401, $response->getStatusCode());
+            self::assertSame('Bearer realm="proxy-cdn purge"', $response->headers->get('www-authenticate'));
+            self::assertStringContainsString('no-store', (string) $response->headers->get('cache-control'));
+            self::assertStringContainsString('Error code: Purge requires a purge key.', (string) $response->getContent());
+            self::assertStringContainsString('Send "PURGE <url>" with "Authorization: Bearer <key>"', (string) $response->getContent());
+        }
+        self::assertCount(1, $this->origin->getRequests());
+        self::assertSame('old', $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'))->getContent());
     }
 
-    public function testPurgeAllRemovesTheSiblings(): void
+    public function testPurgeWithAKeyRemovesTheEntry(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/js/app.js?v=1', 'old');
+        $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'));
+        $bucket = '_qs/' . substr(hash('sha256', 'v=1'), 0, 16);
+        $this->directory->write($bucket . '/js/app.js.netfail', '');
+        $this->logger = new MemoryLogger();
+
+        $response = $this->purgingKernel()->handle(Request::create(
+            'https://cdn.example.test/js/app.js?v=1',
+            'PURGE',
+            [],
+            [],
+            [],
+            ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET, 'REMOTE_ADDR' => '192.0.2.7']
+        ));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('application/json', $response->headers->get('content-type'));
+        self::assertSame(['purged' => true, 'path' => '/js/app.js', 'query' => 'v=1', 'removed' => 1], json_decode((string) $response->getContent(), true));
+        self::assertFileDoesNotExist($this->directory->path($bucket . '/js/app.js'));
+        self::assertFileDoesNotExist($this->directory->path($bucket . '/js/app.js.netfail'));
+        self::assertSame(
+            [['level' => 'notice', 'message' => 'purge', 'context' => ['path' => '/js/app.js', 'query' => 'v=1', 'removed' => 1, 'auth' => 'bearer', 'client' => '192.0.2.7']]],
+            $this->logger->getRecords()
+        );
+        self::assertCount(1, $this->origin->getRequests());
+    }
+
+    public function testPurgeWithoutAValidKeyIsRefused(): void
+    {
+        $this->directory->write('css/site.css', 'cached');
+
+        $anonymous = $this->purgingKernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'PURGE'));
+        $wrong = $this->purgingKernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer wrong-secret-0123456789']));
+        $disabled = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
+
+        foreach ([$anonymous, $wrong, $disabled] as $response) {
+            self::assertSame(401, $response->getStatusCode());
+        }
+        self::assertFileExists($this->directory->path('css/site.css'));
+        self::assertCount(3, $this->logger->recordsWithMessage('purge refused'));
+    }
+
+    public function testPurgeOfARasterRemovesItsWebpVariantOnly(): void
     {
         $this->directory->write('images/logo.png', 'PNG');
         $this->directory->write('images/logo.webp', 'WEBP');
+        $this->directory->write('images/logo.jpg', 'another URL');
 
-        $this->kernel()->handle(Request::create('https://cdn.example.test/images/logo.jpg?purge_all=1'));
+        $response = $this->purgingKernel()->handle(Request::create('https://cdn.example.test/images/logo.png', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
 
+        $document = json_decode((string) $response->getContent(), true);
+        self::assertIsArray($document);
+        self::assertSame(2, $document['removed'] ?? null);
         self::assertFileDoesNotExist($this->directory->path('images/logo.png'));
         self::assertFileDoesNotExist($this->directory->path('images/logo.webp'));
-        self::assertTrue($this->logger->getRecords()[0]['context']['aggressive'] ?? null);
+        self::assertFileExists($this->directory->path('images/logo.jpg'));
+    }
+
+    public function testPurgeWithAnHmacSignatureRemovesTheEntry(): void
+    {
+        $this->directory->write('css/site.css', 'cached');
+        $timestamp = (string) time();
+        $signature = hash_hmac('sha256', PurgeAuthenticator::signedMessage('cdn.example.test', '/css/site.css', $timestamp), self::PURGE_SECRET);
+
+        $response = $this->purgingKernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'PURGE', [], [], [], [
+            'HTTP_X_PURGE_TIMESTAMP' => $timestamp,
+            'HTTP_X_PURGE_SIGNATURE' => $signature,
+        ]));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertFileDoesNotExist($this->directory->path('css/site.css'));
+        self::assertSame('hmac', $this->logger->recordsWithMessage('purge')[0]['context']['auth'] ?? null);
+    }
+
+    public function testPurgeClearsTheNegativeMarker(): void
+    {
+        $this->purgingKernel()->handle(Request::create('https://cdn.example.test/css/gone.css'));
+        $this->origin->serve(self::ORIGIN . '/css/gone.css', self::CSS);
+
+        $this->purgingKernel()->handle(Request::create('https://cdn.example.test/css/gone.css', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
+
+        self::assertSame(200, $this->purgingKernel()->handle(Request::create('https://cdn.example.test/css/gone.css'))->getStatusCode());
+    }
+
+    /**
+     * A purge applies to its own bucket only (finding P-16, resolved by
+     * PRX-7).
+     */
+    public function testPurgeIgnoresQueryStringVariantsP16(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/js/app.js?v=1', 'versioned');
+        $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'));
+
+        $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
+
+        self::assertSame('hit', $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1'))->headers->get('x-cache-status'));
     }
 
     /**
@@ -464,6 +567,17 @@ final class ProxyKernelTest extends TestCase
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame([], headers_list());
+    }
+
+    private function purgingKernel(): ProxyKernel
+    {
+        return TestKernel::create(
+            TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'PURGE_KEYS' => 'origin.example.test=' . self::PURGE_SECRET]),
+            $this->directory->path(),
+            $this->origin,
+            null,
+            $this->logger
+        );
     }
 
     private function kernel(?FakeWebpConverter $converter = null): ProxyKernel

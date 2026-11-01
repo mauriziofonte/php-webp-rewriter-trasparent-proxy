@@ -28,7 +28,7 @@ final class ConfigLoader
     /**
      * The configuration keys: those of 2.x, plus UPSTREAM_MAX_SIZE and
      * UPSTREAM_USER_AGENT (PRX-4), QUERY_STRING_ALLOWLIST,
-     * QUERY_STRING_MODE and TRUSTED_PROXIES (PRX-5).
+     * QUERY_STRING_MODE, TRUSTED_PROXIES and PURGE_KEYS (PRX-5).
      */
     public const KEYS = [
         'DEBUG',
@@ -50,6 +50,7 @@ final class ConfigLoader
         'QUERY_STRING_ALLOWLIST',
         'QUERY_STRING_MODE',
         'TRUSTED_PROXIES',
+        'PURGE_KEYS',
         'IMAGE_CONVERSION_MODE',
         'WEBP_API_SERVER',
         'WEBP_API_KEY',
@@ -196,6 +197,7 @@ final class ConfigLoader
             'QUERY_STRING_ALLOWLIST' => ConfigValidator::parameterList($value('QUERY_STRING_ALLOWLIST')),
             'QUERY_STRING_MODE' => $value('QUERY_STRING_MODE'),
             'TRUSTED_PROXIES' => ConfigValidator::rangeList($optional('TRUSTED_PROXIES')),
+            'PURGE_KEYS' => ConfigValidator::entryList($optional('PURGE_KEYS')),
             'IMAGE_CONVERSION_MODE' => $value('IMAGE_CONVERSION_MODE'),
             'WEBP_API_SERVER' => $optional('WEBP_API_SERVER'),
             'WEBP_API_KEY' => $optional('WEBP_API_KEY'),

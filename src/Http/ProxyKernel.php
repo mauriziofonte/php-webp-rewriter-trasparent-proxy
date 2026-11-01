@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Http;
 
 use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
+use Mfonte\ProxyCdn\Cache\CacheLocation;
 use Mfonte\ProxyCdn\Cache\CacheStorage;
 use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
+use Mfonte\ProxyCdn\Cache\QueryString;
 use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\WebpConverter;
@@ -15,6 +17,7 @@ use Mfonte\ProxyCdn\Origin\CircuitBreaker;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Origin\OriginRequest;
 use Mfonte\ProxyCdn\Security\PathSanitizer;
+use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -27,8 +30,9 @@ use Symfony\Component\HttpFoundation\Response;
  *    HEAD get 405; the path is decoded by PathSanitizer, and a refused
  *    path or a path whose extension is not cacheable gets an error; HEAD
  *    gets the headers of the GET;
- * 2. "purge=1" or "purge_all=1" in the query string removes the entry first
- *    (anonymously: finding L-7);
+ * 2. PURGE removes the entry when the request proves a purge key of the
+ *    origin (PurgeAuthenticator); the anonymous "?purge=1" and
+ *    "?purge_all=1" of 2.x get a 401 that explains the change (risk L-7);
  * 3. a fresh 404 marker or an open circuit breaker answers without asking
  *    the origin;
  * 4. the query string is reduced to the parameters of QueryStringPolicy,
@@ -71,6 +75,11 @@ final class ProxyKernel
      * @var TrustedProxies
      */
     private $trustedProxies;
+
+    /**
+     * @var PurgeAuthenticator
+     */
+    private $purgeAuthenticator;
 
     /**
      * @var CacheStorage
@@ -126,6 +135,7 @@ final class ProxyKernel
         CacheKeyResolver $keyResolver,
         QueryStringPolicy $queryPolicy,
         TrustedProxies $trustedProxies,
+        PurgeAuthenticator $purgeAuthenticator,
         CacheStorage $storage,
         NegativeCache $negativeCache,
         CircuitBreaker $circuitBreaker,
@@ -141,6 +151,7 @@ final class ProxyKernel
         $this->keyResolver = $keyResolver;
         $this->queryPolicy = $queryPolicy;
         $this->trustedProxies = $trustedProxies;
+        $this->purgeAuthenticator = $purgeAuthenticator;
         $this->storage = $storage;
         $this->negativeCache = $negativeCache;
         $this->circuitBreaker = $circuitBreaker;
@@ -154,9 +165,13 @@ final class ProxyKernel
 
     public function handle(Request $request): Response
     {
-        $method = $request->getMethod();
+        // The method on the wire: X-HTTP-Method-Override must not turn a POST into a GET or a PURGE.
+        $method = $request->getRealMethod();
         if ($method === 'OPTIONS') {
             return $this->responses->preflight((string) $request->headers->get('Access-Control-Request-Headers', ''));
+        }
+        if ($method === 'PURGE') {
+            return $this->handlePurge($request);
         }
         // Finding P-19: 2.x served every method like GET.
         if ($method !== 'GET' && $method !== 'HEAD') {
@@ -173,9 +188,13 @@ final class ProxyKernel
     }
 
     /**
-     * The answer to a GET of an asset.
+     * The decoded path, its extension, the query string kept by the policy
+     * and the cache location of a request; or the error response when the
+     * path or the query string is refused.
+     *
+     * @return Response|array{string, string, QueryString, CacheLocation}
      */
-    private function handleAsset(Request $request): Response
+    private function locate(Request $request)
     {
         $requestPath = $request->getPathInfo();
         $path = $this->pathSanitizer->sanitize($requestPath);
@@ -188,21 +207,64 @@ final class ProxyKernel
             return $this->responses->error($path, ResponseFactory::ERROR_NOT_CACHEABLE);
         }
 
-        $rawQuery = $request->server->get('QUERY_STRING');
-        $rawQuery = is_scalar($rawQuery) ? (string) $rawQuery : '';
-        $query = $this->queryPolicy->apply($rawQuery);
+        $query = $this->queryPolicy->apply(self::rawQuery($request));
         if ($query === null) {
             return $this->responses->error($path, ResponseFactory::ERROR_QUERY_NOT_ALLOWED);
         }
-        $location = $this->keyResolver->resolve($path, $query->getCanonical());
+
+        return [$path, $extension, $query, $this->keyResolver->resolve($path, $query->getCanonical())];
+    }
+
+    /**
+     * The answer to PURGE: the entry is removed when the request proves a
+     * purge key whose scope covers the origin.
+     */
+    private function handlePurge(Request $request): Response
+    {
+        $located = $this->locate($request);
+        if ($located instanceof Response) {
+            return $located;
+        }
+        list($path, $extension, $query, $location) = $located;
+        $client = $this->trustedProxies->getClientAddress($request);
+
+        $scheme = $this->purgeAuthenticator->authenticate($request, $this->originHost(), time());
+        if ($scheme === null) {
+            $this->logger->warning('purge refused', ['path' => $path, 'client' => $client]);
+
+            return $this->responses->error($path, ResponseFactory::ERROR_PURGE_UNAUTHORIZED);
+        }
+
+        $isRaster = in_array($extension, self::RASTER_EXTENSIONS, true);
+        $removed = $this->purger->purge($location, $isRaster);
+        $this->circuitBreaker->reset($location->getFile());
+        $this->logger->notice('purge', [
+            'path' => $path,
+            'query' => $query->getCanonical(),
+            'removed' => count($removed),
+            'auth' => $scheme,
+            'client' => $client,
+        ]);
+
+        return $this->responses->purged($path, $query->getCanonical(), count($removed));
+    }
+
+    /**
+     * The answer to a GET of an asset.
+     */
+    private function handleAsset(Request $request): Response
+    {
+        $located = $this->locate($request);
+        if ($located instanceof Response) {
+            return $located;
+        }
+        list($path, $extension, $query, $location) = $located;
         $file = $location->getFile();
 
-        $purgeAll = self::hasFlag($rawQuery, 'purge_all');
-        if ($purgeAll || self::hasFlag($rawQuery, 'purge')) {
-            foreach ($this->purger->purge($file, $purgeAll) as $entry) {
-                $this->circuitBreaker->reset($entry);
-            }
-            $this->logger->info('purge', ['file' => $file, 'aggressive' => $purgeAll]);
+        // Risk L-7: 2.x purged for anyone; the request now explains how to purge.
+        $rawQuery = self::rawQuery($request);
+        if (self::hasFlag($rawQuery, 'purge') || self::hasFlag($rawQuery, 'purge_all')) {
+            return $this->responses->error($path, ResponseFactory::ERROR_PURGE_UNAUTHORIZED);
         }
 
         if ($this->negativeCache->isFresh($file)) {
@@ -285,6 +347,24 @@ final class ProxyKernel
         $this->circuitBreaker->reset($file);
 
         return $this->responses->miss($body, $headers, $servedWebp, $extension);
+    }
+
+    /**
+     * The query string as the client sent it, without "?".
+     */
+    private static function rawQuery(Request $request): string
+    {
+        $rawQuery = $request->server->get('QUERY_STRING');
+
+        return is_scalar($rawQuery) ? (string) $rawQuery : '';
+    }
+
+    /**
+     * The host name of the origin, which scopes the purge keys.
+     */
+    private function originHost(): string
+    {
+        return strtolower((string) parse_url($this->config->getSourceOrigin(), PHP_URL_HOST));
     }
 
     /**

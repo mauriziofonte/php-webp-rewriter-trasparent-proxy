@@ -9,8 +9,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * The anonymous ?purge= and ?purge_all= query parameters (removed by PRX-5,
- * risk L-7).
+ * The anonymous ?purge= and ?purge_all= of 2.x, now refused (risk L-7).
  *
  * @coversNothing
  *
@@ -20,6 +19,8 @@ use PHPUnit\Framework\Attributes\Group;
 #[Group('characterization')]
 final class PurgeTest extends CharacterizationTestCase
 {
+    private const SECRET = 'purge-secret-0123456789';
+
     /**
      * @return array<string, array{string}>
      */
@@ -34,106 +35,45 @@ final class PurgeTest extends CharacterizationTestCase
     }
 
     /**
-     * Anyone can purge (finding L-7, resolved by PRX-5): the entry is
-     * removed, fetched again without the flag and stored again.
+     * The anonymous purge of 2.x purges nothing and answers a 401 that
+     * explains how to purge (risk L-7: 2.x removed the entry for anyone
+     * and fetched it again).
      *
      * @dataProvider providePurgeFlags
+     *
+     * @group regression
      */
     #[DataProvider('providePurgeFlags')]
-    public function testAnonymousPurgeRefetchesTheEntry(string $flag): void
+    #[Group('regression')]
+    public function testAnonymousPurgeIsRefusedWithGuidanceL7(string $flag): void
     {
         $this->get('/images/gradient.png?v=1');
-        file_put_contents($this->bucketPath('v=1', 'images/gradient.png'), 'stale');
+        file_put_contents($this->bucketPath('v=1', 'images/gradient.png'), 'cached');
 
         $response = $this->get('/images/gradient.png?v=1&' . $flag);
 
-        self::assertSame(200, $response->getStatus());
-        self::assertSame('miss', $response->getHeader('X-Cache-Status'));
-        self::assertSame(self::fixture('images/gradient.png'), $response->getBody());
-        self::assertStringEqualsFile($this->bucketPath('v=1', 'images/gradient.png'), self::fixture('images/gradient.png'));
-        self::assertSame('/images/gradient.png?v=1', $this->origin->getLastRequest()['uri']);
-        self::assertSame(2, $this->origin->countRequestsFor('/images/gradient.png'));
-    }
-
-    public function testPurgeOnlyQueryStringKeysOnThePathWithoutBucket(): void
-    {
-        $response = $this->get('/images/gradient.png?purge=1');
-
-        self::assertSame(200, $response->getStatus());
-        self::assertSame('/images/gradient.png', $this->origin->getLastRequest()['uri']);
-        self::assertFileExists($this->publicPath('images/gradient.png'));
-        self::assertDirectoryDoesNotExist($this->publicPath('_qs'));
-    }
-
-    public function testPurgeClearsBothMarkers(): void
-    {
-        $this->origin->setRule('/images/gradient.png', 404);
-        $this->get('/images/gradient.png');
-        $this->origin->removeRule('/images/gradient.png');
-        self::assertCount(1, $this->negativeMarkers());
-        mkdir($this->publicPath('images'));
-        touch($this->publicPath('images/gradient.png.netfail'));
-
-        $response = $this->get('/images/gradient.png?purge=1');
-
-        self::assertSame(200, $response->getStatus());
-        self::assertSame([], $this->negativeMarkers());
-        self::assertFileDoesNotExist($this->publicPath('images/gradient.png.netfail'));
-    }
-
-    public function testPurgeKeepsSiblingRepresentations(): void
-    {
-        $siblings = $this->createSiblings();
-
-        $this->get('/images/gradient.png?purge=1');
-
-        foreach ($siblings as $sibling) {
-            self::assertFileExists($sibling);
-        }
-    }
-
-    public function testPurgeAllRemovesSiblingRepresentationsAndTheirMarkers(): void
-    {
-        $siblings = $this->createSiblings();
-
-        $this->get('/images/gradient.png?purge_all=1');
-
-        foreach ($siblings as $sibling) {
-            self::assertFileDoesNotExist($sibling);
-        }
-        self::assertFileExists($this->publicPath('images/gradient.css'));
+        self::assertSame(401, $response->getStatus());
+        self::assertSame('Bearer realm="proxy-cdn purge"', $response->getHeader('WWW-Authenticate'));
+        self::assertStringContainsString('PURGE_KEYS', $response->getBody());
+        self::assertStringEqualsFile($this->bucketPath('v=1', 'images/gradient.png'), 'cached');
+        self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
     }
 
     /**
-     * A purge applies to its own bucket only (finding P-16, resolved by
-     * PRX-7): the entries cached for other query strings stay.
+     * The built-in server of PHP answers 501 to the PURGE method before the
+     * proxy runs, so PURGE itself is tested on the kernel
+     * (ProxyKernelTest); Apache and nginx pass it to index.php.
      */
-    public function testPurgeIgnoresQueryStringVariantsP16(): void
+    public function testTheBuiltInServerDoesNotPassPurge(): void
     {
-        $this->get('/images/gradient.png?v=1');
+        $response = $this->send('PURGE', '/images/gradient.png', ['Authorization' => 'Bearer ' . self::SECRET]);
 
-        $this->get('/images/gradient.png?purge_all=1');
-
-        self::assertFileExists($this->bucketPath('v=1', 'images/gradient.png'));
-        self::assertSame('hit', $this->get('/images/gradient.png?v=1')->getHeader('X-Cache-Status'));
+        self::assertSame(501, $response->getStatus());
+        self::assertSame([], $this->origin->getRequests());
     }
 
-    /**
-     * @return list<string>
-     */
-    private function createSiblings(): array
+    protected function configuration(): array
     {
-        mkdir($this->publicPath('images'));
-        $siblings = [];
-        foreach (['webp', 'jpg', 'jpeg', 'gif', 'bmp'] as $extension) {
-            $siblings[] = $this->publicPath('images/gradient.' . $extension);
-            $siblings[] = $this->publicPath('images/gradient.' . $extension . '.netfail');
-        }
-        foreach ($siblings as $sibling) {
-            file_put_contents($sibling, 'sibling');
-        }
-        file_put_contents($this->publicPath('images/gradient.css'), 'not a sibling');
-
-        return $siblings;
+        return array_merge(parent::configuration(), ['PURGE_KEYS' => '"127.0.0.1=' . self::SECRET . '"']);
     }
 }

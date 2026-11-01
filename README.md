@@ -22,7 +22,7 @@ This is a **small, hobbyist-to-small-production** project. It is appropriate for
 - You need **production-grade CDN semantics**: Cloudflare's free tier (Polish for WEBP, cache, WAF, DDoS protection, anycast) does all of this, properly, for zero euros and five minutes of DNS work. Use that instead.
 - You expect **hundreds of requests per second or more**, or traffic spikes from bots/scanners. PHP-FPM worker pools cap concurrency well below what `nginx proxy_cache` or Varnish deliver with a tenth of the memory.
 - You need **horizontal scaling** behind a load balancer. The on-disk cache is per-instance; purges and warm-up do not propagate. Building shared state on top of this project is more work than starting from nginx/Varnish.
-- You need **features this project deliberately does not implement**: Range request handling (partial content), Accept-Encoding negotiation (Brotli vs gzip), conditional requests past what Apache provides, authentication/authorization on purge, size-capped or LRU cache eviction, metrics/observability endpoints, HTTP/2 push, HTTP/3.
+- You need **features this project deliberately does not implement**: Range request handling (partial content), Accept-Encoding negotiation (Brotli vs gzip), conditional requests past what Apache provides, size-capped or LRU cache eviction, metrics/observability endpoints, HTTP/2 push, HTTP/3.
 - You need an **audited security posture**. This repository has no automated test suite and has not undergone a formal security review. The codebase has been manually hardened (atomic writes, circuit breaker, query-string caching, whitelist header mirroring, structured logging) but manual hardening is not the same as a track record in the wild.
 
 **Real value-add of this project over the alternatives:**
@@ -60,7 +60,7 @@ The one thing this project does that is genuinely cumbersome to replicate with o
     2. Compute the cache location.
         - Empty QS: `public/<path>`.
         - Non-empty QS: `public/_qs/<sha256_prefix>/<path>`.
-    3. Apply `purge` / `purge_all` if present.
+    3. Answer an authenticated `PURGE` (see *Cache purge*); refuse the anonymous `?purge=` of 2.x with a 401.
     4. Short-circuit to 404 or 503 if a negative-cache marker is still warm.
     5. Serve from disk if the cache file exists (content-negotiated webp when applicable).
     6. Otherwise, fetch the origin over HTTPS with cURL, distinguish a real 404 from a transient network failure, persist the bytes atomically, optionally convert to webp, and stream the response.
@@ -102,6 +102,7 @@ Every setting is read from the environment first and from `.env` second: a varia
 | `UPSTREAM_FOLLOW_REDIRECTS`       | bool      | `false`                   | If `true`, cURL follows 30x responses. Default off: a compromised origin that redirects to an internal host would turn the proxy into an SSRF vector.           |
 | `QUERY_STRING_ALLOWLIST`          | CSV       | `v,ver,version`           | Query parameters that key the cache and reach the origin, by decoded name and letter case; `*` keeps every parameter (as 2.x did), `none` keeps none.          |
 | `QUERY_STRING_MODE`               | enum      | `ignore`                  | `ignore` drops the other parameters from the cache key and the origin request; `reject` answers 400 `Query parameter not allowed`.                              |
+| `PURGE_KEYS`                      | CSV       | *empty*                   | `scope=secret` pairs that authenticate a `PURGE` (see *Cache purge*); the scope is the origin host name or `*`. Empty disables purging.                          |
 | `TRUSTED_PROXIES`                 | CSV       | *empty*                   | IPs and CIDR blocks (IPv4, IPv6) of the reverse proxies whose `X-Forwarded-Proto` and `X-Forwarded-For` are believed; same key and syntax as the conversion API. Empty trusts nobody. |
 | `IMAGE_CONVERSION_MODE`           | enum      | `none`                    | One of `native`, `api`, `none`.                                                                                                                                 |
 | `WEBP_API_SERVER`                 | URL       | `null`                    | Only used when mode = `api`.                                                                                                                                    |
@@ -130,29 +131,33 @@ Smoke-test: `cwebp input.jpg -o output.webp`.
 
 ## Cache purge
 
-Two query-string flags trigger a cache purge for the current resource. Both flags accept `1` and `true`, case-insensitive.
+A purge is a `PURGE` request for the asset URL that proves a purge key of the origin. The keys are set in `PURGE_KEYS`, as `scope=secret` pairs separated by commas: the scope is the host name of the origin (the host of `SOURCE_ORIGIN`) or `*` for every origin, and the secret has at least 16 printable ASCII characters without spaces or commas. With no key, every purge is refused.
 
-| Query string   | Effect                                                                                                                                                                                     |
-|----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `?purge=1`     | Deletes the cached file for this exact URL, plus both its negative-cache markers (`.404`, `.netfail`), then re-fetches from the origin.                                                    |
-| `?purge_all=1` | Same as `purge=1`, plus every **sibling representation** sharing the same basename: `.webp` conversion, raster originals (`.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`), and all their markers. |
-
-Purge applies to the exact cache bucket: a purge on `/hero.jpg?v=2` only affects the `_qs/<hash>/` bucket for that query string, not the QS-less `public/hero.jpg` (or any other bucket).
-
-Examples:
-
-``` bash
-# Re-fetch /images/hero.jpg only, keep /images/hero.webp in place
-curl -I 'https://static.mycdn.com/images/hero.jpg?purge=1'
-
-# Rebuild everything under /images/hero.* (raster + webp) in the QS-less bucket
-curl -I 'https://static.mycdn.com/images/hero.jpg?purge_all=1'
-
-# Purge the ?v=42 bucket only
-curl -I 'https://static.mycdn.com/images/hero.jpg?v=42&purge_all=1'
+``` dotenv
+PURGE_KEYS = "origin.example.com=0f6c2e7d9a1b4c58e3f2a7d6b9c0e1f2"
 ```
 
-Purge is **public** (anyone can invoke it). If that is unacceptable, protect the CDN with a front-facing auth proxy, or add a Basic Auth gate in `.htaccess` limited to requests carrying a `purge=` query string.
+A request proves a key in one of two ways:
+
+- **Bearer**: `Authorization: Bearer <secret>`. Use it over HTTPS only: the secret travels with the request.
+- **HMAC**: `X-Purge-Timestamp: <unix seconds>` and `X-Purge-Signature: <hex HMAC-SHA256>` of `PURGE\n<host>\n<path and query>\n<timestamp>` under the secret, where `<host>` is the `Host` header in lower case (with its port, when not the default one) and `<path and query>` the request target as sent. The timestamp must be within 300 seconds of the proxy clock; within that window a signature can be replayed, which only repeats the same purge.
+
+``` bash
+# Bearer
+curl -X PURGE -H 'Authorization: Bearer 0f6c2e7d9a1b4c58e3f2a7d6b9c0e1f2' \
+    'https://static.mycdn.com/images/hero.jpg?v=42'
+
+# HMAC
+ts=$(date +%s)
+sig=$(printf 'PURGE\nstatic.mycdn.com\n/images/hero.jpg?v=42\n%s' "$ts" |
+    openssl dgst -sha256 -hmac '0f6c2e7d9a1b4c58e3f2a7d6b9c0e1f2' -r | cut -d' ' -f1)
+curl -X PURGE -H "X-Purge-Timestamp: $ts" -H "X-Purge-Signature: $sig" \
+    'https://static.mycdn.com/images/hero.jpg?v=42'
+```
+
+A purge removes the entry of that exact URL (the `_qs/<hash>/` bucket of its allowlisted query string, or the path alone), the `.webp` variant converted from a raster entry, and what the negative cache and the circuit breaker remember for it. It does not fetch the asset again: the next request does. The answer is `200` with `{"purged":true,"path":"/images/hero.jpg","query":"v=42","removed":2}`; a request without a valid key gets `401` with `WWW-Authenticate: Bearer realm="proxy-cdn purge"`. Every purge is logged at `notice` level with the client address (read through `TRUSTED_PROXIES`); every refusal at `warning` level.
+
+The anonymous `?purge=1` and `?purge_all=1` of 2.x were removed: anyone could empty the cache and send the load to the origin. Such a request now gets a `401` whose body explains the `PURGE` request, and purges nothing. `purge_all` also removed the files of other URLs that share the base name (`hero.png` for `hero.jpg`); purge those by their own URL.
 
 ## Query string caching
 
@@ -194,7 +199,7 @@ Rationale:
 - A real `404` is a persistent signal. 5 minutes of suppression prevents a single missing favicon requested a million times from hammering the origin a million times.
 - A network blip is a transient signal. 30 seconds of suppression is a tiny circuit breaker that protects the PHP worker pool (every upstream fetch uses one) without permanently hiding assets that are actually fine.
 
-On a successful re-fetch both markers are dropped. A `purge=1` also clears them.
+On a successful re-fetch both markers are dropped. A `PURGE` also clears them.
 
 ## Content negotiation (Accept: image/webp)
 
@@ -217,7 +222,7 @@ Log format: one JSON object per line (JSON Lines), with the fields `timestamp` (
 Levels:
 
 - **error** - upstream fetch failures (with `reason`, `response_code`, and for a transport failure `transport_error_code` and `transport_error`: the libcurl error number, which the stream transport reports too for the same failure, and the message), conversion failures, an invalid configuration.
-- **info** - purges, upstream 404s. Only written when `DEBUG=true`.
+- **info** - upstream 404s. Only written when `DEBUG=true`.
 
 An exception in the context is written as an object (`class`, `message`, `code`, `file`, `previous`, and `error_code` when the exception has a `getErrorCode()` method). When the `exception` of an entry comes from the conversion library, its error code is also copied to the context as `conversion_error_code`, the key the conversion API uses for the same codes.
 
@@ -304,8 +309,8 @@ Read these before putting the proxy on the public Internet.
 | Symptom                                     | Likely cause                                                                                                                                                                              |
 |---------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `cwebp binary not available in PATH`        | `IMAGE_CONVERSION_MODE=native` but `cwebp` is missing. Install it or switch to `api` / `none`.                                                                                            |
-| 404s for assets that do exist on the origin | A negative-cache marker in `var/negative/` is still warm. Wait `NEGATIVE_CACHE_TTL` seconds or hit the URL with `?purge=1`.                                                                                          |
-| 503 with `Retry-After: 30`                  | A `.netfail` marker is warm (origin was unreachable recently). Either wait or re-check the origin and hit with `?purge=1`.                                                                |
+| 404s for assets that do exist on the origin | A negative-cache marker in `var/negative/` is still warm. Wait `NEGATIVE_CACHE_TTL` seconds or send a `PURGE` for the URL.                                                                                          |
+| 503 with `Retry-After: 30`                  | A `.netfail` marker is warm (origin was unreachable recently). Either wait or re-check the origin and send a `PURGE` for the URL.                                                                |
 | 500 `Image conversion failed`               | Origin returned something cURL accepted as 200 but `cwebp` refused. Inspect `public/<path>` and `logs/proxy.log`.                                                                         |
 | All responses HTTP (no HTTPS redirect)      | `mod_rewrite` off or the VirtualHost is behind a TLS-terminating proxy that does not forward `X-Forwarded-Proto: https`.                                                                  |
 | QS-keyed content always a cache miss        | QS parameters contain unique tokens per request (e.g. cache-breakers with timestamps). That is the expected behavior but it defeats the cache. Canonicalize on the origin before linking. |

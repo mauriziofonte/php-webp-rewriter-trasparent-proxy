@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Unit\Cache;
 
+use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
@@ -32,6 +33,11 @@ final class PurgerTest extends TestCase
      */
     private $purger;
 
+    /**
+     * @var CacheKeyResolver
+     */
+    private $resolver;
+
     protected function set_up(): void
     {
         parent::set_up();
@@ -39,6 +45,7 @@ final class PurgerTest extends TestCase
         $storage = new FilesystemStorage();
         $this->negativeCache = new NegativeCache($storage, $this->directory->path('state'), 300);
         $this->purger = new Purger($storage, $this->negativeCache);
+        $this->resolver = new CacheKeyResolver($this->directory->path('public'));
     }
 
     protected function tear_down(): void
@@ -47,59 +54,39 @@ final class PurgerTest extends TestCase
         parent::tear_down();
     }
 
-    public function testPurgeRemovesTheEntryAndItsNotFoundMarker(): void
+    public function testPurgeRemovesTheEntryAndItsNegativeMarker(): void
     {
-        $file = $this->directory->write('img/a.png', 'png');
+        $location = $this->resolver->resolve('/img/a.css', '');
+        $file = $this->directory->write('public/img/a.css', 'css');
+        $this->directory->write('public/img/a.webp', 'an unrelated asset');
         $this->negativeCache->remember($file);
-        $this->directory->write('img/a.png.netfail', '');
-        $this->directory->write('img/a.webp', 'webp');
-        $this->negativeCache->remember($this->directory->path('img/a.webp'));
 
-        $purged = $this->purger->purge($file, false);
-
-        self::assertSame([$file], $purged);
-        self::assertSame(['.', '..', 'a.png.netfail', 'a.webp'], scandir($this->directory->path('img')));
+        self::assertSame([$file], $this->purger->purge($location, false));
+        self::assertSame(['.', '..', 'a.webp'], scandir($this->directory->path('public/img')));
         self::assertNull($this->negativeCache->lookup($file));
-        self::assertSame(404, $this->negativeCache->lookup($this->directory->path('img/a.webp')));
     }
 
-    public function testAggressivePurgeRemovesTheSiblingsToo(): void
+    public function testPurgeOfARasterRemovesItsWebpVariant(): void
     {
-        $file = $this->directory->write('img/a.png', 'png');
-        foreach (['webp', 'jpg', 'jpeg', 'gif', 'bmp'] as $extension) {
-            $this->directory->write('img/a.' . $extension, $extension);
-            $this->negativeCache->remember($this->directory->path('img/a.' . $extension));
-        }
-        $this->directory->write('img/a.css', 'kept');
-        $this->directory->write('img/b.webp', 'kept');
+        $location = $this->resolver->resolve('/img/a.png', 'v=1');
+        $this->directory->write(substr($location->getFile(), strlen($this->directory->path()) + 1), 'png');
+        $this->directory->write(substr($location->getWebpFile(), strlen($this->directory->path()) + 1), 'webp');
+        $other = $this->directory->write('public/img/a.jpg', 'another URL');
 
-        $purged = $this->purger->purge($file, true);
+        $removed = $this->purger->purge($location, true);
 
-        $siblings = [];
-        foreach (['webp', 'jpg', 'jpeg', 'png', 'gif', 'bmp'] as $extension) {
-            $siblings[] = $this->directory->path('img/a.' . $extension);
-        }
-        self::assertSame(array_merge([$file], array_values(array_diff($siblings, [$file]))), $purged);
-        self::assertSame(['.', '..', 'a.css', 'b.webp'], scandir($this->directory->path('img')));
-        foreach ($siblings as $sibling) {
-            self::assertNull($this->negativeCache->lookup($sibling));
-        }
+        self::assertSame([$location->getFile(), $location->getWebpFile()], $removed);
+        self::assertFileDoesNotExist($location->getWebpFile());
+        self::assertFileExists($other);
     }
 
-    public function testAggressivePurgeOfANameWithoutBaseHasNoSiblings(): void
+    public function testPurgeOfAMissingEntryRemovesNothing(): void
     {
-        $file = $this->directory->write('img/.png', 'png');
-        $this->directory->write('img/.webp', 'kept');
+        $location = $this->resolver->resolve('/img/missing.png', '');
+        $this->negativeCache->remember($location->getFile());
 
-        self::assertSame([$file], $this->purger->purge($file, true));
-        self::assertFileExists($this->directory->path('img/.webp'));
-    }
-
-    public function testPurgeOfAMissingEntryDoesNothing(): void
-    {
-        $file = $this->directory->path('img/missing.png');
-
-        self::assertSame([$file], $this->purger->purge($file, false));
-        self::assertDirectoryDoesNotExist($this->directory->path('img'));
+        self::assertSame([], $this->purger->purge($location, true));
+        self::assertNull($this->negativeCache->lookup($location->getFile()));
+        self::assertDirectoryDoesNotExist($this->directory->path('public/img'));
     }
 }

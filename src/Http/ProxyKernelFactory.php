@@ -14,6 +14,7 @@ use Mfonte\ProxyCdn\Image\WebpConverter;
 use Mfonte\ProxyCdn\Origin\MarkerFileCircuitBreaker;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Security\PathSanitizer;
+use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -49,6 +50,7 @@ final class ProxyKernelFactory
             new CacheKeyResolver($publicDirectory),
             QueryStringPolicy::fromConfig($config),
             new TrustedProxies($config->getTrustedProxies()),
+            PurgeAuthenticator::fromConfig($config),
             $storage,
             $negativeCache,
             new MarkerFileCircuitBreaker($storage, $config->getNetworkErrorTtl()),

@@ -120,6 +120,11 @@ final class Config
     private $trustedProxies;
 
     /**
+     * @var list<string>
+     */
+    private $purgeKeys;
+
+    /**
      * @var string
      */
     private $imageConversionMode;
@@ -168,6 +173,7 @@ final class Config
         $config->queryStringAllowlist = self::stringList($values, 'QUERY_STRING_ALLOWLIST', true);
         $config->queryStringMode = self::string($values, 'QUERY_STRING_MODE');
         $config->trustedProxies = self::rangeList($values, 'TRUSTED_PROXIES');
+        $config->purgeKeys = self::stringList($values, 'PURGE_KEYS', true);
         $config->imageConversionMode = self::string($values, 'IMAGE_CONVERSION_MODE');
         $config->webpApiServer = self::optionalString($values, 'WEBP_API_SERVER');
         $config->webpApiKey = self::optionalString($values, 'WEBP_API_KEY');
@@ -209,6 +215,7 @@ final class Config
             'QUERY_STRING_ALLOWLIST' => $this->queryStringAllowlist,
             'QUERY_STRING_MODE' => $this->queryStringMode,
             'TRUSTED_PROXIES' => array_map('strval', $this->trustedProxies),
+            'PURGE_KEYS' => $this->purgeKeys,
             'IMAGE_CONVERSION_MODE' => $this->imageConversionMode,
             'WEBP_API_SERVER' => $this->webpApiServer,
             'WEBP_API_KEY' => $this->webpApiKey,
@@ -390,6 +397,17 @@ final class Config
     public function getTrustedProxies(): array
     {
         return $this->trustedProxies;
+    }
+
+    /**
+     * PURGE_KEYS: the "scope=secret" entries that authenticate a PURGE
+     * (see PurgeAuthenticator); none disables purging.
+     *
+     * @return list<string>
+     */
+    public function getPurgeKeys(): array
+    {
+        return $this->purgeKeys;
     }
 
     /**

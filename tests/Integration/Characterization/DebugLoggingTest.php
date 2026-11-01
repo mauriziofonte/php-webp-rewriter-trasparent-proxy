@@ -8,8 +8,8 @@ use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * logs/proxy.log with DEBUG enabled: informational events (purges, origin
- * 404s) are logged next to the errors. Only the presence of the events is
+ * logs/proxy.log with DEBUG enabled: informational events (origin 404s)
+ * are logged next to the errors. Only the presence of the events is
  * pinned; their format is the logger's.
  *
  * @coversNothing
@@ -28,15 +28,12 @@ final class DebugLoggingTest extends CharacterizationTestCase
     public function testInformationalEventsAreLogged(): void
     {
         $this->get('/images/missing.png');
-        $this->get('/images/gradient.png?purge=1');
         $this->origin->setRule('/js/app.js', 500);
         $this->get('/js/app.js');
 
         $log = $this->log();
         self::assertStringContainsString('upstream 404', $log);
         self::assertStringContainsString($this->origin->getBaseUrl() . '/images/missing.png', $log);
-        self::assertStringContainsString('purge', $log);
-        self::assertStringContainsString($this->publicPath('images/gradient.png'), $log);
         self::assertStringContainsString('upstream non-200', $log);
         self::assertStringContainsString($this->origin->getBaseUrl() . '/js/app.js', $log);
     }

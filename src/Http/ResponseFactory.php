@@ -43,6 +43,14 @@ final class ResponseFactory
     /** The query string holds a parameter outside QUERY_STRING_ALLOWLIST, in "reject" mode. */
     public const ERROR_QUERY_NOT_ALLOWED = 7;
 
+    /** A purge without a valid purge key: PURGE, or the "?purge=1" of 2.x (risk L-7). */
+    public const ERROR_PURGE_UNAUTHORIZED = 8;
+
+    /**
+     * The realm of the WWW-Authenticate challenge of a refused purge.
+     */
+    public const PURGE_REALM = 'proxy-cdn purge';
+
     /**
      * The methods the proxy answers (finding P-19).
      */
@@ -71,6 +79,7 @@ final class ResponseFactory
     private const STATUSES = [
         self::ERROR_REFUSED => 400,
         self::ERROR_QUERY_NOT_ALLOWED => 400,
+        self::ERROR_PURGE_UNAUTHORIZED => 401,
         self::ERROR_NOT_CACHEABLE => 404,
         self::ERROR_ORIGIN_NOT_FOUND => 404,
         self::ERROR_METHOD_NOT_ALLOWED => 405,
@@ -93,6 +102,16 @@ final class ResponseFactory
         self::ERROR_UPSTREAM_UNAVAILABLE => 'Upstream temporarily unavailable',
         self::ERROR_METHOD_NOT_ALLOWED => 'Method not allowed',
         self::ERROR_QUERY_NOT_ALLOWED => 'Query parameter not allowed',
+        self::ERROR_PURGE_UNAUTHORIZED => 'Purge requires a purge key',
+    ];
+
+    /**
+     * A line of guidance after the Ray ID of some errors.
+     */
+    private const GUIDANCE = [
+        self::ERROR_PURGE_UNAUTHORIZED => 'The anonymous ?purge=1 and ?purge_all=1 of 2.x were removed in 3.0. '
+            . 'Send "PURGE <url>" with "Authorization: Bearer <key>", or with the X-Purge-Timestamp and '
+            . 'X-Purge-Signature headers, where the key is one of PURGE_KEYS for this origin (see the Purge section of the README).',
     ];
 
     /**
@@ -182,9 +201,27 @@ final class ResponseFactory
             $headers['Retry-After'] = (string) $this->networkErrorTtl;
         } elseif ($error === self::ERROR_METHOD_NOT_ALLOWED) {
             $headers['Allow'] = self::ALLOWED_METHODS;
+        } elseif ($error === self::ERROR_PURGE_UNAUTHORIZED) {
+            $headers['WWW-Authenticate'] = 'Bearer realm="' . self::PURGE_REALM . '"';
         }
 
         return new Response(self::errorBody($path, $error), self::statusOf($error), $headers);
+    }
+
+    /**
+     * The answer to a purge that was carried out: a JSON document with the
+     * decoded path, the canonical query string that keys the entry, and how
+     * many files were removed (0 when nothing was cached).
+     */
+    public function purged(string $path, string $canonicalQuery, int $removed): Response
+    {
+        $body = json_encode(['purged' => true, 'path' => $path, 'query' => $canonicalQuery, 'removed' => $removed], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return new Response(
+            ($body === false ? '{"purged":true}' : $body) . "\n",
+            200,
+            ['Content-Type' => 'application/json', 'Cache-Control' => 'no-store']
+        );
     }
 
     /**
@@ -330,6 +367,8 @@ final class ResponseFactory
         // together got the same "random" Ray ID. 16 random bytes keep the 32 hexadecimal digits of the format.
         $rayId = $path === null ? bin2hex(random_bytes(16)) : md5($path);
 
-        return "The request could not be processed.\nError code: " . $message . ".\nRay ID: " . $rayId;
+        $body = "The request could not be processed.\nError code: " . $message . ".\nRay ID: " . $rayId;
+
+        return isset(self::GUIDANCE[$error]) ? $body . "\n" . self::GUIDANCE[$error] : $body;
     }
 }

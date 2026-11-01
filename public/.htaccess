@@ -66,9 +66,12 @@ ErrorDocument 403 "Access Forbidden"
     # MUST go through index.php so content negotiation stays applied.
     RewriteRule ^(.*/)?_qs(/.*)?$       - [R=403,L]
 
-    # ALWAYS route to index.php when the caller asks for a cache purge.
-    RewriteCond %{QUERY_STRING} (?:^|&)purge(?:_all)?=(?:1|true)(?:&|$)  [NC]
-    RewriteRule . index.php [L,QSA,E=REMOTE_USER:%{HTTP:Authorization}]
+    # PURGE is answered by index.php, which checks the purge key (PURGE_KEYS);
+    # the Authorization header reaches PHP-FPM and CGI through the environment.
+    # The anonymous ?purge=1 of 2.x reaches index.php through the query-string
+    # rule below and is answered 401.
+    RewriteCond %{REQUEST_METHOD} =PURGE
+    RewriteRule . index.php [L,QSA,E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
     # ALWAYS route to index.php when the request has a non-empty query
     # string. index.php will canonicalize the QS, compute the per-QS cache
@@ -96,7 +99,7 @@ ErrorDocument 403 "Access Forbidden"
 <IfModule mod_headers.c>
     # CORS: static assets are fetched cross-origin from the main site.
     Header set Access-Control-Allow-Origin  "*"
-    Header set Access-Control-Allow-Methods "GET, OPTIONS"
+    Header set Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
     Header set Access-Control-Max-Age       "86400"
 
     # Strip server fingerprinting headers where possible.
