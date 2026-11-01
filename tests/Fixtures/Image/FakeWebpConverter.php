@@ -18,13 +18,16 @@ final class FakeWebpConverter implements WebpConverter
      */
     private $sources = [];
 
-    public function convert(string $sourceFile): WebpConversion
+    public function convert(string $sourceFile, string $targetFile): WebpConversion
     {
         $this->sources[] = $sourceFile;
         if (strpos(basename($sourceFile), 'broken') !== false) {
             return WebpConversion::failed('Fake conversion failed');
         }
-        $target = dirname($sourceFile) . '/' . pathinfo($sourceFile, PATHINFO_FILENAME) . '.webp';
+        $target = $targetFile;
+        if (!is_dir(dirname($target))) {
+            mkdir(dirname($target), 0777, true);
+        }
         file_put_contents($target, 'FAKE-WEBP:' . (string) file_get_contents($sourceFile));
 
         return WebpConversion::converted($target);

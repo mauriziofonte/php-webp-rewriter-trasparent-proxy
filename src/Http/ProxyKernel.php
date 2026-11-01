@@ -309,7 +309,7 @@ final class ProxyKernel
         // string the policy ignored, finding P-5).
         if ($this->storage->isFile($file)) {
             if ($isRaster && $this->converter !== null && !$this->storage->isFile($webpFile)) {
-                $this->converter->convert($file);
+                $this->converter->convert($file, $webpFile);
                 if ($acceptsWebp && $this->storage->isFile($webpFile)) {
                     return $this->files->respond($webpFile, 'webp');
                 }
@@ -347,7 +347,7 @@ final class ProxyKernel
 
         $servedWebp = false;
         if ($isRaster && $this->converter !== null) {
-            $conversion = $this->converter->convert($file);
+            $conversion = $this->converter->convert($file, $webpFile);
             $convertedFile = $conversion->getPath();
             if ($convertedFile === null) {
                 return $this->responses->internalError('Image conversion failed: ' . (string) $conversion->getError());

@@ -56,7 +56,7 @@ final class ConversionApiConverterTest extends TestCase
     {
         $source = $this->directory->write('cache/images/logo.png', 'PNG');
 
-        $conversion = $this->converter()->convert($source);
+        $conversion = $this->converter()->convert($source, self::target($source));
 
         $webp = $this->directory->path('cache/images/logo.webp');
         self::assertTrue($conversion->isConverted());
@@ -69,7 +69,7 @@ final class ConversionApiConverterTest extends TestCase
     {
         $source = $this->directory->write('cache/logo.png', 'PNG');
 
-        $this->converter()->convert($source);
+        $this->converter()->convert($source, self::target($source));
 
         $request = $this->api->getLastRequest();
         self::assertSame('POST', $request['method']);
@@ -85,7 +85,7 @@ final class ConversionApiConverterTest extends TestCase
         $source = $this->directory->write('cache/logo.png', 'PNG');
         $this->api->setRule('/__api/convert', 422, null, 'Unsupported image');
 
-        $conversion = $this->converter()->convert($source);
+        $conversion = $this->converter()->convert($source, self::target($source));
 
         self::assertSame('Unsupported image', $conversion->getError());
         self::assertSame(
@@ -99,7 +99,7 @@ final class ConversionApiConverterTest extends TestCase
         $source = $this->directory->write('cache/logo.png', 'PNG');
         $this->api->setRule('/__api/convert', 502);
 
-        $conversion = $this->converter()->convert($source);
+        $conversion = $this->converter()->convert($source, self::target($source));
 
         self::assertSame('Unknown error with HTTP_RESPONSE_CODE="502"', $conversion->getError());
     }
@@ -114,7 +114,7 @@ final class ConversionApiConverterTest extends TestCase
 
         $converter = new ConversionApiConverter('http://' . $address . '/__api/convert', 'secret-key', new FilesystemStorage(), $this->logger);
 
-        self::assertSame('Unknown error with HTTP_RESPONSE_CODE="0"', $converter->convert($source)->getError());
+        self::assertSame('Unknown error with HTTP_RESPONSE_CODE="0"', $converter->convert($source, self::target($source))->getError());
     }
 
     /**
@@ -126,7 +126,7 @@ final class ConversionApiConverterTest extends TestCase
         $source = $this->directory->write('cache/logo.png', 'PNG');
         $this->api->setRule('/__api/convert', 200, null, $body);
 
-        $conversion = $this->converter()->convert($source);
+        $conversion = $this->converter()->convert($source, self::target($source));
 
         self::assertSame($error, $conversion->getError());
         self::assertFileDoesNotExist($this->directory->path('cache/logo.webp'));
@@ -151,12 +151,12 @@ final class ConversionApiConverterTest extends TestCase
         $source = $this->directory->write('cache/logo.png', 'PNG');
         $this->directory->write('cache/logo.webp/occupied', 'a directory where the sibling goes');
 
-        self::assertSame('Atomic write failed', $this->converter()->convert($source)->getError());
+        self::assertSame('Atomic write failed', $this->converter()->convert($source, self::target($source))->getError());
     }
 
     public function testAMissingSourceFails(): void
     {
-        self::assertSame('Source file does not exist', $this->converter()->convert($this->directory->path('missing.png'))->getError());
+        self::assertSame('Source file does not exist', $this->converter()->convert($this->directory->path('missing.png'), self::target($this->directory->path('missing.png')))->getError());
         self::assertSame([], $this->api->getRequests());
     }
 
@@ -165,11 +165,20 @@ final class ConversionApiConverterTest extends TestCase
         $source = $this->directory->write('cache/logo.png', 'PNG');
         $converter = new ConversionApiConverter(null, 'secret-key', new FilesystemStorage(), $this->logger);
 
-        self::assertSame('WEBP_API_SERVER or WEBP_API_KEY not defined', $converter->convert($source)->getError());
+        self::assertSame('WEBP_API_SERVER or WEBP_API_KEY not defined', $converter->convert($source, self::target($source))->getError());
     }
 
     private function converter(): ConversionApiConverter
     {
         return new ConversionApiConverter($this->api->getBaseUrl() . '/__api/convert', 'secret-key', new FilesystemStorage(), $this->logger);
+    }
+
+    /**
+     * The path the kernel gives the variant of $source in 2.x layout terms:
+     * its directory and name with ".webp".
+     */
+    private static function target(string $source): string
+    {
+        return dirname($source) . '/' . pathinfo($source, PATHINFO_FILENAME) . '.webp';
     }
 }

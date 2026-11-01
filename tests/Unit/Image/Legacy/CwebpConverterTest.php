@@ -60,7 +60,7 @@ final class CwebpConverterTest extends TestCase
     {
         $source = $this->directory->write('cache/images/logo.png', 'PNG');
 
-        $conversion = (new CwebpConverter($this->logger, $this->binary))->convert($source);
+        $conversion = (new CwebpConverter($this->logger, $this->binary))->convert($source, self::target($source));
 
         $webp = $this->directory->path('cache/images/logo.webp');
         self::assertTrue($conversion->isConverted());
@@ -75,7 +75,7 @@ final class CwebpConverterTest extends TestCase
     {
         $source = $this->directory->write('cache/my file.png', 'PNG');
 
-        (new CwebpConverter($this->logger, $this->binary))->convert($source);
+        (new CwebpConverter($this->logger, $this->binary))->convert($source, self::target($source));
 
         $calls = (string) file_get_contents($this->directory->path('bin/calls.log'));
         self::assertMatchesRegularExpression(
@@ -88,14 +88,14 @@ final class CwebpConverterTest extends TestCase
     {
         $source = $this->directory->write('cache/a.b.jpeg', 'JPEG');
 
-        $conversion = (new CwebpConverter($this->logger, $this->binary))->convert($source);
+        $conversion = (new CwebpConverter($this->logger, $this->binary))->convert($source, self::target($source));
 
         self::assertSame($this->directory->path('cache/a.b.webp'), $conversion->getPath());
     }
 
     public function testAMissingSourceFails(): void
     {
-        $conversion = (new CwebpConverter($this->logger, $this->binary))->convert($this->directory->path('missing.png'));
+        $conversion = (new CwebpConverter($this->logger, $this->binary))->convert($this->directory->path('missing.png'), self::target($this->directory->path('missing.png')));
 
         self::assertSame('Source file does not exist', $conversion->getError());
         self::assertSame([], $this->logger->getRecords());
@@ -105,7 +105,7 @@ final class CwebpConverterTest extends TestCase
     {
         $source = $this->directory->write('cache/logo.png', 'PNG');
 
-        $conversion = (new CwebpConverter($this->logger, $this->directory->path('bin/missing-cwebp')))->convert($source);
+        $conversion = (new CwebpConverter($this->logger, $this->directory->path('bin/missing-cwebp')))->convert($source, self::target($source));
 
         self::assertFalse($conversion->isConverted());
         self::assertSame('cwebp binary not available in PATH', $conversion->getError());
@@ -116,7 +116,7 @@ final class CwebpConverterTest extends TestCase
     {
         $source = $this->directory->write('cache/broken.png', 'PNG');
 
-        $conversion = (new CwebpConverter($this->logger, $this->binary))->convert($source);
+        $conversion = (new CwebpConverter($this->logger, $this->binary))->convert($source, self::target($source));
 
         self::assertSame('Conversion failed: output file not created', $conversion->getError());
         self::assertFileDoesNotExist($this->directory->path('cache/broken.webp'));
@@ -130,10 +130,19 @@ final class CwebpConverterTest extends TestCase
         $source = $this->directory->write('cache/logo.png', 'PNG');
         $this->directory->write('cache/logo.webp/occupied', 'a directory where the sibling goes');
 
-        $conversion = (new CwebpConverter($this->logger, $this->binary))->convert($source);
+        $conversion = (new CwebpConverter($this->logger, $this->binary))->convert($source, self::target($source));
 
         self::assertSame('Conversion failed: atomic rename failed', $conversion->getError());
         self::assertSame([], glob($this->directory->path('cache/*.tmp.*')));
         self::assertCount(1, $this->logger->recordsWithMessage('cwebp rename failed'));
+    }
+
+    /**
+     * The path the kernel gives the variant of $source in 2.x layout terms:
+     * its directory and name with ".webp".
+     */
+    private static function target(string $source): string
+    {
+        return dirname($source) . '/' . pathinfo($source, PATHINFO_FILENAME) . '.webp';
     }
 }

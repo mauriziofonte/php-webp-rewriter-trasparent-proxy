@@ -56,7 +56,7 @@ final class ConversionApiConverter implements WebpConverter
         $this->logger = $logger;
     }
 
-    public function convert(string $sourceFile): WebpConversion
+    public function convert(string $sourceFile, string $targetFile): WebpConversion
     {
         if (!is_file($sourceFile)) {
             return WebpConversion::failed('Source file does not exist');
@@ -82,12 +82,11 @@ final class ConversionApiConverter implements WebpConverter
             return WebpConversion::failed('Base64 decode failed');
         }
 
-        $outputFile = pathinfo($sourceFile, PATHINFO_DIRNAME) . DIRECTORY_SEPARATOR . pathinfo($sourceFile, PATHINFO_FILENAME) . '.webp';
-        if (!$this->storage->write($outputFile, $webp)) {
+        if (!$this->storage->write($targetFile, $webp)) {
             return WebpConversion::failed('Atomic write failed');
         }
 
-        return WebpConversion::converted($outputFile);
+        return WebpConversion::converted($targetFile);
     }
 
     /**
