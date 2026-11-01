@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Unit\Http;
 
-use Mfonte\ProxyCdn\Http\IpRange;
 use Mfonte\ProxyCdn\Http\TrustedProxies;
+use Mfonte\ProxyCdn\Net\IpRange;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\HttpFoundation\Request;

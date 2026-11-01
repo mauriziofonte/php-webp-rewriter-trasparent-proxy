@@ -8,8 +8,9 @@ use Mfonte\ProxyCdn\Config\Config;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Builds the responses of the proxy that do not come from a cache file, with
- * the status codes, headers and bodies of 2.x.
+ * Builds every response of the proxy: the misses, the hits served by PHP,
+ * the preflights, redirects and purges, and the errors, whose bodies keep
+ * the format of 2.x while their status codes follow finding P-21.
  *
  * The responses are returned, never sent: the caller (the front controller
  * or a host framework) sends them.

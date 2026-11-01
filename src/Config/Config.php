@@ -7,7 +7,7 @@ namespace Mfonte\ProxyCdn\Config;
 use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
-use Mfonte\ProxyCdn\Http\IpRange;
+use Mfonte\ProxyCdn\Net\IpRange;
 
 /**
  * The proxy configuration, immutable and already validated.

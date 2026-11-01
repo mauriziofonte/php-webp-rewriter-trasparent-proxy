@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Http;
 
+use Mfonte\ProxyCdn\Net\IpRange;
 use Symfony\Component\HttpFoundation\Request;
 
 /**
@@ -19,7 +20,7 @@ use Symfony\Component\HttpFoundation\Request;
  * Request::getClientIp(), which depend on it, are not used here.
  *
  * Mirrored from the conversion API (src/Http/TrustedProxies.php, with
- * its tests); change both together.
+ * its tests); change both together. Its IpRange is Net\IpRange here.
  *
  * Immutable.
  */

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Mfonte\ProxyCdn\Http;
+namespace Mfonte\ProxyCdn\Net;
 
 use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
 
@@ -12,7 +12,8 @@ use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
  *
  * Mirrored from the conversion API (src/Http/IpRange.php, with its
  * tests), so that TRUSTED_PROXIES has one syntax across the two
- * services; change both together.
+ * services; change both together. It lives in Net\ here because the
+ * configuration and the origin client use it too, not only Http\.
  *
  * Addresses are compared in their binary form, so every textual form of an
  * IPv6 address matches. An IPv4-mapped IPv6 address ("::ffff:192.0.2.10",

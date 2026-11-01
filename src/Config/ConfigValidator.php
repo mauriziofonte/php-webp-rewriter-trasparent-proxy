@@ -6,7 +6,7 @@ namespace Mfonte\ProxyCdn\Config;
 
 use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
-use Mfonte\ProxyCdn\Http\IpRange;
+use Mfonte\ProxyCdn\Net\IpRange;
 use Mfonte\ProxyCdn\Origin\HttpClientOptions;
 use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 

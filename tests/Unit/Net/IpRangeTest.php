@@ -2,16 +2,16 @@
 
 declare(strict_types=1);
 
-namespace Mfonte\ProxyCdn\Tests\Unit\Http;
+namespace Mfonte\ProxyCdn\Tests\Unit\Net;
 
 use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
-use Mfonte\ProxyCdn\Http\IpRange;
+use Mfonte\ProxyCdn\Net\IpRange;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
- * @covers \Mfonte\ProxyCdn\Http\IpRange
+ * @covers \Mfonte\ProxyCdn\Net\IpRange
  */
 #[CoversClass(IpRange::class)]
 final class IpRangeTest extends TestCase

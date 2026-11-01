@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Origin;
 
-use Mfonte\ProxyCdn\Http\IpRange;
+use Mfonte\ProxyCdn\Net\IpRange;
 
 /**
  * Keeps followed redirects away from private networks (SSRF): a redirect
