@@ -13,8 +13,9 @@ namespace Mfonte\ProxyCdn\Cache;
  * - otherwise it is <cache>/_qs/<hash>/<path>, where <hash> is the first 16
  *   hexadecimal digits of the SHA-256 of the canonical query string.
  *
- * The path is used as received, without percent-decoding (finding P-8,
- * resolved by PRX-5). PRX-6 replaces this layout.
+ * The path is the decoded one of PathSanitizer, so that the file has the
+ * name the web server looks for (finding P-8); PathSanitizer refuses the
+ * paths that start with BUCKET_DIRECTORY. PRX-6 replaces this layout.
  */
 final class CacheKeyResolver
 {
@@ -22,6 +23,11 @@ final class CacheKeyResolver
      * Query parameters that control the proxy and never key an entry.
      */
     private const CONTROL_PARAMETERS = ['purge', 'purge_all'];
+
+    /**
+     * The directory of the query-string buckets, below the cache root.
+     */
+    public const BUCKET_DIRECTORY = '_qs';
 
     /**
      * @var string
@@ -67,14 +73,14 @@ final class CacheKeyResolver
     }
 
     /**
-     * @param string $path           request path as received, starting with "/"
+     * @param string $path           decoded request path (PathSanitizer::sanitize()), starting with "/"
      * @param string $canonicalQuery output of canonicalQueryString()
      */
     public function resolve(string $path, string $canonicalQuery): CacheLocation
     {
         $base = $this->cacheDirectory;
         if ($canonicalQuery !== '') {
-            $base .= '_qs' . DIRECTORY_SEPARATOR . substr(hash('sha256', $canonicalQuery), 0, 16) . DIRECTORY_SEPARATOR;
+            $base .= self::BUCKET_DIRECTORY . DIRECTORY_SEPARATOR . substr(hash('sha256', $canonicalQuery), 0, 16) . DIRECTORY_SEPARATOR;
         }
 
         $file = $base . ltrim($path, '/');

@@ -69,13 +69,14 @@ final class CacheKeyResolverTest extends TestCase
     }
 
     /**
-     * The path is used as received (finding P-8, resolved by PRX-5).
+     * The file has the name of the decoded path, the one the web server
+     * looks for (finding P-8).
      */
-    public function testPathIsNotDecodedP8(): void
+    public function testTheDecodedPathNamesTheFileP8(): void
     {
-        $location = (new CacheKeyResolver('/srv/public'))->resolve('/images/my%20file.png', '');
+        $location = (new CacheKeyResolver('/srv/public'))->resolve('/images/my file.png', '');
 
-        self::assertSame('/srv/public/images/my%20file.png', $location->getFile());
+        self::assertSame('/srv/public/images/my file.png', $location->getFile());
     }
 
     public function testFileInTheRootAndFileWithoutExtension(): void

@@ -23,8 +23,9 @@ use Symfony\Component\HttpFoundation\Response;
  * origin, storing what it fetches. The flow is the one of 2.x:
  *
  * 1. OPTIONS gets the CORS preflight answer, methods other than GET and
- *    HEAD get 405; a path with "/.." and a path whose extension is not
- *    cacheable get an error; HEAD gets the headers of the GET;
+ *    HEAD get 405; the path is decoded by PathSanitizer, and a refused
+ *    path or a path whose extension is not cacheable gets an error; HEAD
+ *    gets the headers of the GET;
  * 2. "purge=1" or "purge_all=1" in the query string removes the entry first
  *    (anonymously: finding L-7);
  * 3. a fresh 404 marker or an open circuit breaker answers without asking
@@ -213,7 +214,7 @@ final class ProxyKernel
         }
 
         $server = $request->getScheme() . '://' . $request->getHttpHost();
-        $originUrl = $this->config->getSourceOrigin() . $path . ($canonicalQuery !== '' ? '?' . $canonicalQuery : '');
+        $originUrl = $this->config->getSourceOrigin() . PathSanitizer::encode($path) . ($canonicalQuery !== '' ? '?' . $canonicalQuery : '');
         $fetched = $this->origin->fetch(new OriginRequest($originUrl, ['Referer' => $server]));
 
         if (!$fetched->isSuccessful()) {

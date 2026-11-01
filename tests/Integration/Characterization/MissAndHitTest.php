@@ -149,32 +149,74 @@ final class MissAndHitTest extends CharacterizationTestCase
     }
 
     /**
-     * The cache file keeps the percent-encoded name, which the web server
-     * never finds (finding P-8, resolved by PRX-5 and PRX-6).
+     * The cache file has the decoded name, the one the web server looks
+     * for, and any spelling of the path shares it (finding P-8: 2.x stored
+     * "my%20file.png", which the web server never found). The origin gets
+     * the path encoded once.
+     *
+     * @group regression
      */
-    public function testPercentEncodedPathIsStoredUndecodedP8(): void
+    #[Group('regression')]
+    public function testPercentEncodedPathIsStoredDecodedP8(): void
     {
-        $response = $this->get('/images/my%20file.png');
+        $response = $this->get('/images/my%20file.png?v=1');
+        $hit = $this->get('/images/my%20fil%65.png?v=1');
 
         self::assertSame(200, $response->getStatus());
         self::assertSame(self::fixture('images/my file.png'), $response->getBody());
-        self::assertSame('/images/my%20file.png', $this->origin->getLastRequest()['uri']);
-        self::assertFileExists($this->publicPath('images/my%20file.png'));
-        self::assertFileDoesNotExist($this->publicPath('images/my file.png'));
+        self::assertSame('/images/my%20file.png?v=1', $this->origin->getLastRequest()['uri']);
+        self::assertFileExists($this->bucketPath('v=1', 'images/my file.png'));
+        self::assertFileDoesNotExist($this->bucketPath('v=1', 'images/my%20file.png'));
+        self::assertSame('hit', $hit->getHeader('X-Cache-Status'));
+        self::assertCount(1, $this->origin->getRequests());
+
+        $this->get('/images/my%20file.png');
+        self::assertFileExists($this->publicPath('images/my file.png'));
     }
 
     /**
-     * Encoded dot segments pass the 2.x traversal check undecoded and key
-     * the cache literally (finding P-8, resolved by PRX-5). What reaches the
-     * origin depends on libcurl, which removes them in recent versions.
+     * @return array<string, array{string}>
      */
-    public function testEncodedDotSegmentsAreNotDecodedP8(): void
+    public static function provideUnsafeEncodedPaths(): array
     {
-        $response = $this->get('/images/%2e%2e/gradient.png');
+        return [
+            'encoded dot segments' => ['/images/%2e%2e/gradient.png'],
+            'encoded slash' => ['/images%2fgradient.png'],
+            'encoded NUL' => ['/images/gradient.png%00.png'],
+            'invalid UTF-8' => ['/images/%FF.png'],
+            'query-string bucket' => ['/_qs/a798de8ee75aeb55/images/gradient.png'],
+        ];
+    }
 
-        self::assertSame(404, $response->getStatus());
-        self::assertCount(1, $this->origin->getRequests());
-        self::assertFileExists($this->publicPath('images/%2e%2e/gradient.png.404'));
+    /**
+     * A path that decodes to another file than the one it seems to name is
+     * refused before any cache entry, marker or origin request (finding P-8:
+     * 2.x stored "%2e%2e" literally and asked the origin).
+     *
+     * @dataProvider provideUnsafeEncodedPaths
+     *
+     * @group regression
+     */
+    #[DataProvider('provideUnsafeEncodedPaths')]
+    #[Group('regression')]
+    public function testUnsafeEncodedPathsAreRefusedP8(string $path): void
+    {
+        $response = $this->get($path);
+
+        self::assertSame(400, $response->getStatus());
+        self::assertSame([], $this->origin->getRequests());
+        self::assertSame(['.', '..', 'index.php'], array_values(array_diff((array) scandir($this->publicPath('')), ['.htaccess'])));
+    }
+
+    /**
+     * Unicode file names are stored under their UTF-8 name (risk L-15).
+     */
+    public function testUnicodePathsAreStoredUnderTheirUtf8Name(): void
+    {
+        $this->get('/images/caf%C3%A9.png');
+
+        self::assertSame('/images/caf%C3%A9.png', $this->origin->getLastRequest()['uri']);
+        self::assertSame(['/images/café.png'], array_column($this->origin->getRequests(), 'path'));
     }
 
     /**
