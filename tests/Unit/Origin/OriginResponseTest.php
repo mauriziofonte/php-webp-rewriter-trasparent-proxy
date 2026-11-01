@@ -31,6 +31,18 @@ final class OriginResponseTest extends TestCase
         self::assertFileDoesNotExist($body->getPath());
     }
 
+    public function testNotModified(): void
+    {
+        $response = OriginResponse::notModified(['etag' => '"v2"']);
+
+        self::assertTrue($response->isNotModified());
+        self::assertFalse($response->isSuccessful());
+        self::assertNull($response->getFailureReason());
+        self::assertSame(304, $response->getStatus());
+        self::assertNull($response->getBodyFile());
+        $response->release();
+    }
+
     public function testSuccess(): void
     {
         $response = OriginResponse::success(['content-type' => 'text/css'], 'body {}');

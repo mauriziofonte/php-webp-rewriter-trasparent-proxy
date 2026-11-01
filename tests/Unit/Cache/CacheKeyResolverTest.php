@@ -93,6 +93,7 @@ final class CacheKeyResolverTest extends TestCase
         self::assertSame('/srv/c/h/.q/v=1/.gz/img/a.png', $location->getEncodedFile('gz'));
         self::assertSame([
             '/srv/c/h/.q/v=1/img/a.png',
+            '/srv/c/h/.q/v=1/.meta/img/a.png.json',
             '/srv/c/h/.q/v=1/.avif/img/a.png.avif',
             '/srv/c/h/.q/v=1/.webp/img/a.png.webp',
             '/srv/c/h/.q/v=1/.br/img/a.png',
@@ -103,13 +104,21 @@ final class CacheKeyResolverTest extends TestCase
     }
 
     /**
-     * A purge of a path finds the entries of its other query strings
-     * (finding P-16).
+     * The entries PHP revalidates live below "<host>/.m/", where the web
+     * server never looks, under the same lock key (finding P-15).
      */
-    public function testWithBucketNamesTheSameEntryInAnotherBucket(): void
+    public function testTheManagedTierMirrorsTheLayoutBelowItsDirectory(): void
     {
         $location = (new CacheKeyResolver('/srv/c'))->resolve('h', '/img/a.png', 'v=1');
+        $managed = $location->managed();
 
+        self::assertTrue($managed->isManaged());
+        self::assertFalse($location->isManaged());
+        self::assertSame('/srv/c/h/.m/.q/v=1/img/a.png', $managed->getFile());
+        self::assertSame('/srv/c/h/.m/.q/v=1/.meta/img/a.png.json', $managed->getMetadataFile());
+        self::assertSame('/srv/c/h/.m/.q/v=1/.webp/img/a.png.webp', $managed->getVariantFile('webp'));
+        self::assertSame($location->getKey(), $managed->getKey());
+        self::assertSame($location->getFile(), $managed->unmanaged()->getFile());
         self::assertSame('/srv/c/h/.qh/abc/img/a.png', $location->withBucket('.qh/abc', '')->getFile());
     }
 

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
+use Mfonte\ProxyCdn\Cache\EntryMetadata;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
+use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
@@ -18,8 +20,11 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
  * What the origin says about caching, honoured by the kernel (finding P-15,
- * opportunity O-D): no-store and private are never stored; Range and
- * conditional requests are answered on the PHP path (finding S-6).
+ * opportunity O-D): no-store and private are never stored; a lifetime
+ * below CACHE_REVALIDATE_BELOW puts the entry in the tier PHP revalidates,
+ * with ETag and Last-Modified, stale-while-revalidate and stale-if-error;
+ * Range and conditional requests are answered on the PHP path (finding
+ * S-6).
  *
  * @covers \Mfonte\ProxyCdn\Http\ProxyKernel
  *
@@ -102,6 +107,163 @@ final class OriginSemanticsTest extends TestCase
         self::assertSame('9', $response->headers->get('content-length'));
     }
 
+    public function testAShortLifetimeGoesToTheTierPhpRevalidates(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60', 'etag' => '"v1"']);
+
+        $miss = $this->kernel()->handle(Request::create(self::URL));
+        $hit = $this->kernel()->handle(Request::create(self::URL));
+
+        self::assertSame('MISS', $miss->headers->get('x-cache-status'));
+        self::assertSame('HIT', $hit->headers->get('x-cache-status'));
+        self::assertSame('short();', self::body($hit));
+        self::assertMatchesRegularExpression('/\bmax-age=(60|59)\b/', (string) $hit->headers->get('cache-control'));
+        self::assertCount(1, $this->origin->getRequests());
+        self::assertFileExists($this->cachePath('.m/js/app.js'));
+        self::assertFileDoesNotExist($this->cachePath('js/app.js'), 'the web server never serves it');
+        $metadata = $this->metadata();
+        self::assertSame(60, $metadata->getLifetime());
+        self::assertSame('"v1"', $metadata->getEtag());
+    }
+
+    public function testALongOrUnknownLifetimeStaysWhereTheWebServerServesIt(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'long();', ['cache-control' => 'max-age=86400']);
+        $this->origin->serve(self::ORIGIN . '/js/other.js', 'unknown();');
+
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->kernel()->handle(Request::create('https://cdn.example.test/js/other.js'));
+
+        self::assertFileExists($this->cachePath('js/app.js'));
+        self::assertFileExists($this->cachePath('js/other.js'));
+        self::assertFileDoesNotExist($this->cachePath('.m/js/app.js'));
+    }
+
+    public function testRevalidationCanBeTurnedOff(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+
+        $this->kernel(['CACHE_REVALIDATE_BELOW' => '0'])->handle(Request::create(self::URL));
+
+        self::assertFileExists($this->cachePath('js/app.js'));
+    }
+
+    public function testAnExpiredEntryIsRevalidatedWithItsValidators(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', [
+            'cache-control' => 'max-age=60',
+            'etag' => '"v1"',
+            'last-modified' => 'Tue, 01 Sep 2026 10:00:00 GMT',
+        ]);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(200);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::notModified(['cache-control' => 'max-age=120']));
+
+        $response = $this->kernel()->handle(Request::create(self::URL));
+
+        self::assertSame('REVALIDATED', $response->headers->get('x-cache-status'));
+        self::assertSame('short();', self::body($response));
+        $requests = $this->origin->getRequests();
+        self::assertCount(2, $requests);
+        self::assertSame('"v1"', $requests[1]->getHeaders()['If-None-Match'] ?? null);
+        self::assertSame('Tue, 01 Sep 2026 10:00:00 GMT', $requests[1]->getHeaders()['If-Modified-Since'] ?? null);
+        self::assertSame(120, $this->metadata()->getLifetime());
+        self::assertTrue($this->metadata()->isFresh(time()));
+        self::assertSame('HIT', $this->kernel()->handle(Request::create(self::URL))->headers->get('x-cache-status'));
+    }
+
+    public function testAnExpiredEntryIsReplacedByANewVersion(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'old();', ['cache-control' => 'max-age=60', 'etag' => '"v1"']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(200);
+        $this->origin->serve(self::ORIGIN_URL, 'new();', ['cache-control' => 'max-age=60', 'etag' => '"v2"']);
+
+        $response = $this->kernel()->handle(Request::create(self::URL));
+
+        self::assertSame('MISS', $response->headers->get('x-cache-status'));
+        self::assertSame('new();', self::body($response));
+        self::assertSame('"v2"', $this->metadata()->getEtag());
+    }
+
+    public function testAnUnavailableOriginLeavesTheStaleEntryServed(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(500);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 503));
+
+        $response = $this->kernel()->handle(Request::create(self::URL));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('STALE', $response->headers->get('x-cache-status'));
+        self::assertSame('short();', self::body($response));
+        self::assertStringContainsString('max-age=0', (string) $response->headers->get('cache-control'));
+    }
+
+    public function testMustRevalidateNeverServesAStaleEntry(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60, must-revalidate, stale-while-revalidate=600']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(100);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 503));
+
+        $response = $this->kernel()->handle(Request::create(self::URL));
+
+        self::assertSame(503, $response->getStatusCode());
+    }
+
+    public function testStaleIfErrorOfTheOriginBoundsTheStaleUse(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60, stale-if-error=100']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(200);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_TIMEOUT, 0));
+
+        self::assertSame(503, $this->kernel()->handle(Request::create(self::URL))->getStatusCode());
+    }
+
+    public function testAnEntryGoneFromTheOriginIsRemoved(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(200);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_NOT_FOUND, 404));
+
+        $response = $this->kernel()->handle(Request::create(self::URL));
+
+        self::assertSame(404, $response->getStatusCode());
+        self::assertFileDoesNotExist($this->cachePath('.m/js/app.js'));
+        self::assertFileDoesNotExist($this->cachePath('.m/.meta/js/app.js.json'));
+    }
+
+    public function testAnEntryTheOriginStopsLettingBeStoredIsRemoved(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(200);
+        $this->origin->serve(self::ORIGIN_URL, 'now private();', ['cache-control' => 'no-store']);
+
+        $response = $this->kernel()->handle(Request::create(self::URL));
+
+        self::assertSame('BYPASS', $response->headers->get('x-cache-status'));
+        self::assertSame('now private();', self::body($response));
+        self::assertSame([], $this->cacheFiles());
+    }
+
+    public function testAnEntryMovesToTheWebServerTierWhenItsLifetimeGrows(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(200);
+        $this->origin->serve(self::ORIGIN_URL, 'long();', ['cache-control' => 'max-age=86400']);
+
+        $this->kernel()->handle(Request::create(self::URL));
+
+        self::assertFileExists($this->cachePath('js/app.js'));
+        self::assertFileDoesNotExist($this->cachePath('.m/js/app.js'));
+    }
+
     /**
      * Range and conditional requests of a file PHP serves: a single range
      * gets 206, If-None-Match with the current entity tag gets 304.
@@ -137,6 +299,11 @@ final class OriginSemanticsTest extends TestCase
         );
     }
 
+    private function cachePath(string $relativePath): string
+    {
+        return $this->directory->path('_cache/cdn.example.test/' . $relativePath);
+    }
+
     /**
      * The files below the cache directory.
      *
@@ -157,6 +324,27 @@ final class OriginSemanticsTest extends TestCase
         }
 
         return $files;
+    }
+
+    private function metadata(): EntryMetadata
+    {
+        $metadata = EntryMetadata::fromJson((string) file_get_contents($this->cachePath('.m/.meta/js/app.js.json')));
+        self::assertNotNull($metadata);
+
+        return $metadata;
+    }
+
+    /**
+     * Moves the validation time of the managed entry $seconds into the past.
+     */
+    private function age(int $seconds): void
+    {
+        $file = $this->cachePath('.m/.meta/js/app.js.json');
+        $data = json_decode((string) file_get_contents($file), true);
+        self::assertIsArray($data);
+        self::assertIsInt($data['validated_at'] ?? null);
+        $data['validated_at'] = $data['validated_at'] - $seconds;
+        file_put_contents($file, json_encode($data));
     }
 
     private static function body(Response $response): string

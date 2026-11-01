@@ -176,6 +176,22 @@ final class FileResponderTest extends TestCase
     }
 
     /**
+     * An entry PHP revalidates carries the max-age it has left, and PHP
+     * sends it itself: the web server would add the Cache-Control of
+     * CACHE_EXPIRY (finding P-15).
+     */
+    public function testAManagedEntryIsSentByPhpWithItsMaxAge(): void
+    {
+        $file = $this->directory->write('_cache/h/.m/a.css', 'body {}');
+
+        $response = $this->responder(Config::SENDFILE_X_ACCEL_REDIRECT)->respond(self::fromServer('/a.css', 'x-accel-redirect'), $file, 'css', 'HIT', [], [], 42);
+
+        self::assertNull($response->headers->get('x-accel-redirect'));
+        self::assertSame('body {}', self::body($response));
+        self::assertSame('max-age=42, must-revalidate, public', $response->headers->get('cache-control'));
+    }
+
+    /**
      * A response the origin forbade storing is streamed from the temporary
      * file of the fetch, which is then deleted (finding P-15).
      */

@@ -122,6 +122,8 @@ final class ConfigLoaderTest extends TestCase
         self::assertSame('en_US', $config->getLocale());
         self::assertSame(86400, $config->getCacheExpiry());
         self::assertSame(300, $config->getNegativeCacheTtl());
+        self::assertSame(3600, $config->getCacheRevalidateBelow());
+        self::assertSame(60, $config->getStaleWhileRevalidate());
         self::assertSame(30, $config->getNetworkErrorTtl());
         self::assertSame(5, $config->getCircuitBreakerThreshold());
         self::assertSame(30, $config->getUpstreamTimeout());

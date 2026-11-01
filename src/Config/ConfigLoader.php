@@ -30,7 +30,8 @@ final class ConfigLoader
      * UPSTREAM_USER_AGENT (PRX-4), QUERY_STRING_ALLOWLIST,
      * QUERY_STRING_MODE, TRUSTED_PROXIES, PURGE_KEYS and
      * CIRCUIT_BREAKER_THRESHOLD (PRX-5), PROXY_HOSTS, SENDFILE, PRECOMPRESS
-     * and LEGACY_WEBP_URLS (PRX-6).
+     * and LEGACY_WEBP_URLS (PRX-6), CACHE_REVALIDATE_BELOW and
+     * STALE_WHILE_REVALIDATE (PRX-7).
      */
     public const KEYS = [
         'DEBUG',
@@ -42,6 +43,8 @@ final class ConfigLoader
         'LOCALE',
         'CACHEABLE_EXTENSIONS',
         'CACHE_EXPIRY',
+        'CACHE_REVALIDATE_BELOW',
+        'STALE_WHILE_REVALIDATE',
         'NEGATIVE_CACHE_TTL',
         'NETWORK_ERROR_TTL',
         'CIRCUIT_BREAKER_THRESHOLD',
@@ -74,6 +77,8 @@ final class ConfigLoader
         'TIMEZONE' => 'UTC',
         'LOCALE' => 'en_US',
         'CACHE_EXPIRY' => '86400',
+        'CACHE_REVALIDATE_BELOW' => '3600',
+        'STALE_WHILE_REVALIDATE' => '60',
         'NEGATIVE_CACHE_TTL' => '300',
         'NETWORK_ERROR_TTL' => '30',
         'CIRCUIT_BREAKER_THRESHOLD' => '5',
@@ -94,7 +99,7 @@ final class ConfigLoader
      * Changes whenever the compiled format or the normalisation changes, so
      * that files compiled by another version are recompiled.
      */
-    private const FORMAT = 'proxy-cdn-config-4';
+    private const FORMAT = 'proxy-cdn-config-5';
 
     /**
      * @var string|null
@@ -201,6 +206,8 @@ final class ConfigLoader
             'LOCALE' => $value('LOCALE'),
             'CACHEABLE_EXTENSIONS' => ConfigValidator::extensionList($optional('CACHEABLE_EXTENSIONS')),
             'CACHE_EXPIRY' => (int) $value('CACHE_EXPIRY'),
+            'CACHE_REVALIDATE_BELOW' => (int) $value('CACHE_REVALIDATE_BELOW'),
+            'STALE_WHILE_REVALIDATE' => (int) $value('STALE_WHILE_REVALIDATE'),
             'NEGATIVE_CACHE_TTL' => (int) $value('NEGATIVE_CACHE_TTL'),
             'NETWORK_ERROR_TTL' => (int) $value('NETWORK_ERROR_TTL'),
             'CIRCUIT_BREAKER_THRESHOLD' => (int) $value('CIRCUIT_BREAKER_THRESHOLD'),

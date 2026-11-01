@@ -87,8 +87,11 @@ final class FileResponder
      * @param string                $cacheStatus the X-Cache-Status value (ResponseFactory::CACHE_*)
      * @param array<string, string> $encoded     encoding siblings of the file, keyed by CacheLocation::ENCODING_*
      * @param list<string>          $vary        request headers that select the file, for Vary
+     * @param int|null              $maxAge      the max-age of an entry that PHP revalidates (null for CACHE_EXPIRY);
+     *                                           such an entry is always sent by PHP, as the web server
+     *                                           configurations send the Cache-Control of CACHE_EXPIRY
      */
-    public function respond(Request $request, string $file, string $extension, string $cacheStatus, array $encoded = [], array $vary = []): Response
+    public function respond(Request $request, string $file, string $extension, string $cacheStatus, array $encoded = [], array $vary = [], ?int $maxAge = null): Response
     {
         $acceptEncoding = (string) $request->headers->get('Accept-Encoding', '');
         $contentEncoding = null;
@@ -106,7 +109,7 @@ final class FileResponder
             return $this->responses->internalError('Cannot read cached file from disk');
         }
 
-        $headers = $this->responses->assetHeaders($extension, $cacheStatus);
+        $headers = $this->responses->assetHeaders($extension, $cacheStatus, $maxAge);
         if ($encoded !== []) {
             $vary[] = 'Accept-Encoding';
         }
@@ -117,6 +120,9 @@ final class FileResponder
             $headers['Content-Encoding'] = $contentEncoding;
         }
 
+        if ($maxAge !== null) {
+            return $this->stream($request, $file, $size, $modified, $headers);
+        }
         $mode = $this->serverSendfile($request);
         if ($mode === Config::SENDFILE_X_SENDFILE) {
             $headers['X-Sendfile'] = $file;

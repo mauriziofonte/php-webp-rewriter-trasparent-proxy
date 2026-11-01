@@ -71,6 +71,15 @@ final class ResponseFactory
     /** X-Cache-Status of a response fetched from the origin. */
     public const CACHE_MISS = 'MISS';
 
+    /** X-Cache-Status of an expired entry the origin confirmed with a 304. */
+    public const CACHE_REVALIDATED = 'REVALIDATED';
+
+    /**
+     * X-Cache-Status of an expired entry served while it is revalidated in
+     * the background, or because the origin failed to revalidate it.
+     */
+    public const CACHE_STALE = 'STALE';
+
     /** X-Cache-Status of a response the origin forbade storing (no-store, private). */
     public const CACHE_BYPASS = 'BYPASS';
 
@@ -320,16 +329,17 @@ final class ResponseFactory
      * Cross-Origin-Resource-Policy and Timing-Allow-Origin (opportunity
      * O-G), nosniff, and the SVG policy for an SVG.
      *
-     * @param string $extension   lower-case extension that types the body
-     * @param string $cacheStatus one of the CACHE_* constants
+     * @param string   $extension   lower-case extension that types the body
+     * @param string   $cacheStatus one of the CACHE_* constants
+     * @param int|null $maxAge      the max-age of an entry that expires sooner than CACHE_EXPIRY; null for CACHE_EXPIRY
      *
      * @return array<string, string>
      */
-    public function assetHeaders(string $extension, string $cacheStatus): array
+    public function assetHeaders(string $extension, string $cacheStatus, ?int $maxAge = null): array
     {
         $headers = [
             'Content-Type' => MediaTypes::of($extension),
-            'Cache-Control' => 'public, max-age=' . $this->cacheExpiry . ', must-revalidate',
+            'Cache-Control' => 'public, max-age=' . ($maxAge === null ? $this->cacheExpiry : min($maxAge, $this->cacheExpiry)) . ', must-revalidate',
             'X-Cache-Status' => $cacheStatus,
         ] + self::securityHeaders();
         if (MediaTypes::of($extension) === 'image/svg+xml') {

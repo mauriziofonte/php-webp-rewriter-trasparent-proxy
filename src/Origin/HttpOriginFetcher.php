@@ -118,6 +118,10 @@ final class HttpOriginFetcher implements OriginFetcher
             return OriginResponse::streamed($response->getHeaders(), $body);
         }
 
+        if ($outcome === HttpResponse::OUTCOME_NOT_MODIFIED) {
+            return OriginResponse::notModified($response->getHeaders());
+        }
+
         if ($outcome === HttpResponse::OUTCOME_NOT_FOUND) {
             $this->logger->info('upstream 404', ['url' => $url]);
 

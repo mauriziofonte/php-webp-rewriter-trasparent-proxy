@@ -76,6 +76,25 @@ final class HttpOriginFetcherTest extends TestCase
         self::assertSame([], $this->logger->getRecords());
     }
 
+    /**
+     * A 304 to a conditional request is no failure: the cached copy is
+     * current (finding P-15).
+     */
+    public function testA304IsNotModifiedWithItsHeaders(): void
+    {
+        $this->transport->respond(self::URL, 304, ['Cache-Control' => 'max-age=60', 'ETag' => '"v2"'], '');
+
+        $response = $this->fetcher()->fetch(new OriginRequest(self::URL, ['If-None-Match' => '"v1"']));
+
+        self::assertTrue($response->isNotModified());
+        self::assertFalse($response->isSuccessful());
+        self::assertNull($response->getFailureReason());
+        self::assertSame(304, $response->getStatus());
+        self::assertSame('max-age=60', $response->getHeader('cache-control'));
+        self::assertSame('"v2"', $response->getHeader('etag'));
+        self::assertSame('"v1"', $this->transport->getRequests()[0]->getHeader('If-None-Match'));
+    }
+
     public function testThe2xRequestHeadersAreSent(): void
     {
         $this->transport->respond(self::URL, 200, [], 'body {}');
@@ -166,7 +185,6 @@ final class HttpOriginFetcherTest extends TestCase
     {
         return [
             'status 201' => [201, OriginResponse::FAILURE_OTHER],
-            'status 304' => [304, OriginResponse::FAILURE_OTHER],
             'status 400' => [400, OriginResponse::FAILURE_CLIENT_ERROR],
             'status 403' => [403, OriginResponse::FAILURE_FORBIDDEN],
             'status 410' => [410, OriginResponse::FAILURE_GONE],

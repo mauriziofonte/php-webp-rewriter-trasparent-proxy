@@ -690,7 +690,7 @@ final class ProxyKernelTest extends TestCase
 
     /**
      * A purge of a URL without query string removes the entries of every
-     * query string of its path, with their variants and
+     * query string of its path, in both tiers, with their variants and
      * encodings (finding P-16: 2.x left them); a purge of a URL with a
      * query string removes that entry only.
      *
@@ -707,7 +707,7 @@ final class ProxyKernelTest extends TestCase
             $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js' . $query));
         }
         self::assertFileExists($this->cachePath('.q/v=1/.gz/js/app.js'));
-        self::assertFileExists($this->cachePath('.q/v=2/js/app.js'));
+        self::assertFileExists($this->cachePath('.m/.q/v=2/js/app.js'));
 
         $one = $this->purgingKernel()->handle(Request::create('https://cdn.example.test/js/app.js?v=1', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
         self::assertStringContainsString('"removed":2', self::body($one), 'the entry and its gzip encoding');

@@ -6,7 +6,8 @@ namespace Mfonte\ProxyCdn\Origin;
 
 /**
  * The outcome of an origin fetch: a 200 response with its headers and body,
- * or a failure with its reason. Immutable, but for the temporary file of a streamed body, which the receiver moves
+ * a 304 to a conditional request, or a failure with its reason. Immutable,
+ * but for the temporary file of a streamed body, which the receiver moves
  * or deletes.
  *
  * As in 2.x only a 200 is a success; every other status and every transport
@@ -148,6 +149,16 @@ final class OriginResponse
     }
 
     /**
+     * The 304 answer to a conditional request: the cached copy is current.
+     *
+     * @param array<string, string> $headers header values keyed by lower-case name, the last occurrence of each
+     */
+    public static function notModified(array $headers): self
+    {
+        return new self(304, $headers, '', null, 0, '');
+    }
+
+    /**
      * A failed fetch.
      *
      * @param string $reason             one of the FAILURE_* constants
@@ -160,9 +171,20 @@ final class OriginResponse
         return new self($status, [], '', $reason, $transportErrorCode, $transportError);
     }
 
+    /**
+     * Whether the origin answered 200.
+     */
     public function isSuccessful(): bool
     {
-        return $this->failureReason === null;
+        return $this->failureReason === null && $this->status === 200;
+    }
+
+    /**
+     * Whether the origin answered 304 to a conditional request.
+     */
+    public function isNotModified(): bool
+    {
+        return $this->failureReason === null && $this->status === 304;
     }
 
     /**

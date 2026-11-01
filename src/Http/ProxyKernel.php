@@ -7,6 +7,7 @@ namespace Mfonte\ProxyCdn\Http;
 use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\CacheLocation;
 use Mfonte\ProxyCdn\Cache\CacheStorage;
+use Mfonte\ProxyCdn\Cache\EntryMetadata;
 use Mfonte\ProxyCdn\Cache\Freshness;
 use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
@@ -40,9 +41,9 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    the path is decoded by PathSanitizer, and a refused path or a path
  *    whose extension is not cacheable gets an error; HEAD gets the headers
  *    of the GET;
- * 2. PURGE removes the entry and its siblings, and without query string
- *    the entries of every query string of the path (Purger, finding P-16),
- *    when the request proves a purge key of the origin
+ * 2. PURGE removes the entry and its siblings, in both tiers, and without
+ *    query string the entries of every query string of the path (Purger,
+ *    finding P-16), when the request proves a purge key of the origin
  *    (PurgeAuthenticator); the anonymous
  *    "?purge=1" and "?purge_all=1" of 2.x get a 401 that explains the
  *    change (risk L-7);
@@ -56,15 +57,17 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    entry on disk is served from disk, as its AVIF or WEBP variant to the
  *    clients that accept it, with "Vary: Accept" (finding P-1: 2.x
  *    redirected every client to the WEBP copy), or as its Brotli or gzip
- *    sibling;
+ *    sibling; an entry of the tier PHP revalidates is served while fresh,
+ *    and revalidated with the origin once expired (serveManaged(),
+ *    finding P-15, opportunity O-D);
  * 6. otherwise, unless the circuit breaker of the origin is open, the
  *    entry is fetched from the origin; a failure is answered by its kind
  *    (see failure(), finding P-13); a response the origin forbids storing
  *    (no-store, private) is streamed to the client only; any other is
  *    stored as the origin sent it, streamed from its temporary file
- *    (finding P-17), with its compressed siblings, a raster is converted
- *    to WEBP when a converter is configured, and the asset is served from
- *    the cache.
+ *    (finding P-17), in the tier its lifetime calls for, with its
+ *    compressed siblings, a raster is converted to WEBP when a converter
+ *    is configured, and the asset is served from the cache.
  *
  * The web server serves the cache files itself, without PHP, whenever it
  * can compute their location (see CacheKeyResolver); the kernel answers
@@ -344,13 +347,14 @@ final class ProxyKernel
 
         $remembered = $this->negativeCache->lookup($file);
         if ($remembered !== null && $legacy === []) {
-            return $this->responses->error($path, $remembered === 410 ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
+            return $this->notFound($path, $remembered);
         }
 
         // The web server serves the entries it can locate itself, and
         // routes the others here: an entry whose query string it cannot
-        // map, or one the policy ignored (finding P-5).
-        $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT);
+        // map, one the policy ignored (finding P-5), or one PHP revalidates.
+        $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT)
+            ?? $this->serveManaged($request, $location, $extension, $origin, $path, $query);
         if ($stored !== null) {
             return $stored;
         }
@@ -367,7 +371,7 @@ final class ProxyKernel
                 return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
             }
             if ($legacy === [] || !$fetched->isNotFound()) {
-                return $this->failure($origin, $path, $file, $fetched);
+                return $this->failure($origin, $path, $location, $fetched);
             }
             $this->negativeCache->remember($file, 404);
         }
@@ -376,23 +380,131 @@ final class ProxyKernel
     }
 
     /**
+     * The 404 or 410 that the negative cache remembers.
+     */
+    private function notFound(string $path, int $status): Response
+    {
+        return $this->responses->error($path, $status === 410 ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
+    }
+
+    /**
+     * The response of an entry that PHP revalidates with the origin
+     * (finding P-15, opportunity O-D), when it is on disk: fresh, it is
+     * served with the max-age it has left; expired, it is revalidated
+     * first.
+     * Null when the entry is not on disk.
+     *
+     * @param CacheLocation $location the entry, in the tier the web server serves
+     *
+     * @phpstan-impure
+     */
+    private function serveManaged(Request $request, CacheLocation $location, string $extension, string $origin, string $path, QueryString $query): ?Response
+    {
+        $managed = $location->managed();
+        if (!$this->storage->isFile($managed->getFile())) {
+            return null;
+        }
+        $now = time();
+        $metadata = $this->readMetadata($managed);
+        if ($metadata !== null && $metadata->isFresh($now)) {
+            return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_HIT, $metadata->getRemainingLifetime($now));
+        }
+
+        return $this->revalidate($request, $managed, $extension, $origin, $path, $query, $metadata);
+    }
+
+    /**
+     * Asks the origin whether the expired entry $managed is still current,
+     * with its validators: a 304 renews it, a 200 replaces it, a 404 or 410
+     * removes it, and a failure leaves it, served stale while its
+     * stale-if-error allows (and while the breaker of the origin is open).
+     *
+     * @return Response|null the response to $request; null when the entry was removed
+     */
+    private function revalidate(Request $request, CacheLocation $managed, string $extension, string $origin, string $path, QueryString $query, ?EntryMetadata $metadata): ?Response
+    {
+        $breakerKey = RedirectTarget::originOf($origin);
+        $mayServeStale = $metadata === null || $metadata->isWithinStaleIfError(time());
+        if ($this->circuitBreaker->isOpen($breakerKey)) {
+            return $mayServeStale
+                ? $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0)
+                : $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+        }
+
+        $fetched = $this->origin->fetch($this->originRequest($request, $origin, $path, $query, $metadata === null ? [] : $metadata->conditionalHeaders()));
+        $now = time();
+        if ($fetched->isNotModified() && $metadata !== null) {
+            $renewed = $metadata->revalidated($fetched->getHeaders(), $now, $this->config->getStaleWhileRevalidate());
+            $this->storage->write($managed->getMetadataFile(), $renewed->toJson());
+            $this->circuitBreaker->reset($breakerKey);
+
+            return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_REVALIDATED, $renewed->getRemainingLifetime($now));
+        }
+        $web = $managed->unmanaged();
+        if ($fetched->isSuccessful()) {
+            return $this->storeAndServe($request, $origin, $web, $extension, $fetched);
+        }
+        $fetched->release();
+
+        $reason = $fetched->getFailureReason();
+        if ($reason === OriginResponse::FAILURE_NOT_FOUND || $reason === OriginResponse::FAILURE_GONE) {
+            foreach ($managed->getFiles() as $file) {
+                $this->storage->delete($file);
+            }
+        } elseif ($mayServeStale && (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429)) {
+            $this->circuitBreaker->recordFailure($breakerKey);
+            $this->logger->warning('stale entry served, origin unavailable', ['path' => $path, 'reason' => $reason]);
+
+            return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0);
+        }
+
+        return $this->failure($origin, $path, $web, $fetched);
+    }
+
+    /**
+     * The EntryMetadata of a managed entry; null when it is missing or
+     * unreadable, and the entry is then treated as expired without
+     * validators.
+     */
+    private function readMetadata(CacheLocation $managed): ?EntryMetadata
+    {
+        $json = $this->storage->read($managed->getMetadataFile());
+
+        return $json === null ? null : EntryMetadata::fromJson($json);
+    }
+
+    /**
      * Fetches the asset of $path from $origin, with the query string the
      * policy kept.
      */
     private function fetch(Request $request, string $origin, string $path, QueryString $query): OriginResponse
     {
+        return $this->origin->fetch($this->originRequest($request, $origin, $path, $query, []));
+    }
+
+    /**
+     * The origin request for the asset of $path.
+     *
+     * @param Request               $request    the client request, for the Referer
+     * @param array<string, string> $conditions If-None-Match and If-Modified-Since of a revalidation
+     */
+    private function originRequest(Request $request, string $origin, string $path, QueryString $query, array $conditions): OriginRequest
+    {
+        $headers = $conditions;
         // The scheme the client used, as a trusted proxy reports it (TRUSTED_PROXIES).
-        $server = ($this->trustedProxies->isSecure($request) ? 'https' : 'http') . '://' . $request->getHttpHost();
+        $headers['Referer'] = ($this->trustedProxies->isSecure($request) ? 'https' : 'http') . '://' . $request->getHttpHost();
         $forwardedQuery = $query->getForwarded();
         $originUrl = $origin . PathSanitizer::encode($path) . ($forwardedQuery !== '' ? '?' . $forwardedQuery : '');
 
-        return $this->origin->fetch(new OriginRequest($originUrl, ['Referer' => $server]));
+        return new OriginRequest($originUrl, $headers);
     }
 
     /**
      * Stores a fetched asset with its siblings and serves it, or streams it
      * without storing it when the origin forbids that (no-store, private:
      * finding P-15).
+     *
+     * @param CacheLocation $location the entry, in the tier the web server serves
      */
     private function storeAndServe(Request $request, string $origin, CacheLocation $location, string $extension, OriginResponse $fetched): Response
     {
@@ -400,6 +512,10 @@ final class ProxyKernel
         $freshness = Freshness::fromHeaders($fetched->getHeaders(), time());
         if (!$freshness->isStorable()) {
             $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
+            // An expired entry that the origin no longer lets be stored.
+            foreach ($location->managed()->getFiles() as $file) {
+                $this->storage->delete($file);
+            }
             $body = $fetched->getBodyFile() ?? ResponseBody::fromString($fetched->getBody(), sys_get_temp_dir());
             if ($body === null) {
                 return $this->responses->error($path, ResponseFactory::ERROR_CACHE_FILE);
@@ -408,24 +524,62 @@ final class ProxyKernel
             return $this->files->respondUncached($request, $body, $extension, $freshness->isNoStore());
         }
 
-        $error = $this->store($location, $extension, $fetched);
-        if ($error !== null) {
-            return $this->responses->error($path, $error);
+        $result = $this->storeFetched($location, $extension, $fetched, $freshness);
+        if (is_int($result)) {
+            return $this->responses->error($path, $result);
         }
+        list($stored, $maxAge) = $result;
 
         if ($this->isRaster($extension) && $this->converter !== null) {
-            $conversion = $this->converter->convert($location->getFile(), $location->getVariantFile(CacheLocation::FORMAT_WEBP));
+            $conversion = $this->converter->convert($stored->getFile(), $stored->getVariantFile(CacheLocation::FORMAT_WEBP));
             if (!$conversion->isConverted()) {
                 return $this->responses->internalError('Image conversion failed: ' . (string) $conversion->getError());
             }
         }
 
         // The asset is back: forget any stale failure.
-        $this->negativeCache->forget($location->getFile());
         $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
 
-        return $this->serve($request, $location, $extension, ResponseFactory::CACHE_MISS)
+        return $this->serve($request, $stored, $extension, ResponseFactory::CACHE_MISS, $maxAge)
             ?? $this->responses->error($path, ResponseFactory::ERROR_CACHE_FILE);
+    }
+
+    /**
+     * Stores a fetched asset in its tier: the one PHP revalidates when the
+     * origin gives it a lifetime below CACHE_REVALIDATE_BELOW, with its
+     * metadata; else the one the web server serves, kept until purged. The
+     * entry of the other tier is removed.
+     *
+     * @param CacheLocation $location the entry, in the tier the web server serves
+     *
+     * @return int|array{CacheLocation, int|null} the ResponseFactory::ERROR_* of a failure; or the stored entry and
+     *                                            the max-age it has left (null in the tier of the web server)
+     */
+    private function storeFetched(CacheLocation $location, string $extension, OriginResponse $fetched, ?Freshness $freshness = null)
+    {
+        $now = time();
+        $freshness = $freshness ?? Freshness::fromHeaders($fetched->getHeaders(), $now);
+        $lifetime = $freshness->getLifetime();
+        $isManaged = $lifetime !== null && $lifetime < $this->config->getCacheRevalidateBelow();
+        $target = $isManaged ? $location->managed() : $location;
+        foreach (($isManaged ? $location : $location->managed())->getFiles() as $file) {
+            $this->storage->delete($file);
+        }
+
+        $error = $this->store($target, $extension, $fetched);
+        if ($error !== null) {
+            return $error;
+        }
+        $this->negativeCache->forget($location->getFile());
+        if (!$isManaged) {
+            return [$target, null];
+        }
+        $metadata = EntryMetadata::fromResponse($fetched->getHeaders(), $freshness, $now, $this->config->getStaleWhileRevalidate());
+        if (!$this->storage->write($target->getMetadataFile(), $metadata->toJson())) {
+            return ResponseFactory::ERROR_CACHE_FILE;
+        }
+
+        return [$target, $metadata->getRemainingLifetime($now)];
     }
 
     /**
@@ -468,9 +622,12 @@ final class ProxyKernel
      * missing), any other entry as its Brotli or gzip sibling when the
      * client accepts it; null when the entry is not on disk.
      *
-     * @param string $cacheStatus one of the ResponseFactory::CACHE_* constants
+     * @param string   $cacheStatus one of the ResponseFactory::CACHE_* constants
+     * @param int|null $maxAge      the max-age of a managed entry; null for CACHE_EXPIRY
+     *
+     * @phpstan-impure
      */
-    private function serve(Request $request, CacheLocation $location, string $extension, string $cacheStatus): ?Response
+    private function serve(Request $request, CacheLocation $location, string $extension, string $cacheStatus, ?int $maxAge = null): ?Response
     {
         $file = $location->getFile();
         if (!$this->storage->isFile($file)) {
@@ -484,7 +641,7 @@ final class ProxyKernel
                 }
             }
 
-            return $this->files->respond($request, $file, $extension, $cacheStatus, $encoded);
+            return $this->files->respond($request, $file, $extension, $cacheStatus, $encoded, [], $maxAge);
         }
 
         $webp = $location->getVariantFile(CacheLocation::FORMAT_WEBP);
@@ -495,11 +652,11 @@ final class ProxyKernel
         foreach (CacheLocation::FORMATS as $format) {
             $variant = $location->getVariantFile($format);
             if (AcceptHeader::accepts($accept, MediaTypes::of($format)) && $this->storage->isFile($variant)) {
-                return $this->files->respond($request, $variant, $format, $cacheStatus, [], ['Accept']);
+                return $this->files->respond($request, $variant, $format, $cacheStatus, [], ['Accept'], $maxAge);
             }
         }
 
-        return $this->files->respond($request, $file, $extension, $cacheStatus, [], ['Accept']);
+        return $this->files->respond($request, $file, $extension, $cacheStatus, [], ['Accept'], $maxAge);
     }
 
     /**
@@ -510,7 +667,8 @@ final class ProxyKernel
     {
         return $extension === CacheLocation::FORMAT_WEBP
             && $this->config->shouldResolveLegacyWebpUrls()
-            && !$this->storage->isFile($location->getFile());
+            && !$this->storage->isFile($location->getFile())
+            && !$this->storage->isFile($location->managed()->getFile());
     }
 
     /**
@@ -573,7 +731,7 @@ final class ProxyKernel
                 continue;
             }
             if (!$fetched->isSuccessful()) {
-                return $this->failure($origin, $path, $location->getFile(), $fetched);
+                return $this->failure($origin, $path, $location, $fetched);
             }
             $error = $this->store($location, $extension, $fetched);
             if ($error !== null) {
@@ -619,8 +777,9 @@ final class ProxyKernel
      *   malformed reply, an HTTP/2 stream error, a local write error) is
      *   neutral: it neither counts nor closes.
      */
-    private function failure(string $origin, string $path, string $file, OriginResponse $fetched): Response
+    private function failure(string $origin, string $path, CacheLocation $location, OriginResponse $fetched): Response
     {
+        $file = $location->getFile();
         $reason = $fetched->getFailureReason();
         $breakerKey = RedirectTarget::originOf($origin);
         if (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429) {
@@ -642,11 +801,11 @@ final class ProxyKernel
             return $this->responses->error($path, ResponseFactory::ERROR_ORIGIN_FORBIDDEN);
         }
         if ($reason === OriginResponse::FAILURE_REDIRECT) {
-            $location = $this->proxyLocation($origin, $fetched->getLocation());
+            $target = $this->proxyLocation($origin, $fetched->getLocation());
 
-            return $location === null
+            return $target === null
                 ? $this->responses->error($path, ResponseFactory::ERROR_BAD_GATEWAY)
-                : $this->responses->redirect($fetched->getStatus(), $location);
+                : $this->responses->redirect($fetched->getStatus(), $target);
         }
 
         return $this->responses->error($path, ResponseFactory::ERROR_BAD_GATEWAY);

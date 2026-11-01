@@ -8,9 +8,11 @@ namespace Mfonte\ProxyCdn\Cache;
  * Removes cache entries on an authenticated purge (see
  * Security\PurgeAuthenticator).
  *
- * A purge removes the entry, its AVIF and WEBP variants and its Brotli
- * and gzip encodings (CacheLocation::getFiles()), and what the negative
- * cache remembers for it. A purge of a URL without query string also removes the entries of
+ * A purge removes, in both tiers (the one the web server serves and the one
+ * PHP revalidates, CacheLocation::managed()), the entry, its metadata, its
+ * AVIF and WEBP variants and its Brotli and gzip encodings
+ * (CacheLocation::getFiles()), and what the negative cache remembers for
+ * it. A purge of a URL without query string also removes the entries of
  * every query string of the same path, in ".q/" and ".qh/" (finding P-16:
  * 2.x left them, so "PURGE /app.css" kept serving "/app.css?v=2"); a purge
  * of a URL with a query string removes that entry only.
@@ -43,7 +45,7 @@ final class Purger
     }
 
     /**
-     * @param CacheLocation $location the entry of the purged URL
+     * @param CacheLocation $location the entry of the purged URL, in the tier the web server serves
      *
      * @return list<string> the files that existed and were removed
      */
@@ -56,10 +58,12 @@ final class Purger
 
         $removed = [];
         foreach ($entries as $entry) {
-            foreach ($entry->getFiles() as $file) {
-                if ($this->storage->isFile($file)) {
-                    $this->storage->delete($file);
-                    $removed[] = $file;
+            foreach ([$entry, $entry->managed()] as $tier) {
+                foreach ($tier->getFiles() as $file) {
+                    if ($this->storage->isFile($file)) {
+                        $this->storage->delete($file);
+                        $removed[] = $file;
+                    }
                 }
             }
             $this->negativeCache->forget($entry->getFile());
@@ -70,7 +74,7 @@ final class Purger
 
     /**
      * The entries of the path of $location in every query-string bucket
-     * that exists.
+     * that exists, in either tier.
      *
      * @return list<CacheLocation>
      */
@@ -78,12 +82,15 @@ final class Purger
     {
         $entries = [];
         $hostDirectory = $location->getHostDirectory();
-        foreach (self::QUERY_DIRECTORIES as $directory) {
-            foreach ($this->storage->listDirectory($hostDirectory . DIRECTORY_SEPARATOR . $directory) as $name) {
-                $entries[] = $location->withBucket($directory . DIRECTORY_SEPARATOR . $name, $directory === CacheKeyResolver::QUERY_DIRECTORY ? $name : '');
+        foreach (['', DIRECTORY_SEPARATOR . CacheLocation::MANAGED_DIRECTORY] as $tier) {
+            foreach (self::QUERY_DIRECTORIES as $directory) {
+                foreach ($this->storage->listDirectory($hostDirectory . $tier . DIRECTORY_SEPARATOR . $directory) as $name) {
+                    $bucket = $directory . DIRECTORY_SEPARATOR . $name;
+                    $entries[$bucket] = $location->withBucket($bucket, $directory === CacheKeyResolver::QUERY_DIRECTORY ? $name : '');
+                }
             }
         }
 
-        return $entries;
+        return array_values($entries);
     }
 }

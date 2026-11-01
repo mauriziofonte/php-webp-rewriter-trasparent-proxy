@@ -99,6 +99,16 @@ final class Config
     /**
      * @var int
      */
+    private $cacheRevalidateBelow;
+
+    /**
+     * @var int
+     */
+    private $staleWhileRevalidate;
+
+    /**
+     * @var int
+     */
     private $negativeCacheTtl;
 
     /**
@@ -203,6 +213,8 @@ final class Config
         $config->locale = self::string($values, 'LOCALE');
         $config->cacheableExtensions = self::stringList($values, 'CACHEABLE_EXTENSIONS');
         $config->cacheExpiry = self::integer($values, 'CACHE_EXPIRY');
+        $config->cacheRevalidateBelow = self::integer($values, 'CACHE_REVALIDATE_BELOW');
+        $config->staleWhileRevalidate = self::integer($values, 'STALE_WHILE_REVALIDATE');
         $config->negativeCacheTtl = self::integer($values, 'NEGATIVE_CACHE_TTL');
         $config->networkErrorTtl = self::integer($values, 'NETWORK_ERROR_TTL');
         $config->circuitBreakerThreshold = self::integer($values, 'CIRCUIT_BREAKER_THRESHOLD');
@@ -256,6 +268,8 @@ final class Config
             'LOCALE' => $this->locale,
             'CACHEABLE_EXTENSIONS' => $this->cacheableExtensions,
             'CACHE_EXPIRY' => $this->cacheExpiry,
+            'CACHE_REVALIDATE_BELOW' => $this->cacheRevalidateBelow,
+            'STALE_WHILE_REVALIDATE' => $this->staleWhileRevalidate,
             'NEGATIVE_CACHE_TTL' => $this->negativeCacheTtl,
             'NETWORK_ERROR_TTL' => $this->networkErrorTtl,
             'CIRCUIT_BREAKER_THRESHOLD' => $this->circuitBreakerThreshold,
@@ -386,6 +400,25 @@ final class Config
     public function getCacheExpiry(): int
     {
         return $this->cacheExpiry;
+    }
+
+    /**
+     * CACHE_REVALIDATE_BELOW: an entry whose origin lifetime is shorter is
+     * revalidated with the origin by PHP once it expires; 0 never.
+     */
+    public function getCacheRevalidateBelow(): int
+    {
+        return $this->cacheRevalidateBelow;
+    }
+
+    /**
+     * STALE_WHILE_REVALIDATE: seconds an expired entry is still served while
+     * PHP revalidates it in the background, when the origin sets no
+     * stale-while-revalidate of its own.
+     */
+    public function getStaleWhileRevalidate(): int
+    {
+        return $this->staleWhileRevalidate;
     }
 
     /**

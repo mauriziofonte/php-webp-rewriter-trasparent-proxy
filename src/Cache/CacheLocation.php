@@ -20,6 +20,10 @@ namespace Mfonte\ProxyCdn\Cache;
  * encodings keep the name, and the type, of the entry. Every sibling lives
  * in a directory whose name starts with ".", which no request path names.
  *
+ * An entry that PHP revalidates with the origin (managed()) lives in the
+ * same layout below "<host>/.m/", where the web server never looks, with
+ * its EntryMetadata in D/.meta/P.json.
+ *
  * Immutable; built by CacheKeyResolver.
  */
 final class CacheLocation
@@ -41,6 +45,17 @@ final class CacheLocation
      * The encodings an entry may have a sibling in, by preference.
      */
     public const ENCODINGS = [self::ENCODING_BROTLI, self::ENCODING_GZIP];
+
+    /**
+     * The directory, below the host directory, of the entries PHP
+     * revalidates with the origin.
+     */
+    public const MANAGED_DIRECTORY = '.m';
+
+    /**
+     * @var bool
+     */
+    private $managed = false;
 
     /**
      * @var string
@@ -115,7 +130,7 @@ final class CacheLocation
      */
     public function getFiles(): array
     {
-        $files = [$this->getFile()];
+        $files = [$this->getFile(), $this->getMetadataFile()];
         foreach (self::FORMATS as $format) {
             $files[] = $this->getVariantFile($format);
         }
@@ -124,6 +139,44 @@ final class CacheLocation
         }
 
         return $files;
+    }
+
+    /**
+     * The EntryMetadata of the entry, for a managed one.
+     */
+    public function getMetadataFile(): string
+    {
+        return $this->siblingDirectory('meta') . DIRECTORY_SEPARATOR . $this->path . '.json';
+    }
+
+    /**
+     * The same entry in the tier that PHP revalidates with the origin.
+     */
+    public function managed(): self
+    {
+        $copy = clone $this;
+        $copy->managed = true;
+
+        return $copy;
+    }
+
+    /**
+     * The same entry in the tier that the web server serves.
+     */
+    public function unmanaged(): self
+    {
+        $copy = clone $this;
+        $copy->managed = false;
+
+        return $copy;
+    }
+
+    /**
+     * Whether the entry is in the tier that PHP revalidates with the origin.
+     */
+    public function isManaged(): bool
+    {
+        return $this->managed;
     }
 
     /**
@@ -181,16 +234,17 @@ final class CacheLocation
     }
 
     /**
-     * A string that names the entry and nothing else, for locks.
+     * A string that names the entry and nothing else, in either tier, for
+     * locks.
      */
     public function getKey(): string
     {
-        return $this->getFile();
+        return $this->hostDirectory . DIRECTORY_SEPARATOR . ($this->bucket === '' ? '' : $this->bucket . DIRECTORY_SEPARATOR) . $this->path;
     }
 
     private function bucketDirectory(): string
     {
-        return $this->hostDirectory . ($this->bucket === '' ? '' : DIRECTORY_SEPARATOR . $this->bucket);
+        return $this->hostDirectory . ($this->managed ? DIRECTORY_SEPARATOR . self::MANAGED_DIRECTORY : '') . ($this->bucket === '' ? '' : DIRECTORY_SEPARATOR . $this->bucket);
     }
 
     private function siblingDirectory(string $kind): string
