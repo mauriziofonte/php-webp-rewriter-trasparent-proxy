@@ -71,8 +71,9 @@ ErrorDocument 403 "Access Forbidden"
     # PURGE is answered by index.php, which checks the purge key (PURGE_KEYS);
     # the Authorization header reaches PHP-FPM and CGI through the environment.
     # The anonymous ?purge=1 of 2.x reaches index.php through the query-string
-    # rule below and is answered 401.
-    RewriteCond %{REQUEST_METHOD} =PURGE
+    # rule below and is answered 401. OPTIONS goes there too, so that every
+    # CORS preflight gets the answer of PHP, a cached file included.
+    RewriteCond %{REQUEST_METHOD} ^(PURGE|OPTIONS)$
     RewriteRule . index.php [L,QSA,E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
     # ALWAYS route to index.php when the request has a non-empty query
@@ -99,23 +100,31 @@ ErrorDocument 403 "Access Forbidden"
 # 3. Response headers and cache policy
 # -----------------------------------------------------------------------------
 <IfModule mod_headers.c>
+    # Behind PHP-FPM (mod_proxy_fcgi) the headers PHP sends land in the
+    # table that "Header always" works on, while plain "Header set" adds a
+    # second copy next to them: "Access-Control-Allow-Origin: *, *", which
+    # browsers refuse. So every header PHP may send is written with
+    # "always": "setifempty" leaves PHP's value alone (the preflight answer,
+    # X-Cache-Status), "set" replaces it with the same value. Files served
+    # from disk get each header once either way.
+
     # CORS: static assets are fetched cross-origin from the main site.
-    Header set Access-Control-Allow-Origin  "*"
-    Header set Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
-    Header set Access-Control-Max-Age       "86400"
+    Header always setifempty Access-Control-Allow-Origin  "*"
+    Header always setifempty Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+    Header always setifempty Access-Control-Max-Age       "86400"
 
     # Strip server fingerprinting headers where possible.
     Header unset Server
-    Header unset X-Powered-By
+    Header always unset X-Powered-By
 
     # Light hardening applicable to a static-asset CDN.
-    Header set X-Content-Type-Options "nosniff"
-    Header set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
 
     # An SVG opened from this origin is sandboxed and runs no script
     # (finding P-7): the policy of Http\ResponseFactory, which PHP sends.
     <FilesMatch "\.(?i:svg)$">
-        Header set Content-Security-Policy "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox"
+        Header always set Content-Security-Policy "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox"
     </FilesMatch>
 
     # HSTS. Default: host-only (no includeSubDomains / no preload) because
@@ -128,8 +137,9 @@ ErrorDocument 403 "Access Forbidden"
 
     # Branding for cache-hit responses (files served directly by Apache),
     # without a version number (finding P-23).
-    Header set X-Powered-By  "MF Static Assets Cacher"
-    Header set X-Cache-Status "HIT"
+    # PHP sends its own X-Cache-Status (miss or hit), which stays.
+    Header always set X-Powered-By  "MF Static Assets Cacher"
+    Header always setifempty X-Cache-Status "HIT"
 </IfModule>
 
 <IfModule mod_mime.c>
@@ -200,7 +210,7 @@ ErrorDocument 403 "Access Forbidden"
 #
 # NOTE: we deliberately use "must-revalidate" (not "immutable"). These URLs
 # are not fingerprinted: the same /foo/bar.jpg may correspond to different
-# bytes over time (after a purge=1 or after the origin overwrites the file).
+# bytes over time (after a PURGE or after the origin overwrites the file).
 # "immutable" would trap old bytes in browser caches for a full year.
 # -----------------------------------------------------------------------------
 <FilesMatch "\.(?i:css|js|json|svg|svgz|ico|bmp|gif|jpe?g|png|webp|tiff?|ttf|ttc|otf|eot|woff2?|pdf)$">

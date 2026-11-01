@@ -5,7 +5,8 @@
 # a smoke test on each stack: the HTTP client negotiates HTTP/2 with the
 # origin over TLS from PHP-FPM, the first request is fetched from the origin
 # through PHP-FPM, the second is served from the cache by the web server
-# without reaching PHP-FPM or the origin.
+# without reaching PHP-FPM or the origin, and each response, preflights
+# included, carries its CORS headers once.
 #
 # Usage: tests/Integration/docker/run.sh [--php <version>] [--stack apache|nginx|all] [--keep]
 #
@@ -262,6 +263,25 @@ expect "reset" "$(origin_count)" 0
 lines_of() { if [ -f "$1" ]; then wc -l <"$1" | tr -d ' '; else echo 0; fi; }
 has_lines() { [ "$(lines_of "$1")" -ge "$2" ]; }
 cache_status() { grep -i '^x-cache-status:' "$1" | cut -d: -f2- | tr -d ' \r' | paste -sd, - || true; }
+# count_of <header name> <headers file>: how many times the header is sent.
+count_of() { grep -ci "^$1:" "$2" || true; }
+
+# preflight <url> <output prefix>: a CORS preflight; prints the status.
+preflight() {
+    curl -sS -X OPTIONS -H 'X-Forwarded-Proto: https' -H 'Origin: https://site.example' \
+        -H 'Access-Control-Request-Method: GET' -D "$2.headers" -o /dev/null -w '%{http_code}' "$1"
+}
+
+# cors_once <label> <headers file> <header>...: each header is sent once.
+# Behind Apache + PHP-FPM a "Header set" of .htaccess next to the same
+# header from PHP sends it twice ("*, *"), and browsers refuse the answer.
+cors_once() {
+    local label="$1" file="$2" name
+    shift 2
+    for name in "$@"; do
+        expect "$label: one $name" "$(count_of "$name" "$file")" 1
+    done
+}
 
 # fetch <url> <output prefix>: prints the status, keeps headers and body.
 fetch() {
@@ -296,8 +316,23 @@ smoke() {
     sleep 1
     expect "$s: second request served without PHP-FPM" "$(lines_of "$fpm_log")" $((lines + 1))
 
-    printf '    info: X-Cache-Status first=%s second=%s\n' \
-        "$(cache_status "$workdir/$s/first.headers")" "$(cache_status "$workdir/$s/second.headers")"
+    cors_once "$s: miss" "$workdir/$s/first.headers" Access-Control-Allow-Origin
+    if [ "$s" = apache ]; then
+        # The harness nginx adds no CORS header to the files it serves: the
+        # nginx configuration that does arrives with PRX-6.
+        cors_once "$s: miss" "$workdir/$s/first.headers" Access-Control-Max-Age
+        cors_once "$s: hit" "$workdir/$s/second.headers" Access-Control-Allow-Origin Access-Control-Max-Age
+    fi
+
+    expect "$s: the first request is a miss" "$(cache_status "$workdir/$s/first.headers")" miss
+    expect "$s: the second request is a hit" "$(cache_status "$workdir/$s/second.headers")" HIT
+
+    expect "$s: preflight of a cached file" "$(preflight "$base$asset" "$workdir/$s/options-hit")" 204
+    cors_once "$s: preflight of a cached file" "$workdir/$s/options-hit.headers" \
+        Access-Control-Allow-Origin Access-Control-Allow-Methods Access-Control-Max-Age
+    expect "$s: preflight of a missing file" "$(preflight "$base/images/missing.png" "$workdir/$s/options-miss")" 204
+    cors_once "$s: preflight of a missing file" "$workdir/$s/options-miss.headers" \
+        Access-Control-Allow-Origin Access-Control-Allow-Methods Access-Control-Max-Age
 }
 
 # The transports from PHP-FPM against the TLS port of the origin: curl
