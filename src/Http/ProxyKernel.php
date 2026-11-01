@@ -22,8 +22,9 @@ use Symfony\Component\HttpFoundation\Response;
  * Turns a request for an asset into a response: from the cache, or from the
  * origin, storing what it fetches. The flow is the one of 2.x:
  *
- * 1. OPTIONS gets the CORS preflight answer; a path with "/.." and a
- *    path whose extension is not cacheable get an error;
+ * 1. OPTIONS gets the CORS preflight answer, methods other than GET and
+ *    HEAD get 405; a path with "/.." and a path whose extension is not
+ *    cacheable get an error; HEAD gets the headers of the GET;
  * 2. "purge=1" or "purge_all=1" in the query string removes the entry first
  *    (anonymously: finding L-7);
  * 3. a fresh 404 marker or an open circuit breaker answers without asking
@@ -135,10 +136,29 @@ final class ProxyKernel
 
     public function handle(Request $request): Response
     {
-        if ($request->getMethod() === 'OPTIONS') {
-            return $this->responses->preflight();
+        $method = $request->getMethod();
+        if ($method === 'OPTIONS') {
+            return $this->responses->preflight((string) $request->headers->get('Access-Control-Request-Headers', ''));
+        }
+        // Finding P-19: 2.x served every method like GET.
+        if ($method !== 'GET' && $method !== 'HEAD') {
+            return $this->responses->error($request->getPathInfo(), ResponseFactory::ERROR_METHOD_NOT_ALLOWED);
         }
 
+        $response = $this->handleAsset($request);
+        if ($method === 'HEAD') {
+            // The headers of the GET, Content-Length included, without its body.
+            $response->setContent('');
+        }
+
+        return $response;
+    }
+
+    /**
+     * The answer to a GET of an asset.
+     */
+    private function handleAsset(Request $request): Response
+    {
         $requestPath = $request->getPathInfo();
         $path = $this->pathSanitizer->sanitize($requestPath);
         if ($path === null) {

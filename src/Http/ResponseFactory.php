@@ -37,6 +37,20 @@ final class ResponseFactory
     /** The configuration cannot be loaded. */
     public const ERROR_CONFIGURATION = -4;
 
+    /** The method is neither GET, HEAD nor OPTIONS. */
+    public const ERROR_METHOD_NOT_ALLOWED = 6;
+
+    /**
+     * The methods the proxy answers (finding P-19).
+     */
+    public const ALLOWED_METHODS = 'GET, HEAD, OPTIONS';
+
+    /**
+     * Seconds a browser may keep the answer to a preflight; browsers cap
+     * it (Chromium at 2 hours, Firefox at 24).
+     */
+    public const PREFLIGHT_MAX_AGE = 86400;
+
     /**
      * The Content-Security-Policy of an SVG document (finding P-7): an SVG
      * opened from the proxy's own origin runs no script, loads nothing but
@@ -57,6 +71,7 @@ final class ResponseFactory
         self::ERROR_ORIGIN_NOT_FOUND => 'Cannot read remote origin file',
         self::ERROR_NOT_CACHEABLE => 'Request cannot be processed',
         self::ERROR_UPSTREAM_UNAVAILABLE => 'Upstream temporarily unavailable',
+        self::ERROR_METHOD_NOT_ALLOWED => 'Method not allowed',
     ];
 
     /**
@@ -99,24 +114,43 @@ final class ResponseFactory
     }
 
     /**
-     * The answer to every OPTIONS request: 204 with the 2.x CORS headers.
+     * The answer to every OPTIONS request: 204 with a valid CORS preflight
+     * answer for the anonymous requests the assets get (finding P-19: 2.x
+     * combined the "*" origin with credentials, which browsers refuse, and
+     * allowed POST). The request headers a preflight asks for are allowed
+     * when each is a valid field name: the assets are public, and without
+     * credentials a header gives a page nothing it could not send itself.
+     *
+     * @param string $requestedHeaders the Access-Control-Request-Headers value, empty when absent
      */
-    public function preflight(): Response
+    public function preflight(string $requestedHeaders): Response
     {
-        return new Response('', 204, [
+        $headers = [
+            'Allow' => self::ALLOWED_METHODS,
             'Access-Control-Allow-Origin' => '*',
-            'Access-Control-Allow-Credentials' => 'true',
-            'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers' => 'DNT, X-User-Token, Keep-Alive, User-Agent, X-Requested-With, If-Modified-Since, Cache-Control, Content-Type',
-            'Access-Control-Max-Age' => (string) $this->cacheExpiry,
-            'Content-Type' => 'text/plain charset=UTF-8',
+            'Access-Control-Allow-Methods' => self::ALLOWED_METHODS,
+            'Access-Control-Max-Age' => (string) min($this->cacheExpiry, self::PREFLIGHT_MAX_AGE),
             'Content-Length' => '0',
-        ]);
+            'Vary' => 'Access-Control-Request-Headers',
+        ];
+        $names = [];
+        foreach (explode(',', $requestedHeaders) as $name) {
+            $name = strtolower(trim($name));
+            if ($name !== '') {
+                $names[] = $name;
+            }
+        }
+        if ($names !== [] && preg_match('/\A[!#$%&\'*+.^_`|~0-9a-z-]+(?:,[!#$%&\'*+.^_`|~0-9a-z-]+)*\z/', implode(',', $names)) === 1) {
+            $headers['Access-Control-Allow-Headers'] = implode(', ', $names);
+        }
+
+        return new Response('', 204, $headers);
     }
 
     /**
      * A plain-text error: 503 with Retry-After for ERROR_UPSTREAM_UNAVAILABLE,
-     * 404 for every other error (finding P-21).
+     * 405 with Allow for ERROR_METHOD_NOT_ALLOWED, 404 for every other
+     * error (finding P-21).
      *
      * @param string|null $path  the request path, hashed into the Ray ID; null for a random Ray ID
      * @param int         $error one of the ERROR_* constants
@@ -128,6 +162,9 @@ final class ResponseFactory
         if ($error === self::ERROR_UPSTREAM_UNAVAILABLE) {
             $status = 503;
             $headers['Retry-After'] = (string) $this->networkErrorTtl;
+        } elseif ($error === self::ERROR_METHOD_NOT_ALLOWED) {
+            $status = 405;
+            $headers['Allow'] = self::ALLOWED_METHODS;
         }
 
         return new Response(self::errorBody($path, $error), $status, $headers);
@@ -230,13 +267,15 @@ final class ResponseFactory
     }
 
     /**
-     * Adds "X-Content-Type-Options: nosniff", so that a browser never takes
-     * an asset for another type, and the SVG policy to an SVG: one whose
-     * request path ends in ".svg" ($svg) or whose Content-Type says so,
-     * whatever the origin claims.
+     * Adds "Access-Control-Allow-Origin: *", which the preflight answer
+     * promises; "X-Content-Type-Options: nosniff", so that a browser never
+     * takes an asset for another type; and the SVG policy to an SVG: one
+     * whose request path ends in ".svg" ($svg) or whose Content-Type says
+     * so, whatever the origin claims.
      */
     private function protect(Response $response, bool $svg): void
     {
+        $response->headers->set('access-control-allow-origin', '*');
         $response->headers->set('x-content-type-options', 'nosniff');
         $type = strtolower(trim((string) $response->headers->get('content-type', '')));
         if ($svg || strpos($type, 'image/svg+xml') === 0) {

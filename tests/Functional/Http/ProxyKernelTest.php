@@ -157,8 +157,27 @@ final class ProxyKernelTest extends TestCase
 
         self::assertSame(204, $response->getStatusCode());
         self::assertSame('*', $response->headers->get('access-control-allow-origin'));
-        self::assertSame('31536000', $response->headers->get('access-control-max-age'));
+        self::assertSame('86400', $response->headers->get('access-control-max-age'));
         self::assertSame([], $this->origin->getRequests());
+    }
+
+    public function testOtherMethodsAreRefused(): void
+    {
+        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'POST'));
+
+        self::assertSame(405, $response->getStatusCode());
+        self::assertSame('GET, HEAD, OPTIONS', $response->headers->get('allow'));
+        self::assertSame([], $this->origin->getRequests());
+    }
+
+    public function testHeadHasTheHeadersOfTheGetWithoutBody(): void
+    {
+        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css', 'HEAD'));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('', $response->getContent());
+        self::assertSame((string) strlen(self::CSS), $response->headers->get('content-length'));
+        self::assertFileExists($this->directory->path('css/site.css'));
     }
 
     /**

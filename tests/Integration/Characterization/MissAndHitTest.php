@@ -232,39 +232,92 @@ final class MissAndHitTest extends CharacterizationTestCase
     }
 
     /**
-     * Methods are not checked: POST is served like GET (finding P-19,
-     * resolved by PRX-5).
+     * @return array<string, array{string}>
      */
-    public function testPostIsHandledLikeGetP19(): void
+    public static function provideRefusedMethods(): array
     {
-        $response = $this->send('POST', '/images/gradient.png');
-
-        self::assertSame(200, $response->getStatus());
-        self::assertSame(self::fixture('images/gradient.png'), $response->getBody());
-        self::assertSame('GET', $this->origin->getLastRequest()['method']);
+        return [
+            'POST' => ['POST'],
+            'PUT' => ['PUT'],
+            'DELETE' => ['DELETE'],
+            'PATCH' => ['PATCH'],
+        ];
     }
 
     /**
-     * Every OPTIONS request gets the same answer, which combines a wildcard
-     * origin with credentials (finding P-19, resolved by PRX-5).
+     * Only GET, HEAD and OPTIONS are answered; any other method gets 405
+     * and never reaches the origin (finding P-19: 2.x served POST, PUT and
+     * DELETE like GET).
+     *
+     * @dataProvider provideRefusedMethods
+     *
+     * @group regression
      */
-    public function testPreflightAnswersWithStaticCorsHeadersP19(): void
+    #[DataProvider('provideRefusedMethods')]
+    #[Group('regression')]
+    public function testOtherMethodsAreRefusedP19(string $method): void
     {
-        $response = $this->send('OPTIONS', '/anything/at/all', ['Origin' => 'https://site.example.test']);
+        $response = $this->send($method, '/images/gradient.png');
+
+        self::assertErrorResponse($response, 405, 'Method not allowed', '/images/gradient.png');
+        self::assertSame('GET, HEAD, OPTIONS', $response->getHeader('Allow'));
+        self::assertSame([], $this->origin->getRequests());
+        self::assertFileDoesNotExist($this->publicPath('images/gradient.png'));
+    }
+
+    public function testHeadAnswersTheHeadersOfTheGetWithoutBody(): void
+    {
+        $png = self::fixture('images/gradient.png');
+
+        $miss = $this->send('HEAD', '/images/gradient.png?v=1');
+        $hit = $this->send('HEAD', '/images/gradient.png?v=1');
+
+        foreach (['miss' => $miss, 'hit' => $hit] as $status => $response) {
+            self::assertSame(200, $response->getStatus());
+            self::assertSame('', $response->getBody());
+            self::assertSame($status, $response->getHeader('X-Cache-Status'));
+            self::assertSame('image/png', $response->getHeader('Content-Type'));
+            self::assertSame((string) strlen($png), $response->getHeader('Content-Length'));
+        }
+        self::assertStringEqualsFile($this->bucketPath('v=1', 'images/gradient.png'), $png);
+    }
+
+    /**
+     * A CORS preflight gets a valid answer: the "*" origin without
+     * credentials, the methods the proxy answers and the request headers
+     * the browser asks for (finding P-19: 2.x combined "*" with
+     * credentials, which browsers refuse, and allowed POST).
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testPreflightIsAValidCorsAnswerP19(): void
+    {
+        $response = $this->send('OPTIONS', '/fonts/font.ttf', [
+            'Origin' => 'https://site.example.test',
+            'Access-Control-Request-Method' => 'GET',
+            'Access-Control-Request-Headers' => 'range, if-none-match',
+        ]);
 
         self::assertSame(204, $response->getStatus());
         self::assertSame('', $response->getBody());
         self::assertSame('*', $response->getHeader('Access-Control-Allow-Origin'));
-        self::assertSame('true', $response->getHeader('Access-Control-Allow-Credentials'));
-        self::assertSame('GET, POST, OPTIONS', $response->getHeader('Access-Control-Allow-Methods'));
-        self::assertSame(
-            'DNT, X-User-Token, Keep-Alive, User-Agent, X-Requested-With, If-Modified-Since, Cache-Control, Content-Type',
-            $response->getHeader('Access-Control-Allow-Headers')
-        );
-        self::assertSame('31536000', $response->getHeader('Access-Control-Max-Age'));
-        self::assertSame('text/plain charset=UTF-8', $response->getHeader('Content-Type'));
-        self::assertSame('0', $response->getHeader('Content-Length'));
+        self::assertFalse($response->hasHeader('Access-Control-Allow-Credentials'));
+        self::assertSame('GET, HEAD, OPTIONS', $response->getHeader('Access-Control-Allow-Methods'));
+        self::assertSame('range, if-none-match', $response->getHeader('Access-Control-Allow-Headers'));
+        self::assertSame('86400', $response->getHeader('Access-Control-Max-Age'));
         self::assertSame([], $this->origin->getRequests());
+    }
+
+    /**
+     * The asset a preflight allows is answered with the CORS header too.
+     */
+    public function testAssetsAllowEveryOrigin(): void
+    {
+        $response = $this->get('/fonts/font.ttf', ['Origin' => 'https://site.example.test']);
+
+        self::assertSame('*', $response->getHeader('Access-Control-Allow-Origin'));
+        self::assertFalse($response->hasHeader('Access-Control-Allow-Credentials'));
     }
 
     /**

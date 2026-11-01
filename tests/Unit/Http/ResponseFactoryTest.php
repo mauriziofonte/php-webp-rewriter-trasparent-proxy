@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Http\ResponseFactory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Group;
 use Symfony\Component\HttpFoundation\Response;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -19,22 +20,66 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 #[CoversClass(ResponseFactory::class)]
 final class ResponseFactoryTest extends TestCase
 {
-    public function testPreflight(): void
+    /**
+     * A valid preflight answer: the "*" origin without credentials, the
+     * methods the proxy answers (finding P-19).
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testPreflightP19(): void
     {
-        $response = (new ResponseFactory(600, 30))->preflight();
+        $response = (new ResponseFactory(600, 30))->preflight('');
 
         self::assertSame(204, $response->getStatusCode());
         self::assertSame('', $response->getContent());
         self::assertSame('*', $response->headers->get('Access-Control-Allow-Origin'));
-        self::assertSame('true', $response->headers->get('Access-Control-Allow-Credentials'));
-        self::assertSame('GET, POST, OPTIONS', $response->headers->get('Access-Control-Allow-Methods'));
-        self::assertSame(
-            'DNT, X-User-Token, Keep-Alive, User-Agent, X-Requested-With, If-Modified-Since, Cache-Control, Content-Type',
-            $response->headers->get('Access-Control-Allow-Headers')
-        );
+        self::assertFalse($response->headers->has('Access-Control-Allow-Credentials'));
+        self::assertSame('GET, HEAD, OPTIONS', $response->headers->get('Access-Control-Allow-Methods'));
+        self::assertSame('GET, HEAD, OPTIONS', $response->headers->get('Allow'));
+        self::assertFalse($response->headers->has('Access-Control-Allow-Headers'));
         self::assertSame('600', $response->headers->get('Access-Control-Max-Age'));
-        self::assertSame('text/plain charset=UTF-8', $response->headers->get('Content-Type'));
         self::assertSame('0', $response->headers->get('Content-Length'));
+    }
+
+    public function testThePreflightMaxAgeIsCapped(): void
+    {
+        self::assertSame('86400', (new ResponseFactory(31536000, 30))->preflight('')->headers->get('Access-Control-Max-Age'));
+    }
+
+    /**
+     * @return array<string, array{string, string|null}>
+     */
+    public static function provideRequestedHeaders(): array
+    {
+        return [
+            'one' => ['Range', 'range'],
+            'several, spaced' => [' If-None-Match ,X-Custom', 'if-none-match, x-custom'],
+            'empty entries' => [',range,', 'range'],
+            'not a field name' => ['range, bad header', null],
+            'injection' => ["range\r\nSet-Cookie: x", null],
+        ];
+    }
+
+    /**
+     * @dataProvider provideRequestedHeaders
+     */
+    #[DataProvider('provideRequestedHeaders')]
+    public function testThePreflightAllowsTheRequestedHeaders(string $requested, ?string $allowed): void
+    {
+        $response = (new ResponseFactory(600, 30))->preflight($requested);
+
+        self::assertSame($allowed, $response->headers->get('Access-Control-Allow-Headers'));
+        self::assertSame('Access-Control-Request-Headers', $response->headers->get('Vary'));
+    }
+
+    public function testMethodNotAllowed(): void
+    {
+        $response = (new ResponseFactory(600, 30))->error('/a.css', ResponseFactory::ERROR_METHOD_NOT_ALLOWED);
+
+        self::assertSame(405, $response->getStatusCode());
+        self::assertSame('GET, HEAD, OPTIONS', $response->headers->get('Allow'));
+        self::assertSame("The request could not be processed.\nError code: Method not allowed.\nRay ID: " . md5('/a.css'), $response->getContent());
     }
 
     /**
@@ -212,7 +257,7 @@ final class ResponseFactoryTest extends TestCase
     {
         $responses = ResponseFactory::fromConfig(TestConfig::create(['CACHE_EXPIRY' => '120', 'NETWORK_ERROR_TTL' => '7']));
 
-        self::assertSame('120', $responses->preflight()->headers->get('Access-Control-Max-Age'));
+        self::assertSame('120', $responses->preflight('')->headers->get('Access-Control-Max-Age'));
         self::assertSame('7', $responses->error('/a.css', ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE)->headers->get('Retry-After'));
     }
 }
