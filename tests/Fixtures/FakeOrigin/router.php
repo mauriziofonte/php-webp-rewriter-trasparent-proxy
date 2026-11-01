@@ -19,7 +19,9 @@ declare(strict_types=1);
  *
  * A rule stored in rules.json for the decoded path replaces the answer with
  * its "status" (and "location", "body", "headers"); the query parameters
- * origin_status and origin_location do the same for a single request.
+ * origin_status and origin_location do the same for a single request. The
+ * Cache-Control of the files is "private, max-age=60", or the value of
+ * FAKE_ORIGIN_CACHE_CONTROL.
  */
 
 $state = (string) getenv('FAKE_ORIGIN_STATE');
@@ -130,7 +132,13 @@ header('Last-Modified: Tue, 01 Sep 2026 10:00:00 GMT');
 header('Vary: Origin');
 header('Accept-Ranges: bytes');
 header('Set-Cookie: origin-session=secret');
-header('Cache-Control: private, max-age=60');
+// "private, max-age=60", which the proxy must neither store nor forward,
+// unless the test that started the origin chose another one
+// (FAKE_ORIGIN_CACHE_CONTROL), or a rule's headers say otherwise.
+if (!isset($rule['headers']) || !is_array($rule['headers']) || !isset($rule['headers']['Cache-Control'])) {
+    $cacheControl = getenv('FAKE_ORIGIN_CACHE_CONTROL');
+    header('Cache-Control: ' . (is_string($cacheControl) && $cacheControl !== '' ? $cacheControl : 'private, max-age=60'));
+}
 header('X-Origin-Only: not-for-clients');
 echo $contents;
 

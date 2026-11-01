@@ -30,19 +30,25 @@ final class FakeOriginServer
     }
 
     /**
-     * @param string $stateDirectory existing directory for the request log and the rules
+     * @param string      $stateDirectory existing directory for the request log and the rules
+     * @param string|null $cacheControl   the Cache-Control of the files; null for the default of router.php,
+     *                                    "private, max-age=60"
      */
-    public static function start(string $stateDirectory): self
+    public static function start(string $stateDirectory, ?string $cacheControl = null): self
     {
         $documentRoot = dirname(__DIR__) . '/origin';
+        $environment = [
+            'PATH' => '/usr/local/bin:/usr/bin:/bin',
+            'FAKE_ORIGIN_STATE' => $stateDirectory,
+            'FAKE_ORIGIN_DOCROOT' => $documentRoot,
+        ];
+        if ($cacheControl !== null) {
+            $environment['FAKE_ORIGIN_CACHE_CONTROL'] = $cacheControl;
+        }
         $server = BuiltinServer::start(
             $documentRoot,
             __DIR__ . '/router.php',
-            [
-                'PATH' => '/usr/local/bin:/usr/bin:/bin',
-                'FAKE_ORIGIN_STATE' => $stateDirectory,
-                'FAKE_ORIGIN_DOCROOT' => $documentRoot,
-            ],
+            $environment,
             $stateDirectory . '/server.log'
         );
 

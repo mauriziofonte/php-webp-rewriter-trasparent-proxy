@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Http\FileResponder;
 use Mfonte\ProxyCdn\Http\ResponseFactory;
+use Mfonte\ProxyCdn\Origin\ResponseBody;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -171,6 +172,26 @@ final class FileResponderTest extends TestCase
         $response = $this->responder(Config::SENDFILE_X_SENDFILE)->respond($request, $file, 'css', 'HIT');
 
         self::assertSame($file, $response->headers->get('x-sendfile'));
+    }
+
+    /**
+     * A response the origin forbade storing is streamed from the temporary
+     * file of the fetch, which is then deleted (finding P-15).
+     */
+    public function testAnUncachedBodyIsStreamedThenDeleted(): void
+    {
+        $body = ResponseBody::fromString('secret();', $this->directory->path());
+        self::assertNotNull($body);
+        $path = $body->getPath();
+
+        $response = $this->responder()->respondUncached(Request::create('/a.js'), $body, 'js', true);
+
+        self::assertSame('secret();', self::body($response));
+        self::assertSame('BYPASS', $response->headers->get('x-cache-status'));
+        self::assertSame('9', $response->headers->get('content-length'));
+        self::assertStringContainsString('no-store', (string) $response->headers->get('cache-control'));
+        self::assertSame('*', $response->headers->get('access-control-allow-origin'));
+        self::assertFileDoesNotExist($path);
     }
 
     /**

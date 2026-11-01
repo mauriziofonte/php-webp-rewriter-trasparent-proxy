@@ -7,6 +7,7 @@ namespace Mfonte\ProxyCdn\Http;
 use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\CacheLocation;
 use Mfonte\ProxyCdn\Cache\CacheStorage;
+use Mfonte\ProxyCdn\Cache\Freshness;
 use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
 use Mfonte\ProxyCdn\Cache\QueryString;
@@ -19,6 +20,7 @@ use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Origin\OriginRequest;
 use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Origin\RedirectTarget;
+use Mfonte\ProxyCdn\Origin\ResponseBody;
 use Mfonte\ProxyCdn\Security\HostAllowlist;
 use Mfonte\ProxyCdn\Security\PathSanitizer;
 use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
@@ -57,10 +59,12 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    sibling;
  * 6. otherwise, unless the circuit breaker of the origin is open, the
  *    entry is fetched from the origin; a failure is answered by its kind
- *    (see failure(), finding P-13); the entry is stored as the origin sent
- *    it, streamed from its temporary file (finding P-17), with its
- *    compressed siblings, a raster is converted to WEBP when a converter
- *    is configured, and the asset is served from the cache.
+ *    (see failure(), finding P-13); a response the origin forbids storing
+ *    (no-store, private) is streamed to the client only; any other is
+ *    stored as the origin sent it, streamed from its temporary file
+ *    (finding P-17), with its compressed siblings, a raster is converted
+ *    to WEBP when a converter is configured, and the asset is served from
+ *    the cache.
  *
  * The web server serves the cache files itself, without PHP, whenever it
  * can compute their location (see CacheKeyResolver); the kernel answers
@@ -386,11 +390,24 @@ final class ProxyKernel
     }
 
     /**
-     * Stores a fetched asset with its siblings and serves it.
+     * Stores a fetched asset with its siblings and serves it, or streams it
+     * without storing it when the origin forbids that (no-store, private:
+     * finding P-15).
      */
     private function storeAndServe(Request $request, string $origin, CacheLocation $location, string $extension, OriginResponse $fetched): Response
     {
         $path = '/' . $location->getRelativePath();
+        $freshness = Freshness::fromHeaders($fetched->getHeaders(), time());
+        if (!$freshness->isStorable()) {
+            $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
+            $body = $fetched->getBodyFile() ?? ResponseBody::fromString($fetched->getBody(), sys_get_temp_dir());
+            if ($body === null) {
+                return $this->responses->error($path, ResponseFactory::ERROR_CACHE_FILE);
+            }
+
+            return $this->files->respondUncached($request, $body, $extension, $freshness->isNoStore());
+        }
+
         $error = $this->store($location, $extension, $fetched);
         if ($error !== null) {
             return $this->responses->error($path, $error);

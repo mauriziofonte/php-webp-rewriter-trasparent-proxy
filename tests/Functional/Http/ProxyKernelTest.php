@@ -61,7 +61,7 @@ final class ProxyKernelTest extends TestCase
             'content-length' => (string) strlen(self::CSS),
             'etag' => '"abc"',
             'set-cookie' => 'session=secret',
-            'cache-control' => 'private',
+            'cache-control' => 'public, max-age=7776000',
         ]);
         $this->origin->serve(self::ORIGIN . '/images/logo.png', 'PNG-BYTES', ['content-type' => 'image/png', 'content-length' => '9']);
     }

@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\CacheLocation;
 use Mfonte\ProxyCdn\Cache\CacheStorage;
 use Mfonte\ProxyCdn\Config\Config;
+use Mfonte\ProxyCdn\Origin\ResponseBody;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -147,6 +148,41 @@ final class FileResponder
         }
 
         return Config::SENDFILE_NONE;
+    }
+
+    /**
+     * A response the origin forbade storing (no-store, private), streamed
+     * from the temporary file of the fetch, which is deleted once sent.
+     * Never cached by a shared cache; HEAD gets the headers only.
+     *
+     * @param string $extension extension that types the body
+     * @param bool   $noStore   whether the origin said "no-store" (else "private")
+     */
+    public function respondUncached(Request $request, ResponseBody $body, string $extension, bool $noStore): Response
+    {
+        $headers = $this->responses->assetHeaders($extension, ResponseFactory::CACHE_BYPASS);
+        $headers['Cache-Control'] = $noStore ? 'no-store' : 'private, no-cache';
+        $headers['Content-Length'] = (string) $body->getSize();
+        if ($request->getRealMethod() === 'HEAD' || $body->getSize() === 0) {
+            $body->delete();
+
+            return new Response('', 200, $headers);
+        }
+
+        return new StreamedResponse(static function () use ($body): void {
+            $input = @fopen($body->getPath(), 'rb');
+            $output = @fopen('php://output', 'wb');
+            if ($input !== false && $output !== false) {
+                stream_copy_to_stream($input, $output);
+            }
+            if ($input !== false) {
+                fclose($input);
+            }
+            if ($output !== false) {
+                fclose($output);
+            }
+            $body->delete();
+        }, 200, $headers);
     }
 
     /**

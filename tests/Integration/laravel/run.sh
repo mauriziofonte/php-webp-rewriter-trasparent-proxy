@@ -167,7 +167,9 @@ php -l "$app/routes/web.php" >/dev/null || die "routes/web.php does not compile"
 
 log "starting the fake origin on $origin_url"
 mkdir -p "$workdir/origin-state"
+# Public and long-lived, so that the proxy stores the files (MISS, then HIT).
 FAKE_ORIGIN_STATE="$workdir/origin-state" FAKE_ORIGIN_DOCROOT="$fixtures" \
+    FAKE_ORIGIN_CACHE_CONTROL="public, max-age=7776000" \
     php -S "127.0.0.1:$origin_port" -t "$fixtures" "$root/tests/Fixtures/FakeOrigin/router.php" >"$workdir/origin.log" 2>&1 &
 pids+=($!)
 wait_for "$origin_url/css/site.css"

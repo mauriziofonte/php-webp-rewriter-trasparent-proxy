@@ -63,7 +63,7 @@ SH;
         file_put_contents($this->workDirectory . '/bin/cwebp', self::FAKE_CWEBP . "\n");
         chmod($this->workDirectory . '/bin/cwebp', 0755);
 
-        $this->origin = FakeOriginServer::start($this->workDirectory . '/origin');
+        $this->origin = FakeOriginServer::start($this->workDirectory . '/origin', $this->originCacheControl());
         $this->proxy = ProxyServer::start(
             $this->workDirectory . '/app',
             [
@@ -108,6 +108,17 @@ SH;
             'LOCALE' => '"en_US"',
             'IMAGE_CONVERSION_MODE' => '"none"',
         ];
+    }
+
+    /**
+     * The Cache-Control of the files of the fake origin. These tests
+     * characterize the cache, so its default is public and long-lived; the
+     * default of the fake origin, "private, max-age=60", is for the tests
+     * of what the proxy must not store (null).
+     */
+    protected function originCacheControl(): ?string
+    {
+        return 'public, max-age=7776000';
     }
 
     /**

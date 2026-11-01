@@ -71,6 +71,9 @@ final class ResponseFactory
     /** X-Cache-Status of a response fetched from the origin. */
     public const CACHE_MISS = 'MISS';
 
+    /** X-Cache-Status of a response the origin forbade storing (no-store, private). */
+    public const CACHE_BYPASS = 'BYPASS';
+
     /**
      * The realm of the WWW-Authenticate challenge of a refused purge.
      */
