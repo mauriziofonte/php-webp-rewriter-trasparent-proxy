@@ -48,6 +48,7 @@ try {
 (new RuntimeSettings())->apply($config);
 
 $logger = new JsonLogger($logFile, $config->isDebug() ? LogLevel::DEBUG : LogLevel::NOTICE);
+$kernel = null;
 try {
     $kernel = ProxyKernelFactory::create(
         $config,
@@ -64,3 +65,14 @@ try {
     $response = ResponseFactory::unexpectedError('Unexpected error');
 }
 $response->send();
+
+// Work left for after the response, such as the revalidation of an entry
+// served stale: Response::send() has already let the client go under
+// PHP-FPM (fastcgi_finish_request()).
+if ($kernel !== null) {
+    try {
+        $kernel->terminate();
+    } catch (\Throwable $exception) {
+        $logger->error('unhandled exception after the response', ['exception' => $exception]);
+    }
+}

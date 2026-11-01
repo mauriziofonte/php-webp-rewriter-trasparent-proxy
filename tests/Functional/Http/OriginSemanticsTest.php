@@ -186,6 +186,38 @@ final class OriginSemanticsTest extends TestCase
         self::assertSame('"v2"', $this->metadata()->getEtag());
     }
 
+    public function testStaleWhileRevalidateServesTheEntryAndRevalidatesAfterTheResponse(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60, stale-while-revalidate=300', 'etag' => '"v1"']);
+        $kernel = $this->kernel();
+        $kernel->handle(Request::create(self::URL));
+        $this->age(100);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::notModified([]));
+
+        $response = $kernel->handle(Request::create(self::URL));
+
+        self::assertSame('STALE', $response->headers->get('x-cache-status'));
+        self::assertSame('short();', self::body($response));
+        self::assertCount(1, $this->origin->getRequests(), 'not before the response');
+        self::assertFalse($this->metadata()->isFresh(time()));
+
+        $kernel->terminate();
+
+        self::assertCount(2, $this->origin->getRequests());
+        self::assertSame('"v1"', $this->origin->getRequests()[1]->getHeaders()['If-None-Match'] ?? null);
+        self::assertTrue($this->metadata()->isFresh(time()));
+        self::assertSame('HIT', $kernel->handle(Request::create(self::URL))->headers->get('x-cache-status'));
+    }
+
+    public function testTheDefaultStaleWhileRevalidateAppliesWhenTheOriginSetsNone(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+        $this->kernel(['STALE_WHILE_REVALIDATE' => '30'])->handle(Request::create(self::URL));
+        $this->age(80);
+
+        self::assertSame('STALE', $this->kernel(['STALE_WHILE_REVALIDATE' => '30'])->handle(Request::create(self::URL))->headers->get('x-cache-status'));
+    }
+
     public function testAnUnavailableOriginLeavesTheStaleEntryServed(): void
     {
         $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
@@ -248,6 +280,20 @@ final class OriginSemanticsTest extends TestCase
 
         self::assertSame('BYPASS', $response->headers->get('x-cache-status'));
         self::assertSame('now private();', self::body($response));
+        self::assertSame([], $this->cacheFiles());
+    }
+
+    public function testABackgroundRevalidationDropsAnEntryTheOriginStopsLettingBeStored(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60, stale-while-revalidate=300']);
+        $kernel = $this->kernel();
+        $kernel->handle(Request::create(self::URL));
+        $this->age(100);
+        $this->origin->serve(self::ORIGIN_URL, 'now private();', ['cache-control' => 'private']);
+
+        self::assertSame('STALE', $kernel->handle(Request::create(self::URL))->headers->get('x-cache-status'));
+        $kernel->terminate();
+
         self::assertSame([], $this->cacheFiles());
     }
 

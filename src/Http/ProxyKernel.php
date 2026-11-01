@@ -58,7 +58,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    clients that accept it, with "Vary: Accept" (finding P-1: 2.x
  *    redirected every client to the WEBP copy), or as its Brotli or gzip
  *    sibling; an entry of the tier PHP revalidates is served while fresh,
- *    and revalidated with the origin once expired (serveManaged(),
+ *    served stale and revalidated after the response within its
+ *    stale-while-revalidate, and revalidated first beyond (serveManaged(),
  *    finding P-15, opportunity O-D);
  * 6. otherwise, unless the circuit breaker of the origin is open, the
  *    entry is fetched from the origin; a failure is answered by its kind
@@ -73,7 +74,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * can compute their location (see CacheKeyResolver); the kernel answers
  * everything else, with the same headers. It only builds the response: it
  * never sends it, never exits and reads nothing but the Request, so that a
- * host framework can mount it.
+ * host framework can mount it; terminate() runs the background
+ * revalidations once the response is sent.
  */
 final class ProxyKernel
 {
@@ -179,6 +181,13 @@ final class ProxyKernel
      * @var LoggerInterface
      */
     private $logger;
+
+    /**
+     * The entries served stale, to revalidate in terminate(), by key.
+     *
+     * @var array<string, array{CacheLocation, string, string, string, QueryString}>
+     */
+    private $pendingRevalidations = [];
 
     /**
      * @param WebpConverter|null $converter null when IMAGE_CONVERSION_MODE is "none"
@@ -380,6 +389,26 @@ final class ProxyKernel
     }
 
     /**
+     * Runs the work left for after the response was sent: the background
+     * revalidations of the expired entries served stale
+     * (stale-while-revalidate). The front controller calls it once the
+     * client has its response (fastcgi_finish_request()); a host
+     * application calls it from its own terminate hook.
+     */
+    public function terminate(): void
+    {
+        $pending = $this->pendingRevalidations;
+        $this->pendingRevalidations = [];
+        foreach ($pending as $revalidation) {
+            list($location, $extension, $origin, $path, $query) = $revalidation;
+            $metadata = $this->readMetadata($location);
+            if ($metadata === null || !$metadata->isFresh(time())) {
+                $this->revalidate(null, $location, $extension, $origin, $path, $query, $metadata);
+            }
+        }
+    }
+
+    /**
      * The 404 or 410 that the negative cache remembers.
      */
     private function notFound(string $path, int $status): Response
@@ -390,8 +419,9 @@ final class ProxyKernel
     /**
      * The response of an entry that PHP revalidates with the origin
      * (finding P-15, opportunity O-D), when it is on disk: fresh, it is
-     * served with the max-age it has left; expired, it is revalidated
-     * first.
+     * served with the max-age it has left; expired within its
+     * stale-while-revalidate, it is served stale and revalidated after the
+     * response (terminate()); expired beyond, it is revalidated first.
      * Null when the entry is not on disk.
      *
      * @param CacheLocation $location the entry, in the tier the web server serves
@@ -409,6 +439,11 @@ final class ProxyKernel
         if ($metadata !== null && $metadata->isFresh($now)) {
             return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_HIT, $metadata->getRemainingLifetime($now));
         }
+        if ($metadata !== null && $metadata->isWithinStaleWhileRevalidate($now)) {
+            $this->pendingRevalidations[$managed->getKey()] = [$managed, $extension, $origin, $path, $query];
+
+            return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0);
+        }
 
         return $this->revalidate($request, $managed, $extension, $origin, $path, $query, $metadata);
     }
@@ -419,13 +454,19 @@ final class ProxyKernel
      * removes it, and a failure leaves it, served stale while its
      * stale-if-error allows (and while the breaker of the origin is open).
      *
-     * @return Response|null the response to $request; null when the entry was removed
+     * @param Request|null $request the request to answer; null for a background revalidation
+     *
+     * @return Response|null the response to $request; null without request, or when the entry was removed
      */
-    private function revalidate(Request $request, CacheLocation $managed, string $extension, string $origin, string $path, QueryString $query, ?EntryMetadata $metadata): ?Response
+    private function revalidate(?Request $request, CacheLocation $managed, string $extension, string $origin, string $path, QueryString $query, ?EntryMetadata $metadata): ?Response
     {
         $breakerKey = RedirectTarget::originOf($origin);
         $mayServeStale = $metadata === null || $metadata->isWithinStaleIfError(time());
         if ($this->circuitBreaker->isOpen($breakerKey)) {
+            if ($request === null) {
+                return null;
+            }
+
             return $mayServeStale
                 ? $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0)
                 : $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
@@ -438,10 +479,26 @@ final class ProxyKernel
             $this->storage->write($managed->getMetadataFile(), $renewed->toJson());
             $this->circuitBreaker->reset($breakerKey);
 
-            return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_REVALIDATED, $renewed->getRemainingLifetime($now));
+            return $request === null ? null : $this->serve($request, $managed, $extension, ResponseFactory::CACHE_REVALIDATED, $renewed->getRemainingLifetime($now));
         }
         $web = $managed->unmanaged();
         if ($fetched->isSuccessful()) {
+            if ($request === null) {
+                if (!Freshness::fromHeaders($fetched->getHeaders(), $now)->isStorable()) {
+                    // The origin no longer lets the entry be stored.
+                    $fetched->release();
+                    foreach ($managed->getFiles() as $file) {
+                        $this->storage->delete($file);
+                    }
+
+                    return null;
+                }
+                $this->storeFetched($web, $extension, $fetched);
+                $this->circuitBreaker->reset($breakerKey);
+
+                return null;
+            }
+
             return $this->storeAndServe($request, $origin, $web, $extension, $fetched);
         }
         $fetched->release();
@@ -455,10 +512,11 @@ final class ProxyKernel
             $this->circuitBreaker->recordFailure($breakerKey);
             $this->logger->warning('stale entry served, origin unavailable', ['path' => $path, 'reason' => $reason]);
 
-            return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0);
+            return $request === null ? null : $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0);
         }
+        $answer = $this->failure($origin, $path, $web, $fetched);
 
-        return $this->failure($origin, $path, $web, $fetched);
+        return $request === null ? null : $answer;
     }
 
     /**
@@ -485,14 +543,16 @@ final class ProxyKernel
     /**
      * The origin request for the asset of $path.
      *
-     * @param Request               $request    the client request, for the Referer
+     * @param Request|null          $request    the client request, for the Referer; null in the background
      * @param array<string, string> $conditions If-None-Match and If-Modified-Since of a revalidation
      */
-    private function originRequest(Request $request, string $origin, string $path, QueryString $query, array $conditions): OriginRequest
+    private function originRequest(?Request $request, string $origin, string $path, QueryString $query, array $conditions): OriginRequest
     {
         $headers = $conditions;
-        // The scheme the client used, as a trusted proxy reports it (TRUSTED_PROXIES).
-        $headers['Referer'] = ($this->trustedProxies->isSecure($request) ? 'https' : 'http') . '://' . $request->getHttpHost();
+        if ($request !== null) {
+            // The scheme the client used, as a trusted proxy reports it (TRUSTED_PROXIES).
+            $headers['Referer'] = ($this->trustedProxies->isSecure($request) ? 'https' : 'http') . '://' . $request->getHttpHost();
+        }
         $forwardedQuery = $query->getForwarded();
         $originUrl = $origin . PathSanitizer::encode($path) . ($forwardedQuery !== '' ? '?' . $forwardedQuery : '');
 
