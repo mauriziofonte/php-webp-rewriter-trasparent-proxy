@@ -285,8 +285,10 @@ final class HttpResponse
     }
 
     /**
-     * The transport's error number (a libcurl CURLE_* code, or an errno of
-     * the stream transport); 0 when the transfer did not fail.
+     * The transport's error number: the libcurl CURLE_* code of the failure,
+     * which StreamTransport reports too for the same failures (28 for a
+     * timeout, 35 for a TLS failure, see StreamTransport::ERROR_TIMEOUT);
+     * 0 when the transfer did not fail, or for a redirect it refused.
      */
     public function getErrorCode(): int
     {

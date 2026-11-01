@@ -559,6 +559,7 @@ abstract class TransportContractTestCase extends TestCase
         $response = $this->send($this->url('/close'));
 
         self::assertSame(HttpResponse::OUTCOME_CONNECT, $response->getOutcome());
+        self::assertSame(52, $response->getErrorCode(), 'CURLE_GOT_NOTHING');
         self::assertSame(0, $response->getStatus());
         self::assertSame([], $response->getHeaders());
         self::assertSame('', $response->getProtocolVersion());
@@ -579,6 +580,7 @@ abstract class TransportContractTestCase extends TestCase
         $response = $this->send('http://127.0.0.1:' . self::closedPort() . '/echo');
 
         self::assertSame(HttpResponse::OUTCOME_CONNECT, $response->getOutcome());
+        self::assertSame(7, $response->getErrorCode(), 'CURLE_COULDNT_CONNECT');
         self::assertTrue($response->isTransportFailure());
         self::assertSame(0, $response->getStatus());
         self::assertNotSame('', $response->getError());
@@ -589,6 +591,7 @@ abstract class TransportContractTestCase extends TestCase
         $response = $this->send('http://origin.invalid/echo');
 
         self::assertSame(HttpResponse::OUTCOME_DNS, $response->getOutcome());
+        self::assertSame(6, $response->getErrorCode(), 'CURLE_COULDNT_RESOLVE_HOST');
         self::assertNotSame('', $response->getError());
     }
 
@@ -599,6 +602,7 @@ abstract class TransportContractTestCase extends TestCase
         $response = $client->send(new HttpRequest($this->url('/bytes/10?header_delay=1500')));
 
         self::assertSame(HttpResponse::OUTCOME_TIMEOUT, $response->getOutcome());
+        self::assertSame(28, $response->getErrorCode(), 'CURLE_OPERATION_TIMEDOUT');
         self::assertSame(0, $response->getStatus());
         self::assertLessThan(1.4, $response->getDuration());
     }
@@ -743,9 +747,35 @@ abstract class TransportContractTestCase extends TestCase
         $response = $this->createClient($this->options())->send(new HttpRequest($this->tlsUrl('/echo')));
 
         self::assertSame(HttpResponse::OUTCOME_TLS, $response->getOutcome());
+        // A TLS failure has a number of its own, never the one of a timeout:
+        // CURLE_SSL_CONNECT_ERROR, or CURLE_PEER_FAILED_VERIFICATION where
+        // libcurl tells the certificate apart from the handshake.
+        self::assertContains($response->getErrorCode(), [35, 51, 60]);
         self::assertTrue($response->isTransportFailure());
         self::assertSame(0, $response->getStatus());
         self::assertNotSame('', $response->getError());
+    }
+
+    /**
+     * A peer that accepts the connection but never answers the TLS
+     * handshake is a timeout, with the number of a timeout, not the one of
+     * a TLS failure.
+     */
+    public function testAStalledTlsHandshakeIsATimeout(): void
+    {
+        $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        self::assertIsResource($server);
+        $address = (string) stream_socket_get_name($server, false);
+        try {
+            $client = $this->createClient($this->options()->withTimeouts(0.3, 0.6));
+
+            $response = $client->send(new HttpRequest('https://' . $address . '/echo'));
+        } finally {
+            fclose($server);
+        }
+
+        self::assertSame(HttpResponse::OUTCOME_TIMEOUT, $response->getOutcome());
+        self::assertSame(28, $response->getErrorCode());
     }
 
     public function testATrustedCertificateIsAccepted(): void

@@ -16,7 +16,8 @@ namespace Mfonte\ProxyCdn\Origin;
  * bytes trickle in, each within the read timeout.
  *
  * The methods that can fail return the failure as
- * [HttpResponse::OUTCOME_*, error number, message].
+ * [HttpResponse::OUTCOME_*, error number, message], the number being the
+ * libcurl one of the same failure (see StreamTransport::ERROR_TIMEOUT).
  *
  * @internal used by StreamTransport
  */
@@ -151,7 +152,7 @@ final class ResponseReader
                 return $data;
             }
             if ($data === '') {
-                return [HttpResponse::OUTCOME_NETWORK, 0, 'Transfer closed with ' . $remaining . ' bytes remaining to read'];
+                return [HttpResponse::OUTCOME_NETWORK, StreamTransport::ERROR_PARTIAL, 'Transfer closed with ' . $remaining . ' bytes remaining to read'];
             }
             $failure = $this->deliver($data);
             if ($failure !== null) {
@@ -194,14 +195,14 @@ final class ResponseReader
         while (true) {
             $line = $this->line();
             if (!is_string($line)) {
-                return $line ?? [HttpResponse::OUTCOME_NETWORK, 0, 'Transfer closed before the last chunk'];
+                return $line ?? [HttpResponse::OUTCOME_NETWORK, StreamTransport::ERROR_PARTIAL, 'Transfer closed before the last chunk'];
             }
             if (substr($line, -1) !== "\n") {
-                return [HttpResponse::OUTCOME_NETWORK, 0, 'Malformed chunked body: line too long or unterminated'];
+                return [HttpResponse::OUTCOME_NETWORK, StreamTransport::ERROR_RECEIVE, 'Malformed chunked body: line too long or unterminated'];
             }
             $size = trim(explode(';', $line, 2)[0]);
             if ($size === '' || strlen($size) > 15 || preg_match('/\A[0-9A-Fa-f]+\z/', $size) !== 1) {
-                return [HttpResponse::OUTCOME_NETWORK, 0, 'Malformed chunk size'];
+                return [HttpResponse::OUTCOME_NETWORK, StreamTransport::ERROR_RECEIVE, 'Malformed chunk size'];
             }
             if (hexdec($size) === 0) {
                 return $this->readTrailer();
@@ -212,10 +213,10 @@ final class ResponseReader
             }
             $line = $this->line();
             if (!is_string($line)) {
-                return $line ?? [HttpResponse::OUTCOME_NETWORK, 0, 'Transfer closed after a chunk'];
+                return $line ?? [HttpResponse::OUTCOME_NETWORK, StreamTransport::ERROR_PARTIAL, 'Transfer closed after a chunk'];
             }
             if (rtrim($line, "\r\n") !== '') {
-                return [HttpResponse::OUTCOME_NETWORK, 0, 'Malformed chunk: missing line ending'];
+                return [HttpResponse::OUTCOME_NETWORK, StreamTransport::ERROR_RECEIVE, 'Malformed chunk: missing line ending'];
             }
         }
     }
@@ -228,15 +229,15 @@ final class ResponseReader
         do {
             $line = $this->line();
             if (!is_string($line)) {
-                return $line ?? [HttpResponse::OUTCOME_NETWORK, 0, 'Transfer closed in the trailer'];
+                return $line ?? [HttpResponse::OUTCOME_NETWORK, StreamTransport::ERROR_PARTIAL, 'Transfer closed in the trailer'];
             }
             if (substr($line, -1) !== "\n") {
-                return [HttpResponse::OUTCOME_NETWORK, 0, 'Malformed chunked body: line too long or unterminated'];
+                return [HttpResponse::OUTCOME_NETWORK, StreamTransport::ERROR_RECEIVE, 'Malformed chunked body: line too long or unterminated'];
             }
             // The trailer counts towards the size limit of the header block,
             // as with libcurl, which hands it to the header callback.
             if (!$this->collector->headerLine($line)) {
-                return [HttpResponse::OUTCOME_OTHER, 0, 'Aborted'];
+                return [HttpResponse::OUTCOME_OTHER, StreamTransport::ERROR_ABORTED, 'Aborted'];
             }
         } while (rtrim($line, "\r\n") !== '');
 
@@ -273,21 +274,21 @@ final class ResponseReader
         $data = (string) fread($this->socket, max(1, $length));
         if ($data === '') {
             if (StreamTransport::timedOut($this->socket)) {
-                return [HttpResponse::OUTCOME_TIMEOUT, 0, 'Timed out reading ' . $this->reading];
+                return [HttpResponse::OUTCOME_TIMEOUT, StreamTransport::ERROR_TIMEOUT, 'Timed out reading ' . $this->reading];
             }
 
-            return feof($this->socket) ? '' : [HttpResponse::OUTCOME_NETWORK, 0, 'Failure receiving ' . $this->reading];
+            return feof($this->socket) ? '' : [HttpResponse::OUTCOME_NETWORK, StreamTransport::ERROR_RECEIVE, 'Failure receiving ' . $this->reading];
         }
 
         $now = microtime(true);
         if ($now > $this->deadline) {
-            return [HttpResponse::OUTCOME_TIMEOUT, 0, 'Timed out reading ' . $this->reading];
+            return [HttpResponse::OUTCOME_TIMEOUT, StreamTransport::ERROR_TIMEOUT, 'Timed out reading ' . $this->reading];
         }
         $this->windowBytes += strlen($data);
         $elapsed = $now - $this->windowStart;
         if ($elapsed >= $this->lowSpeedTime) {
             if ($this->windowBytes < $this->lowSpeedLimit * $elapsed) {
-                return [HttpResponse::OUTCOME_TIMEOUT, 0, sprintf('Operation too slow: less than %d bytes/sec for %d seconds', $this->lowSpeedLimit, (int) $this->lowSpeedTime)];
+                return [HttpResponse::OUTCOME_TIMEOUT, StreamTransport::ERROR_TIMEOUT, sprintf('Operation too slow: less than %d bytes/sec for %d seconds', $this->lowSpeedLimit, (int) $this->lowSpeedTime)];
             }
             $this->windowStart = $now;
             $this->windowBytes = 0;
@@ -303,6 +304,6 @@ final class ResponseReader
      */
     private function deliver(string $data): ?array
     {
-        return $this->collector->bodyChunk($data) ? null : [HttpResponse::OUTCOME_OTHER, 0, 'Aborted'];
+        return $this->collector->bodyChunk($data) ? null : [HttpResponse::OUTCOME_OTHER, StreamTransport::ERROR_ABORTED, 'Aborted'];
     }
 }

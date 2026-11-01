@@ -27,6 +27,33 @@ namespace Mfonte\ProxyCdn\Origin;
 final class StreamTransport implements HttpClient
 {
     /**
+     * The error number of each failure is the one libcurl reports for the
+     * same failure (CURLE_*), so that a log or a metric reads alike for
+     * both transports, and a TLS failure, for one, is never told from a
+     * timeout by its message only. The system error number of a failed
+     * connection is in the message.
+     */
+    public const ERROR_DNS = 6;
+
+    public const ERROR_CONNECT = 7;
+
+    public const ERROR_PROTOCOL = 8;
+
+    public const ERROR_PARTIAL = 18;
+
+    public const ERROR_ABORTED = 23;
+
+    public const ERROR_TIMEOUT = 28;
+
+    public const ERROR_TLS = 35;
+
+    public const ERROR_GOT_NOTHING = 52;
+
+    public const ERROR_SEND = 55;
+
+    public const ERROR_RECEIVE = 56;
+
+    /**
      * @var HttpClientOptions
      */
     private $options;
@@ -162,9 +189,13 @@ final class StreamTransport implements HttpClient
                 self::arm($socket, $connectDeadline, (float) $this->options->getLowSpeedTime());
                 // The protocol versions are the crypto_method of the context.
                 if (stream_socket_enable_crypto($socket, true) !== true) {
-                    return self::timedOut($socket)
-                        ? [HttpResponse::OUTCOME_TIMEOUT, 0, 'The TLS handshake timed out']
-                        : [HttpResponse::OUTCOME_TLS, 0, trim('The TLS handshake failed. ' . implode(' ', $warnings))];
+                    // OpenSSL reports a handshake that ran out of time as a
+                    // warning, without setting the timed_out flag.
+                    $handshakeError = implode(' ', $warnings);
+
+                    return self::timedOut($socket) || stripos($handshakeError, 'timed out') !== false
+                        ? [HttpResponse::OUTCOME_TIMEOUT, self::ERROR_TIMEOUT, 'The TLS handshake timed out']
+                        : [HttpResponse::OUTCOME_TLS, self::ERROR_TLS, trim('The TLS handshake failed. ' . $handshakeError)];
                 }
             }
 
@@ -211,8 +242,8 @@ final class StreamTransport implements HttpClient
             $count = fwrite($socket, substr($head, $written));
             if (!is_int($count) || $count === 0) {
                 return self::timedOut($socket)
-                    ? [HttpResponse::OUTCOME_TIMEOUT, 0, 'Timed out sending the request']
-                    : [HttpResponse::OUTCOME_NETWORK, 0, 'Failed sending the request'];
+                    ? [HttpResponse::OUTCOME_TIMEOUT, self::ERROR_TIMEOUT, 'Timed out sending the request']
+                    : [HttpResponse::OUTCOME_NETWORK, self::ERROR_SEND, 'Failed sending the request'];
             }
         }
 
@@ -238,18 +269,18 @@ final class StreamTransport implements HttpClient
             }
             if ($line === null) {
                 return $received
-                    ? [HttpResponse::OUTCOME_NETWORK, 0, 'The connection was closed in the response header block']
-                    : [HttpResponse::OUTCOME_CONNECT, 0, 'Empty reply from server'];
+                    ? [HttpResponse::OUTCOME_NETWORK, self::ERROR_RECEIVE, 'The connection was closed in the response header block']
+                    : [HttpResponse::OUTCOME_CONNECT, self::ERROR_GOT_NOTHING, 'Empty reply from server'];
             }
             if (substr($line, -1) !== "\n") {
-                return [HttpResponse::OUTCOME_OTHER, 0, 'A response header line is too long or unterminated'];
+                return [HttpResponse::OUTCOME_OTHER, self::ERROR_PROTOCOL, 'A response header line is too long or unterminated'];
             }
             if (!$received && strncmp($line, 'HTTP/', 5) !== 0) {
-                return [HttpResponse::OUTCOME_OTHER, 0, 'The response does not start with an HTTP status line'];
+                return [HttpResponse::OUTCOME_OTHER, self::ERROR_PROTOCOL, 'The response does not start with an HTTP status line'];
             }
             $received = true;
             if (!$collector->headerLine($line)) {
-                return [HttpResponse::OUTCOME_OTHER, 0, 'Aborted'];
+                return [HttpResponse::OUTCOME_OTHER, self::ERROR_ABORTED, 'Aborted'];
             }
             if (rtrim($line, "\r\n") === '' && ($collector->isFinal() || $collector->isFollowingRedirect())) {
                 break;
@@ -321,22 +352,29 @@ final class StreamTransport implements HttpClient
     }
 
     /**
-     * Classifies a failed stream_socket_client().
+     * Classifies a failed stream_socket_client(). The system error number
+     * goes into the message: the error number is the libcurl one.
      *
      * @return array{0: string, 1: int, 2: string}
      */
     private static function connectFailure(int $errno, string $message): array
     {
         $lower = strtolower($message);
+        if ($message === '') {
+            $message = 'Connection failed';
+        }
+        if ($errno !== 0) {
+            $message .= ' (errno ' . $errno . ')';
+        }
         if ($errno === 110 || strpos($lower, 'timed out') !== false) {
-            return [HttpResponse::OUTCOME_TIMEOUT, $errno, $message];
+            return [HttpResponse::OUTCOME_TIMEOUT, self::ERROR_TIMEOUT, $message];
         }
         foreach (['getaddrinfo', 'name or service not known', 'no address associated', 'name resolution', 'nodename nor servname'] as $needle) {
             if (strpos($lower, $needle) !== false) {
-                return [HttpResponse::OUTCOME_DNS, $errno, $message];
+                return [HttpResponse::OUTCOME_DNS, self::ERROR_DNS, $message];
             }
         }
 
-        return [HttpResponse::OUTCOME_CONNECT, $errno, $message === '' ? 'Connection failed' : $message];
+        return [HttpResponse::OUTCOME_CONNECT, self::ERROR_CONNECT, $message];
     }
 }

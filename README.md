@@ -209,7 +209,7 @@ Log format: one JSON object per line (JSON Lines), with the fields `timestamp` (
 
 Levels:
 
-- **error** - upstream fetch failures (with `reason`, `response_code`, and for a transport failure `transport_error_code` and `transport_error`: the libcurl error number or the system errno of the stream transport, and its message), conversion failures, an invalid configuration.
+- **error** - upstream fetch failures (with `reason`, `response_code`, and for a transport failure `transport_error_code` and `transport_error`: the libcurl error number, which the stream transport reports too for the same failure, and the message), conversion failures, an invalid configuration.
 - **info** - purges, upstream 404s. Only written when `DEBUG=true`.
 
 Example entry:
