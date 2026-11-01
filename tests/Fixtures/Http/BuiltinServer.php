@@ -11,7 +11,9 @@ namespace Mfonte\ProxyCdn\Tests\Fixtures\Http;
  * Used by the tests that exercise the proxy over real HTTP: the front
  * controller and the fake origin each run in their own server, so that the
  * proxy fetches from the origin while the test talks to the proxy. The
- * server is started with PHP_BINARY, so it runs the PHP version of the test.
+ * server is started with PHP_BINARY, so it runs the PHP version of the test,
+ * with expose_php on whatever php.ini says, so that the tests see the
+ * "X-Powered-By: PHP/<version>" header a default installation sends.
  */
 final class BuiltinServer
 {
@@ -66,7 +68,7 @@ final class BuiltinServer
         for ($attempt = 0; $attempt < 5; ++$attempt) {
             $port = self::freePort();
             $command = sprintf(
-                '%s -d display_errors=0 -d log_errors=1 -S 127.0.0.1:%d -t %s %s',
+                '%s -d display_errors=0 -d log_errors=1 -d expose_php=1 -S 127.0.0.1:%d -t %s %s',
                 escapeshellarg(PHP_BINARY),
                 $port,
                 escapeshellarg($documentRoot),

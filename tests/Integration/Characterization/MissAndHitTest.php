@@ -178,17 +178,38 @@ final class MissAndHitTest extends CharacterizationTestCase
     }
 
     /**
-     * A hit served by PHP takes its Content-Type from the 2.x MIME table,
-     * not from the origin (finding P-23, resolved by PRX-5).
+     * A hit served by PHP has the registered media type, the one origins
+     * send (finding P-23: 2.x answered application/x-font-ttf from an
+     * outdated table of its own).
+     *
+     * @group regression
      */
-    public function testHitsServedByPhpUseTheLegacyMimeTableP23(): void
+    #[Group('regression')]
+    public function testHitsServedByPhpUseTheRegisteredMediaTypesP23(): void
     {
         $miss = $this->get('/fonts/font.ttf?v=1');
         $hit = $this->get('/fonts/font.ttf?v=1');
 
         self::assertSame('font/ttf', $miss->getHeader('Content-Type'));
-        self::assertSame('application/x-font-ttf', $hit->getHeader('Content-Type'));
+        self::assertSame('hit', $hit->getHeader('X-Cache-Status'));
+        self::assertSame('font/ttf', $hit->getHeader('Content-Type'));
         self::assertSame(self::fixture('fonts/font.ttf'), $hit->getBody());
+    }
+
+    /**
+     * No response names a version of the software that produced it: PHP's
+     * own "X-Powered-By: PHP/<version>" is removed (finding P-23).
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testNoResponseExposesAVersionP23(): void
+    {
+        $responses = [$this->get('/images/gradient.png'), $this->get('/images/gradient.png?v=1'), $this->get('/images/gradient.png?v=1'), $this->get('/no/such.png')];
+
+        foreach ($responses as $response) {
+            self::assertFalse($response->hasHeader('X-Powered-By'), (string) $response->getHeader('X-Powered-By'));
+        }
     }
 
     /**

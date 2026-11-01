@@ -143,7 +143,7 @@ final class ProxyKernelTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('versioned', $response->getContent());
         self::assertSame('hit', $response->headers->get('x-cache-status'));
-        self::assertSame('application/javascript', $response->headers->get('content-type'));
+        self::assertSame('text/javascript', $response->headers->get('content-type'));
         self::assertSame('9', $response->headers->get('content-length'));
         self::assertSame('Accept', $response->headers->get('vary'));
         self::assertSame('max-age=31536000, must-revalidate, public', $response->headers->get('cache-control'));

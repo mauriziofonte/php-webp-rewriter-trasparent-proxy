@@ -113,49 +113,62 @@ ErrorDocument 403 "Access Forbidden"
     # Header set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=HTTPS
     # Header set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" env=HTTPS
 
-    # Branding for cache-hit responses (files served directly by Apache).
-    Header set X-Powered-By  "MF Static Assets Cacher/2.0.0"
+    # Branding for cache-hit responses (files served directly by Apache),
+    # without a version number (finding P-23).
+    Header set X-Powered-By  "MF Static Assets Cacher"
     Header set X-Cache-Status "HIT"
 </IfModule>
 
 <IfModule mod_mime.c>
-    AddType text/css                         .css
-    AddType application/javascript           .js
-    AddType application/json                 .json
-    AddType image/svg+xml                    .svg .svgz
-    AddType image/webp                       .webp
-    AddType image/x-icon                     .ico
-    AddType image/bmp                        .bmp
-    AddType image/gif                        .gif
-    AddType image/jpeg                       .jpg .jpeg .jpe
-    AddType image/png                        .png
-    AddType image/tiff                       .tif .tiff
-    AddType application/x-font-ttf           .ttf .ttc
-    AddType application/x-font-otf           .otf
-    AddType application/vnd.ms-fontobject    .eot
-    AddType application/font-woff            .woff
-    AddType application/font-woff2           .woff2
-    AddType application/pdf                  .pdf
+    # The media types of Mfonte\ProxyCdn\Http\MediaTypes, which PHP uses for
+    # the files it serves: a test keeps both lists identical (finding P-23).
+    AddType text/css                           .css
+    AddType text/javascript                    .js .mjs
+    AddType application/json                   .json .map
+    AddType image/svg+xml                      .svg
+    AddType image/webp                         .webp
+    AddType image/avif                         .avif
+    AddType image/vnd.microsoft.icon           .ico
+    AddType image/bmp                          .bmp
+    AddType image/gif                          .gif
+    AddType image/jpeg                         .jpg .jpeg .jpe
+    AddType image/png                          .png
+    AddType image/apng                         .apng
+    AddType image/tiff                         .tif .tiff
+    AddType font/ttf                           .ttf
+    AddType font/collection                    .ttc
+    AddType font/otf                           .otf
+    AddType font/woff                          .woff
+    AddType font/woff2                         .woff2
+    AddType application/vnd.ms-fontobject      .eot
+    AddType application/pdf                    .pdf
+    AddType text/plain                         .txt
+    AddType application/xml                    .xml
+    AddType video/mp4                          .mp4
+    AddType video/webm                         .webm
+    AddType audio/mpeg                         .mp3
 </IfModule>
 
 <IfModule mod_expires.c>
     ExpiresActive On
     ExpiresByType text/css                  "access plus 1 year"
-    ExpiresByType application/javascript    "access plus 1 year"
+    ExpiresByType text/javascript           "access plus 1 year"
     ExpiresByType application/json          "access plus 1 hour"
     ExpiresByType image/svg+xml             "access plus 1 year"
     ExpiresByType image/webp                "access plus 1 year"
-    ExpiresByType image/x-icon              "access plus 1 year"
+    ExpiresByType image/vnd.microsoft.icon  "access plus 1 year"
     ExpiresByType image/bmp                 "access plus 1 year"
     ExpiresByType image/gif                 "access plus 1 year"
     ExpiresByType image/jpeg                "access plus 1 year"
     ExpiresByType image/png                 "access plus 1 year"
     ExpiresByType image/tiff                "access plus 1 year"
-    ExpiresByType application/x-font-ttf    "access plus 1 year"
-    ExpiresByType application/x-font-otf    "access plus 1 year"
+    ExpiresByType font/ttf                  "access plus 1 year"
+    ExpiresByType font/collection           "access plus 1 year"
+    ExpiresByType font/otf                  "access plus 1 year"
     ExpiresByType application/vnd.ms-fontobject "access plus 1 year"
-    ExpiresByType application/font-woff     "access plus 1 year"
-    ExpiresByType application/font-woff2    "access plus 1 year"
+    ExpiresByType font/woff                 "access plus 1 year"
+    ExpiresByType font/woff2                "access plus 1 year"
+    ExpiresByType image/avif                "access plus 1 year"
     ExpiresByType application/pdf           "access plus 1 month"
 </IfModule>
 
@@ -164,9 +177,9 @@ ErrorDocument 403 "Access Forbidden"
 # -----------------------------------------------------------------------------
 <IfModule mod_deflate.c>
     AddOutputFilterByType DEFLATE text/css text/plain text/xml text/html
-    AddOutputFilterByType DEFLATE application/javascript application/json application/xml
-    AddOutputFilterByType DEFLATE image/svg+xml image/bmp image/x-icon
-    AddOutputFilterByType DEFLATE application/x-font-ttf application/x-font-otf application/vnd.ms-fontobject
+    AddOutputFilterByType DEFLATE text/javascript application/json application/xml
+    AddOutputFilterByType DEFLATE image/svg+xml image/bmp image/vnd.microsoft.icon
+    AddOutputFilterByType DEFLATE font/ttf font/collection font/otf application/vnd.ms-fontobject
 </IfModule>
 
 # -----------------------------------------------------------------------------

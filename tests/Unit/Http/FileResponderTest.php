@@ -9,7 +9,6 @@ use Mfonte\ProxyCdn\Http\FileResponder;
 use Mfonte\ProxyCdn\Http\ResponseFactory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\DataProvider;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -62,33 +61,5 @@ final class FileResponderTest extends TestCase
 
         self::assertSame(500, $response->getStatusCode());
         self::assertSame("The request could not be processed.\nInternal server error: Cannot read cached file from disk.", $response->getContent());
-    }
-
-    /**
-     * @dataProvider provideMimeTypes
-     */
-    #[DataProvider('provideMimeTypes')]
-    public function testMimeTypeOf(string $extension, string $mimeType): void
-    {
-        self::assertSame($mimeType, FileResponder::mimeTypeOf($extension));
-    }
-
-    /**
-     * @return array<string, array{string, string}>
-     */
-    public static function provideMimeTypes(): array
-    {
-        return [
-            'css' => ['css', 'text/css'],
-            'js' => ['js', 'application/javascript'],
-            'upper case' => ['PNG', 'image/png'],
-            'jpeg' => ['jpeg', 'image/jpeg'],
-            'svg' => ['svg', 'image/svg+xml'],
-            // The 2.x table disagrees with the fetch path (finding P-23).
-            'ttf P-23' => ['ttf', 'application/x-font-ttf'],
-            'woff2' => ['woff2', 'application/font-woff2'],
-            'ico' => ['ico', 'image/x-icon'],
-            'unknown' => ['avif', 'application/octet-stream'],
-        ];
     }
 }

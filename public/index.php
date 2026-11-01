@@ -30,6 +30,8 @@ use Symfony\Component\HttpFoundation\Request;
 
 // PHP errors must never reach an asset body; DEBUG turns them back on.
 ini_set('display_errors', '0');
+// expose_php would announce the PHP version on every response (finding P-23).
+header_remove('X-Powered-By');
 
 $projectRoot = dirname(__DIR__);
 require $projectRoot . '/vendor/autoload.php';
