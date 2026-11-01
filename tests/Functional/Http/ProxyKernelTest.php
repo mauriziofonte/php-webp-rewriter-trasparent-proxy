@@ -343,6 +343,11 @@ final class ProxyKernelTest extends TestCase
             'redirect to a private host' => [OriginResponse::redirect(302, 'http://127.0.0.1/js/app.js'), 502, false],
             'redirect to another port of the origin' => [OriginResponse::redirect(302, self::ORIGIN . ':8443/js/app.js'), 502, false],
             'redirect without a location' => [OriginResponse::redirect(301, null), 502, false],
+            // A Location a browser reads as another host: an open redirect.
+            'redirect to a network-path reference' => [OriginResponse::redirect(302, self::ORIGIN . '//evil.example.test/x'), 502, false],
+            'redirect with a backslash' => [OriginResponse::redirect(302, self::ORIGIN . '/\\evil.example.test/x'), 502, false],
+            'redirect with a tab' => [OriginResponse::redirect(302, self::ORIGIN . "/\t/evil.example.test/x"), 502, false],
+            'redirect with a dot segment' => [OriginResponse::redirect(302, self::ORIGIN . '/.//evil.example.test/x'), 502, false],
             'other 4xx' => [OriginResponse::failure(OriginResponse::FAILURE_CLIENT_ERROR, 400), 502, false],
             'body too large' => [OriginResponse::failure(OriginResponse::FAILURE_TOO_LARGE, 200), 502, false],
             'other failure' => [OriginResponse::failure(OriginResponse::FAILURE_OTHER, 201), 502, false],
@@ -402,9 +407,11 @@ final class ProxyKernelTest extends TestCase
         $origin = new FakeOriginFetcher();
         $origin->respond(self::ORIGIN . '/assets/js/app.js', OriginResponse::redirect(302, self::ORIGIN . '/admin/js/app.js'));
         $origin->respond(self::ORIGIN . '/assets/js/b.js', OriginResponse::redirect(302, self::ORIGIN . '/assets/js/c.js'));
+        $origin->respond(self::ORIGIN . '/assets/js/d.js', OriginResponse::redirect(302, self::ORIGIN . '/assets//evil.example.test/x'));
         $kernel = TestKernel::create(TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/assets/']), $this->directory->path(), $origin, null, $this->logger);
 
         self::assertSame(502, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+        self::assertSame(502, $kernel->handle(Request::create('https://cdn.example.test/js/d.js'))->getStatusCode());
         self::assertSame('/js/c.js', $kernel->handle(Request::create('https://cdn.example.test/js/b.js'))->headers->get('location'));
     }
 

@@ -405,11 +405,19 @@ final class ProxyKernel
      * The path and query string on the proxy of an origin URL below
      * SOURCE_ORIGIN; null for any other URL, which the client must not be
      * sent to (it may be a private host: SSRF through the client).
+     *
+     * The URL is refused when a browser could read the path as another
+     * host (an open redirect): a backslash ("/\evil.example" is
+     * "//evil.example" to browsers), a space or control character (browsers
+     * strip tabs and line breaks), a path that starts with "//"
+     * ("/.//evil.example/x" resolves to "//evil.example/x"), and any "." or
+     * ".." segment left after the origin URL was resolved.
      */
     private function proxyLocation(?string $target): ?string
     {
         $origin = $this->config->getSourceOrigin();
-        if ($target === null || !RedirectTarget::isSameOrigin($target, $origin)) {
+        // parse_url() turns control characters into "_": look at them first.
+        if ($target === null || preg_match('#[\\\\\x00-\x20\x7f]#', $target) === 1 || !RedirectTarget::isSameOrigin($target, $origin)) {
             return null;
         }
         $basePath = rtrim((string) parse_url($origin, PHP_URL_PATH), '/');
@@ -418,6 +426,9 @@ final class ProxyKernel
             return null;
         }
         $path = (string) substr($path, strlen($basePath));
+        if (strncmp($path, '//', 2) === 0 || preg_match('#(?:\A|/)\.{1,2}(?:/|\z)#', $path) === 1) {
+            return null;
+        }
         $query = parse_url($target, PHP_URL_QUERY);
 
         return ($path === '' ? '/' : $path) . (is_string($query) && $query !== '' ? '?' . $query : '');
