@@ -196,7 +196,6 @@ final class ResponseFactoryTest extends TestCase
         ]);
 
         self::assertSame([
-            'content-type' => 'image/png',
             'etag' => '"e"',
             'last-modified' => 'Tue, 01 Sep 2026 10:00:00 GMT',
             'accept-ranges' => 'bytes',
@@ -246,7 +245,6 @@ final class ResponseFactoryTest extends TestCase
 
         return [
             'miss of an .svg path' => [$responses->miss('<svg/>', ['content-type' => 'text/plain'], false, 'svg')],
-            'miss with an SVG type' => [$responses->miss('<svg/>', ['content-type' => 'Image/SVG+XML; charset=utf-8'], false, 'png')],
             'hit' => [$responses->hit('<svg/>', 'image/svg+xml', 6)],
         ];
     }

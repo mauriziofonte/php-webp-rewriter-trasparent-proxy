@@ -84,6 +84,26 @@ final class ProxyKernelTest extends TestCase
         self::assertSame([self::ORIGIN . '/js/app.js'], $this->origin->getRequestedUrls());
     }
 
+    /**
+     * A miss is typed by its extension, as a hit is, whatever the origin
+     * claims (finding P-23: one table of media types).
+     */
+    public function testAMissHasTheMediaTypeOfItsExtension(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/css/a.css', self::CSS, ['content-type' => 'text/html; charset=UTF-8']);
+        $this->origin->serve(self::ORIGIN . '/fonts/a.woff2', 'font', []);
+
+        $css = $this->kernel()->handle(Request::create('https://cdn.example.test/css/a.css'));
+        $font = $this->kernel()->handle(Request::create('https://cdn.example.test/fonts/a.woff2'));
+        $hit = $this->kernel()->handle(Request::create('https://cdn.example.test/css/a.css'));
+
+        self::assertSame('miss', $css->headers->get('x-cache-status'));
+        self::assertSame('text/css', $css->headers->get('content-type'));
+        self::assertSame('font/woff2', $font->headers->get('content-type'));
+        self::assertSame('hit', $hit->headers->get('x-cache-status'));
+        self::assertSame('text/css', $hit->headers->get('content-type'));
+    }
+
     public function testOnlyTheWhitelistedOriginHeadersAreForwarded(): void
     {
         $this->origin->serve(self::ORIGIN . '/js/app.js', 'x', [
@@ -100,7 +120,7 @@ final class ProxyKernelTest extends TestCase
 
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/js/app.js'));
 
-        self::assertSame('application/javascript', $response->headers->get('content-type'));
+        self::assertSame('text/javascript', $response->headers->get('content-type'), 'the type of the extension');
         self::assertSame('"e"', $response->headers->get('etag'));
         self::assertSame('Tue, 01 Sep 2026 10:00:00 GMT', $response->headers->get('last-modified'));
         self::assertSame('Origin', $response->headers->get('vary'));

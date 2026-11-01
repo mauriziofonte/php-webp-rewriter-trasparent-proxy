@@ -355,7 +355,6 @@ final class ProxyKernel
             $webp = $acceptsWebp ? $this->storage->read($convertedFile) : null;
             if ($webp !== null) {
                 $body = $webp;
-                $headers['content-type'] = MediaTypes::of('webp');
                 $headers['content-length'] = (string) strlen($webp);
                 $servedWebp = true;
             }

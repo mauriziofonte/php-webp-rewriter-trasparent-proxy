@@ -139,10 +139,10 @@ final class ResponseFactory
 
     /**
      * Origin response headers forwarded to the client; every other header,
-     * Set-Cookie and Cache-Control included, is dropped.
+     * Set-Cookie and Cache-Control included, is dropped, and Content-Type
+     * is the one of the extension (MediaTypes).
      */
     private const FORWARDED_HEADERS = [
-        'content-type',
         'content-length',
         'etag',
         'last-modified',
@@ -343,6 +343,9 @@ final class ResponseFactory
         $response = new Response();
         $response->setStatusCode(200);
         $response->headers->add($headers);
+        // The type of the extension, as for a hit, whatever the origin
+        // claims (finding P-23: one table of media types).
+        $response->headers->set('content-type', MediaTypes::of($webp ? 'webp' : $extension));
         $response->setPublic();
         $response->setMaxAge($this->cacheExpiry);
         $response->headers->addCacheControlDirective('must-revalidate', true);
