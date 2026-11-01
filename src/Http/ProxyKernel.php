@@ -239,7 +239,7 @@ final class ProxyKernel
         $this->negativeCache->forget($file);
         $this->circuitBreaker->reset($file);
 
-        return $this->responses->miss($body, $headers, $servedWebp);
+        return $this->responses->miss($body, $headers, $servedWebp, $extension);
     }
 
     /**

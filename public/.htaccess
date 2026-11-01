@@ -105,6 +105,12 @@ ErrorDocument 403 "Access Forbidden"
     Header set X-Content-Type-Options "nosniff"
     Header set Referrer-Policy "strict-origin-when-cross-origin"
 
+    # An SVG opened from this origin is sandboxed and runs no script
+    # (finding P-7): the policy of Http\ResponseFactory, which PHP sends.
+    <FilesMatch "\.(?i:svg)$">
+        Header set Content-Security-Policy "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox"
+    </FilesMatch>
+
     # HSTS. Default: host-only (no includeSubDomains / no preload) because
     # enabling them changes behavior of sibling hostnames. Uncomment the
     # wider variants ONLY if you understand the blast radius on your

@@ -38,6 +38,15 @@ final class ResponseFactory
     public const ERROR_CONFIGURATION = -4;
 
     /**
+     * The Content-Security-Policy of an SVG document (finding P-7): an SVG
+     * opened from the proxy's own origin runs no script, loads nothing but
+     * inline styles and data: images and fonts, and is sandboxed in a unique
+     * origin, so that it cannot reach the cookies or storage of the domain.
+     * The policy has no effect where the SVG is an <img> or a CSS image.
+     */
+    public const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox";
+
+    /**
      * The "Error code" text of each error, as in 2.x.
      */
     private const MESSAGES = [
@@ -171,11 +180,12 @@ final class ResponseFactory
     /**
      * The response of a cache miss: the asset just fetched from the origin.
      *
-     * @param string                $body    the (possibly rewritten or converted) asset
-     * @param array<string, string> $headers forwarded headers, see forwardedHeaders()
-     * @param bool                  $webp    whether $body is the WEBP conversion, which adds "Vary: Accept"
+     * @param string                $body      the asset, or its conversion
+     * @param array<string, string> $headers   forwarded headers, see forwardedHeaders()
+     * @param bool                  $webp      whether $body is the WEBP conversion, which adds "Vary: Accept"
+     * @param string                $extension lower-case extension of the request path
      */
-    public function miss(string $body, array $headers, bool $webp): Response
+    public function miss(string $body, array $headers, bool $webp, string $extension): Response
     {
         $response = new Response();
         $response->setStatusCode(200);
@@ -187,6 +197,7 @@ final class ResponseFactory
         if ($webp) {
             $response->headers->set('vary', 'Accept');
         }
+        $this->protect($response, $extension === 'svg');
         $response->setContent($body);
 
         return $response;
@@ -212,9 +223,25 @@ final class ResponseFactory
         $response->headers->addCacheControlDirective('must-revalidate', true);
         $response->headers->set('x-cache-status', 'hit');
         $response->headers->set('vary', 'Accept');
+        $this->protect($response, false);
         $response->setContent($body);
 
         return $response;
+    }
+
+    /**
+     * Adds "X-Content-Type-Options: nosniff", so that a browser never takes
+     * an asset for another type, and the SVG policy to an SVG: one whose
+     * request path ends in ".svg" ($svg) or whose Content-Type says so,
+     * whatever the origin claims.
+     */
+    private function protect(Response $response, bool $svg): void
+    {
+        $response->headers->set('x-content-type-options', 'nosniff');
+        $type = strtolower(trim((string) $response->headers->get('content-type', '')));
+        if ($svg || strpos($type, 'image/svg+xml') === 0) {
+            $response->headers->set('content-security-policy', self::SVG_CONTENT_SECURITY_POLICY);
+        }
     }
 
     private static function errorBody(?string $path, int $error): string

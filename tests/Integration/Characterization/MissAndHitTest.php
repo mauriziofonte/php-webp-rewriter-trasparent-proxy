@@ -213,17 +213,22 @@ final class MissAndHitTest extends CharacterizationTestCase
     }
 
     /**
-     * SVG is served from the proxy's own origin without a Content Security
-     * Policy (finding P-7, resolved by PRX-5).
+     * SVG served from the proxy's own origin is sandboxed and runs no
+     * script, on the miss and on the hits PHP serves (finding P-7: 2.x
+     * sent no Content-Security-Policy, a stored XSS on the CDN domain).
+     *
+     * @group regression
      */
-    public function testSvgIsServedWithoutContentSecurityPolicyP7(): void
+    #[Group('regression')]
+    public function testSvgIsSandboxedByAContentSecurityPolicyP7(): void
     {
-        $response = $this->get('/images/logo.svg');
-
-        self::assertSame(200, $response->getStatus());
-        self::assertSame('image/svg+xml', $response->getHeader('Content-Type'));
-        self::assertSame(self::fixture('images/logo.svg'), $response->getBody());
-        self::assertFalse($response->hasHeader('Content-Security-Policy'));
+        foreach ([$this->get('/images/logo.svg'), $this->get('/images/logo.svg?v=1'), $this->get('/images/logo.svg?v=1')] as $response) {
+            self::assertSame(200, $response->getStatus());
+            self::assertSame('image/svg+xml', $response->getHeader('Content-Type'));
+            self::assertSame(self::fixture('images/logo.svg'), $response->getBody());
+            self::assertSame("default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox", $response->getHeader('Content-Security-Policy'));
+            self::assertSame('nosniff', $response->getHeader('X-Content-Type-Options'));
+        }
     }
 
     /**

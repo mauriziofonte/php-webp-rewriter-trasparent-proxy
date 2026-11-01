@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Http\ResponseFactory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Symfony\Component\HttpFoundation\Response;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -132,7 +133,7 @@ final class ResponseFactoryTest extends TestCase
 
     public function testMiss(): void
     {
-        $response = (new ResponseFactory(600, 30))->miss('body', ['content-type' => 'text/css', 'etag' => '"e"'], false);
+        $response = (new ResponseFactory(600, 30))->miss('body', ['content-type' => 'text/css', 'etag' => '"e"'], false, 'css');
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('body', $response->getContent());
@@ -145,7 +146,7 @@ final class ResponseFactoryTest extends TestCase
 
     public function testAWebpMissVariesOnAccept(): void
     {
-        $response = (new ResponseFactory(600, 30))->miss('webp', ['vary' => 'Origin'], true);
+        $response = (new ResponseFactory(600, 30))->miss('webp', ['vary' => 'Origin'], true, 'png');
 
         self::assertSame('Accept', $response->headers->get('vary'));
     }
@@ -161,6 +162,45 @@ final class ResponseFactoryTest extends TestCase
         self::assertSame('max-age=600, must-revalidate, public', $response->headers->get('cache-control'));
         self::assertSame('hit', $response->headers->get('x-cache-status'));
         self::assertSame('Accept', $response->headers->get('vary'));
+    }
+
+    /**
+     * @return array<string, array{Response}>
+     */
+    public static function provideSvgResponses(): array
+    {
+        $responses = new ResponseFactory(600, 30);
+
+        return [
+            'miss of an .svg path' => [$responses->miss('<svg/>', ['content-type' => 'text/plain'], false, 'svg')],
+            'miss with an SVG type' => [$responses->miss('<svg/>', ['content-type' => 'Image/SVG+XML; charset=utf-8'], false, 'png')],
+            'hit' => [$responses->hit('<svg/>', 'image/svg+xml', 6)],
+        ];
+    }
+
+    /**
+     * An SVG gets a Content-Security-Policy that sandboxes it and forbids
+     * scripts (finding P-7).
+     *
+     * @dataProvider provideSvgResponses
+     */
+    #[DataProvider('provideSvgResponses')]
+    public function testSvgResponsesAreSandboxedP7(Response $response): void
+    {
+        self::assertSame(ResponseFactory::SVG_CONTENT_SECURITY_POLICY, $response->headers->get('content-security-policy'));
+        self::assertStringEndsWith('; sandbox', ResponseFactory::SVG_CONTENT_SECURITY_POLICY);
+        self::assertStringStartsWith("default-src 'none';", ResponseFactory::SVG_CONTENT_SECURITY_POLICY);
+        self::assertSame('nosniff', $response->headers->get('x-content-type-options'));
+    }
+
+    public function testOtherAssetsGetNosniffOnly(): void
+    {
+        $responses = new ResponseFactory(600, 30);
+
+        foreach ([$responses->miss('a', ['content-type' => 'text/css'], false, 'css'), $responses->hit('a', 'image/png', 1)] as $response) {
+            self::assertSame('nosniff', $response->headers->get('x-content-type-options'));
+            self::assertFalse($response->headers->has('content-security-policy'));
+        }
     }
 
     public function testHitWithoutSize(): void
