@@ -5,27 +5,20 @@ declare(strict_types=1);
 /*
  * Front controller of the standalone proxy: the web server routes here every
  * request it cannot serve from the cache (see public/.htaccess). It builds
- * the object graph explicitly and sends the response of the kernel; a host
+ * the kernel with ProxyKernelFactory and sends its response; a host
  * application can mount Mfonte\ProxyCdn\Http\ProxyKernel the same way.
  */
 
-use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\FilesystemStorage;
-use Mfonte\ProxyCdn\Cache\NegativeCache;
-use Mfonte\ProxyCdn\Cache\Purger;
-use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Config\CompiledConfigCache;
 use Mfonte\ProxyCdn\Config\ConfigLoader;
 use Mfonte\ProxyCdn\Config\RuntimeSettings;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
-use Mfonte\ProxyCdn\Http\FileResponder;
-use Mfonte\ProxyCdn\Http\ProxyKernel;
+use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
 use Mfonte\ProxyCdn\Http\ResponseFactory;
 use Mfonte\ProxyCdn\Image\Legacy\LegacyConverterFactory;
 use Mfonte\ProxyCdn\Observability\JsonLogger;
 use Mfonte\ProxyCdn\Origin\HttpOriginFetcher;
-use Mfonte\ProxyCdn\Origin\MarkerFileCircuitBreaker;
-use Mfonte\ProxyCdn\Security\PathSanitizer;
 use Psr\Log\LogLevel;
 use Symfony\Component\HttpFoundation\Request;
 
@@ -55,23 +48,13 @@ try {
 (new RuntimeSettings())->apply($config);
 
 $logger = new JsonLogger($logFile, $config->isDebug() ? LogLevel::DEBUG : LogLevel::NOTICE);
-$negativeCache = new NegativeCache($storage, $projectRoot . '/var/negative', $config->getNegativeCacheTtl());
-$responses = ResponseFactory::fromConfig($config);
-
 try {
-    $kernel = new ProxyKernel(
+    $kernel = ProxyKernelFactory::create(
         $config,
-        new PathSanitizer(),
-        new CacheKeyResolver(__DIR__),
-        QueryStringPolicy::fromConfig($config),
-        $storage,
-        $negativeCache,
-        new MarkerFileCircuitBreaker($storage, $config->getNetworkErrorTtl()),
-        new Purger($storage, $negativeCache),
+        __DIR__,
+        $projectRoot . '/var',
         HttpOriginFetcher::fromConfig($config, $logger),
         LegacyConverterFactory::fromConfig($config, $storage, $logger),
-        $responses,
-        new FileResponder($storage, $responses),
         $logger
     );
     $response = $kernel->handle(Request::createFromGlobals());

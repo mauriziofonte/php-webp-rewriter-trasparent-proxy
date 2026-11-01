@@ -68,6 +68,11 @@ final class ProxyKernel
     private $queryPolicy;
 
     /**
+     * @var TrustedProxies
+     */
+    private $trustedProxies;
+
+    /**
      * @var CacheStorage
      */
     private $storage;
@@ -120,6 +125,7 @@ final class ProxyKernel
         PathSanitizer $pathSanitizer,
         CacheKeyResolver $keyResolver,
         QueryStringPolicy $queryPolicy,
+        TrustedProxies $trustedProxies,
         CacheStorage $storage,
         NegativeCache $negativeCache,
         CircuitBreaker $circuitBreaker,
@@ -134,6 +140,7 @@ final class ProxyKernel
         $this->pathSanitizer = $pathSanitizer;
         $this->keyResolver = $keyResolver;
         $this->queryPolicy = $queryPolicy;
+        $this->trustedProxies = $trustedProxies;
         $this->storage = $storage;
         $this->negativeCache = $negativeCache;
         $this->circuitBreaker = $circuitBreaker;
@@ -228,7 +235,8 @@ final class ProxyKernel
             return $this->files->respond($file, $extension);
         }
 
-        $server = $request->getScheme() . '://' . $request->getHttpHost();
+        // The scheme the client used, as a trusted proxy reports it (TRUSTED_PROXIES).
+        $server = ($this->trustedProxies->isSecure($request) ? 'https' : 'http') . '://' . $request->getHttpHost();
         $forwardedQuery = $query->getForwarded();
         $originUrl = $this->config->getSourceOrigin() . PathSanitizer::encode($path) . ($forwardedQuery !== '' ? '?' . $forwardedQuery : '');
         $fetched = $this->origin->fetch(new OriginRequest($originUrl, ['Referer' => $server]));

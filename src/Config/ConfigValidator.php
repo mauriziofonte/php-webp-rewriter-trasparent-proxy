@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Config;
 
 use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
+use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
+use Mfonte\ProxyCdn\Http\IpRange;
 use Mfonte\ProxyCdn\Origin\HttpClientOptions;
 
 /**
@@ -116,6 +118,12 @@ final class ConfigValidator
                 . 'query strings can fill the disk and bypass the cache.';
         }
 
+        try {
+            IpRange::listFromString((string) ($values['TRUSTED_PROXIES'] ?? ''));
+        } catch (InvalidArgumentException $exception) {
+            $errors[] = 'TRUSTED_PROXIES must list IP addresses and CIDR blocks separated by commas: ' . $exception->getMessage();
+        }
+
         $mode = $values['IMAGE_CONVERSION_MODE'] ?? Config::CONVERSION_NONE;
         if (!in_array($mode, self::CONVERSION_MODES, true)) {
             $errors[] = 'IMAGE_CONVERSION_MODE must be one of: native, api, none (got: ' . var_export($mode, true) . ')';
@@ -184,6 +192,19 @@ final class ConfigValidator
         }
 
         return new ConfigValidation($errors, $warnings);
+    }
+
+    /**
+     * The canonical form of each range of a TRUSTED_PROXIES value
+     * ("192.0.2.0/24"); [] for null. The value must be valid.
+     *
+     * @throws InvalidArgumentException when an entry is not an address or a CIDR block
+     *
+     * @return list<string>
+     */
+    public static function rangeList(?string $raw): array
+    {
+        return array_map('strval', IpRange::listFromString((string) $raw));
     }
 
     /**

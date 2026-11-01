@@ -128,12 +128,22 @@ final class ConfigTest extends TestCase
             'unknown mode' => ['IMAGE_CONVERSION_MODE', 'gd', 'IMAGE_CONVERSION_MODE has an unknown value'],
             'empty allowlist item' => ['QUERY_STRING_ALLOWLIST', ['v', ''], 'QUERY_STRING_ALLOWLIST must be a list of non-empty strings'],
             'unknown query mode' => ['QUERY_STRING_MODE', 'drop', 'QUERY_STRING_MODE has an unknown value'],
+            'invalid trusted proxy' => ['TRUSTED_PROXIES', ['proxy.internal'], 'TRUSTED_PROXIES must be a list of IP addresses and CIDR blocks'],
         ];
     }
 
     public function testTheAllowlistMayBeEmpty(): void
     {
         self::assertSame([], Config::fromArray(self::values(['QUERY_STRING_ALLOWLIST' => []]))->getQueryStringAllowlist());
+    }
+
+    public function testTrustedProxiesAreParsed(): void
+    {
+        $proxies = Config::fromArray(self::values(['TRUSTED_PROXIES' => ['192.0.2.10/24']]))->getTrustedProxies();
+
+        self::assertCount(1, $proxies);
+        self::assertSame('192.0.2.0/24', (string) $proxies[0]);
+        self::assertSame([], Config::fromArray(self::values(['TRUSTED_PROXIES' => []]))->getTrustedProxies());
     }
 
     public function testExceptionWithoutErrorsHasAGenericError(): void
@@ -177,6 +187,7 @@ final class ConfigTest extends TestCase
             'UPSTREAM_USER_AGENT' => 'agent/1.0',
             'QUERY_STRING_ALLOWLIST' => ['v', 'lang'],
             'QUERY_STRING_MODE' => 'reject',
+            'TRUSTED_PROXIES' => ['192.0.2.0/24', '2001:db8::/32'],
             'IMAGE_CONVERSION_MODE' => Config::CONVERSION_API,
             'WEBP_API_SERVER' => 'https://api.example.test/convert',
             'WEBP_API_KEY' => 'secret',

@@ -128,6 +128,28 @@ final class ProxyKernelTest extends TestCase
         self::assertFileExists($this->directory->path('_qs/' . substr(hash('sha256', 'v=1&ver=2'), 0, 16) . '/js/app.js'));
     }
 
+    public function testTheRefererSchemeComesFromATrustedProxyOnly(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/js/a.js', 'a');
+        $this->origin->serve(self::ORIGIN . '/js/b.js', 'b');
+        $kernel = TestKernel::create(
+            TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'TRUSTED_PROXIES' => '10.0.0.0/8']),
+            $this->directory->path(),
+            $this->origin,
+            null,
+            $this->logger
+        );
+        $headers = ['HTTP_X_FORWARDED_PROTO' => 'https'];
+
+        $kernel->handle(Request::create('http://cdn.example.test/js/a.js', 'GET', [], [], [], $headers + ['REMOTE_ADDR' => '10.1.2.3']));
+        $kernel->handle(Request::create('http://cdn.example.test/js/b.js', 'GET', [], [], [], $headers + ['REMOTE_ADDR' => '192.0.2.1']));
+
+        $requests = $this->origin->getRequests();
+        self::assertCount(2, $requests);
+        self::assertSame(['Referer' => 'https://cdn.example.test'], $requests[0]->getHeaders());
+        self::assertSame(['Referer' => 'http://cdn.example.test'], $requests[1]->getHeaders());
+    }
+
     /**
      * A path whose request reaches PHP although its file is stored (a web
      * server that does not serve it, or a parameter outside the allowlist)

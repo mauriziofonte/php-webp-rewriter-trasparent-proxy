@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Config;
 
 use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
+use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
+use Mfonte\ProxyCdn\Http\IpRange;
 
 /**
  * The proxy configuration, immutable and already validated.
@@ -113,6 +115,11 @@ final class Config
     private $queryStringMode;
 
     /**
+     * @var list<IpRange>
+     */
+    private $trustedProxies;
+
+    /**
      * @var string
      */
     private $imageConversionMode;
@@ -160,6 +167,7 @@ final class Config
         $config->upstreamUserAgent = self::optionalString($values, 'UPSTREAM_USER_AGENT');
         $config->queryStringAllowlist = self::stringList($values, 'QUERY_STRING_ALLOWLIST', true);
         $config->queryStringMode = self::string($values, 'QUERY_STRING_MODE');
+        $config->trustedProxies = self::rangeList($values, 'TRUSTED_PROXIES');
         $config->imageConversionMode = self::string($values, 'IMAGE_CONVERSION_MODE');
         $config->webpApiServer = self::optionalString($values, 'WEBP_API_SERVER');
         $config->webpApiKey = self::optionalString($values, 'WEBP_API_KEY');
@@ -200,6 +208,7 @@ final class Config
             'UPSTREAM_USER_AGENT' => $this->upstreamUserAgent,
             'QUERY_STRING_ALLOWLIST' => $this->queryStringAllowlist,
             'QUERY_STRING_MODE' => $this->queryStringMode,
+            'TRUSTED_PROXIES' => array_map('strval', $this->trustedProxies),
             'IMAGE_CONVERSION_MODE' => $this->imageConversionMode,
             'WEBP_API_SERVER' => $this->webpApiServer,
             'WEBP_API_KEY' => $this->webpApiKey,
@@ -373,6 +382,17 @@ final class Config
     }
 
     /**
+     * TRUSTED_PROXIES: the reverse proxies whose X-Forwarded-Proto and
+     * X-Forwarded-For are believed (see TrustedProxies); none by default.
+     *
+     * @return list<IpRange>
+     */
+    public function getTrustedProxies(): array
+    {
+        return $this->trustedProxies;
+    }
+
+    /**
      * IMAGE_CONVERSION_MODE: one of the CONVERSION_* constants.
      */
     public function getImageConversionMode(): string
@@ -482,6 +502,27 @@ final class Config
         }
 
         return $list;
+    }
+
+    /**
+     * @param array<mixed> $values
+     *
+     * @throws InvalidConfigurationException
+     *
+     * @return list<IpRange>
+     */
+    private static function rangeList(array $values, string $key): array
+    {
+        $ranges = [];
+        foreach (self::stringList($values, $key, true) as $range) {
+            try {
+                $ranges[] = IpRange::fromString($range);
+            } catch (InvalidArgumentException $exception) {
+                throw self::wrongType($key, 'a list of IP addresses and CIDR blocks');
+            }
+        }
+
+        return $ranges;
     }
 
     /**

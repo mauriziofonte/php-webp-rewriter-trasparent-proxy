@@ -42,6 +42,7 @@ final class TestConfig
             'UPSTREAM_USER_AGENT' => null,
             'QUERY_STRING_ALLOWLIST' => null,
             'QUERY_STRING_MODE' => null,
+            'TRUSTED_PROXIES' => null,
             'IMAGE_CONVERSION_MODE' => 'none',
             'WEBP_API_SERVER' => null,
             'WEBP_API_KEY' => null,

@@ -129,6 +129,9 @@ final class ConfigLoaderTest extends TestCase
         self::assertFalse($config->shouldFollowUpstreamRedirects());
         self::assertSame(HttpClientOptions::DEFAULT_MAX_BODY_SIZE, $config->getUpstreamMaxSize());
         self::assertNull($config->getUpstreamUserAgent());
+        self::assertSame(['v', 'ver', 'version'], $config->getQueryStringAllowlist());
+        self::assertSame('ignore', $config->getQueryStringMode());
+        self::assertSame([], $config->getTrustedProxies());
         self::assertSame(Config::CONVERSION_NONE, $config->getImageConversionMode());
         self::assertNull($config->getWebpApiServer());
         self::assertNull($config->getWebpApiKey());
@@ -147,6 +150,13 @@ final class ConfigLoaderTest extends TestCase
 
         self::assertTrue($config->shouldVerifyUpstreamTls());
         self::assertFalse(TestConfig::create(['UPSTREAM_VERIFY_TLS' => 'false'])->shouldVerifyUpstreamTls());
+    }
+
+    public function testTrustedProxiesAreLoaded(): void
+    {
+        $config = TestConfig::create(['TRUSTED_PROXIES' => '10.1.2.3/8, 2001:DB8::1']);
+
+        self::assertSame(['10.0.0.0/8', '2001:db8::1/128'], array_map('strval', $config->getTrustedProxies()));
     }
 
     public function testInvalidValuesAreRejectedWithEveryError(): void

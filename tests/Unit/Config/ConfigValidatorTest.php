@@ -149,6 +149,14 @@ final class ConfigValidatorTest extends TestCase
                 ['QUERY_STRING_ALLOWLIST' => '*,v'],
                 'QUERY_STRING_ALLOWLIST must be "*" alone to keep every parameter (got: \'*,v\')',
             ],
+            'invalid trusted proxy' => [
+                ['TRUSTED_PROXIES' => '10.0.0.0/8, proxy.internal'],
+                'TRUSTED_PROXIES must list IP addresses and CIDR blocks separated by commas: "proxy.internal" is not an IP address or a CIDR block',
+            ],
+            'trusted proxy with a bad prefix' => [
+                ['TRUSTED_PROXIES' => '10.0.0.0/33'],
+                'TRUSTED_PROXIES must list IP addresses and CIDR blocks separated by commas: "10.0.0.0/33" has an invalid prefix length (0 to 32)',
+            ],
             'unknown query string mode' => [
                 ['QUERY_STRING_MODE' => 'drop'],
                 "QUERY_STRING_MODE must be one of: ignore, reject (got: 'drop')",
@@ -212,6 +220,7 @@ final class ConfigValidatorTest extends TestCase
             'allowlist of names' => [['QUERY_STRING_ALLOWLIST' => 'v, lang ,a[]']],
             'allowlist of none' => [['QUERY_STRING_ALLOWLIST' => 'None']],
             'reject mode' => [['QUERY_STRING_MODE' => 'reject']],
+            'trusted proxies' => [['TRUSTED_PROXIES' => '10.0.0.0/8, 192.0.2.10, 2001:db8::/32, ::ffff:198.51.100.0/120']],
         ];
     }
 

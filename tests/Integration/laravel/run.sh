@@ -148,22 +148,12 @@ Route::get('/{path}', function (\Illuminate\Http\Request \$request) {
         'IMAGE_CONVERSION_MODE' => 'none',
     ]);
     \$logger = app('log');
-    \$storage = new \Mfonte\ProxyCdn\Cache\FilesystemStorage();
-    \$negativeCache = new \Mfonte\ProxyCdn\Cache\NegativeCache(\$storage, storage_path('proxy-cdn-state/negative'), \$config->getNegativeCacheTtl());
-    \$responses = \Mfonte\ProxyCdn\Http\ResponseFactory::fromConfig(\$config);
-    \$kernel = new \Mfonte\ProxyCdn\Http\ProxyKernel(
+    \$kernel = \Mfonte\ProxyCdn\Http\ProxyKernelFactory::create(
         \$config,
-        new \Mfonte\ProxyCdn\Security\PathSanitizer(),
-        new \Mfonte\ProxyCdn\Cache\CacheKeyResolver(storage_path('proxy-cdn')),
-        \Mfonte\ProxyCdn\Cache\QueryStringPolicy::fromConfig(\$config),
-        \$storage,
-        \$negativeCache,
-        new \Mfonte\ProxyCdn\Origin\MarkerFileCircuitBreaker(\$storage, \$config->getNetworkErrorTtl()),
-        new \Mfonte\ProxyCdn\Cache\Purger(\$storage, \$negativeCache),
+        storage_path('proxy-cdn'),
+        storage_path('proxy-cdn-state'),
         \Mfonte\ProxyCdn\Origin\HttpOriginFetcher::fromConfig(\$config, \$logger),
         null,
-        \$responses,
-        new \Mfonte\ProxyCdn\Http\FileResponder(\$storage, \$responses),
         \$logger
     );
 
