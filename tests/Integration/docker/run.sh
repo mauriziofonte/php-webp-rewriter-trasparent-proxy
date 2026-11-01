@@ -179,6 +179,14 @@ copy_application() {
 
 for s in "${stacks[@]}"; do
     copy_application "$workdir/$s/app"
+    if [ "$s" = nginx ]; then
+        # nginx sends the files PHP chooses.
+        printf 'SENDFILE = "x-accel-redirect"\n' >>"$workdir/$s/app/.env"
+    else
+        # mod_xsendfile is not built into the official Apache image: PHP
+        # must stream the files instead of answering empty (fail safe).
+        printf 'SENDFILE = "x-sendfile"\n' >>"$workdir/$s/app/.env"
+    fi
     mkdir -p "$workdir/$s/logs"
     chmod -R u+rwX,go+rX,go-w "$workdir/$s"
     if [ "$(id -u)" -eq 0 ]; then

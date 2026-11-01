@@ -62,7 +62,7 @@ final class ProxyKernelFactory
             $converter,
             new Precompressor($storage, $config->shouldPrecompress()),
             $responses,
-            new FileResponder($storage, $responses),
+            new FileResponder($storage, $responses, $config->getSendfile(), $cacheDirectory),
             $logger
         );
     }
