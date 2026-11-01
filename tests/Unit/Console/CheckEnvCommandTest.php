@@ -20,7 +20,7 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 #[CoversClass(CheckEnvCommand::class)]
 final class CheckEnvCommandTest extends TestCase
 {
-    private const VALID_ENV = "SOURCE_ORIGIN=\"https://origin.example.test\"\nCACHEABLE_EXTENSIONS=\"css,js,png\"\nUPSTREAM_VERIFY_TLS=true\n";
+    private const VALID_ENV = "SOURCE_ORIGIN=\"https://origin.example.test\"\nPROXY_HOSTS=\"cdn.example.test\"\nCACHEABLE_EXTENSIONS=\"css,js,png\"\nUPSTREAM_VERIFY_TLS=true\n";
 
     /**
      * @var TemporaryDirectory
@@ -79,6 +79,7 @@ final class CheckEnvCommandTest extends TestCase
     {
         $this->environment = [
             'SOURCE_ORIGIN' => 'https://origin.example.test',
+            'PROXY_HOSTS' => 'cdn.example.test',
             'CACHEABLE_EXTENSIONS' => 'css',
             'UPSTREAM_VERIFY_TLS' => 'true',
         ];
@@ -122,6 +123,7 @@ final class CheckEnvCommandTest extends TestCase
         self::assertSame(
             "✗ Environment check failed:\n"
             . "    • SOURCE_ORIGIN must be a valid URL (got: 'origin')\n"
+            . "    • PROXY_HOSTS must be set: the host names the proxy answers for, separated by commas (\"cdn.example.com\", or \"cdn.example.com=https://origin.example.com\" for another origin than SOURCE_ORIGIN)\n"
             . "    • CACHEABLE_EXTENSIONS must be set (comma-separated list of file extensions)\n"
             . "    • CACHE_EXPIRY must be a non-negative integer (got: '<soon>')\n",
             $display
@@ -151,7 +153,7 @@ final class CheckEnvCommandTest extends TestCase
 
     public function testWarningsAreIndented(): void
     {
-        $this->directory->write('.env', "SOURCE_ORIGIN=\"https://origin.example.test\"\nCACHEABLE_EXTENSIONS=\"css,html\"\nDEBUG=true\n");
+        $this->directory->write('.env', "SOURCE_ORIGIN=\"https://origin.example.test\"\nPROXY_HOSTS=\"cdn.example.test\"\nCACHEABLE_EXTENSIONS=\"css,html\"\nDEBUG=true\n");
 
         list($exitCode, $display) = $this->runCommand([]);
 

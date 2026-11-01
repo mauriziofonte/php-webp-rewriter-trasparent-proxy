@@ -93,6 +93,7 @@ SH;
         return [
             'DEBUG' => 'false',
             'SOURCE_ORIGIN' => '"' . $this->origin->getBaseUrl() . '"',
+            'PROXY_HOSTS' => '"127.0.0.1"',
             'CACHEABLE_EXTENSIONS' => '"css,js,jpg,jpeg,png,gif,bmp,webp,ttf,woff,woff2,otf,eot,svg,ico"',
             'CACHE_EXPIRY' => '31536000',
             'NEGATIVE_CACHE_TTL' => '300',

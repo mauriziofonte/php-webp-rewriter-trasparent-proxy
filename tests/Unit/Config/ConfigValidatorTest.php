@@ -21,6 +21,9 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 #[CoversClass(\Mfonte\ProxyCdn\Config\ConfigValidation::class)]
 final class ConfigValidatorTest extends TestCase
 {
+    private const HOSTS_REQUIRED = 'PROXY_HOSTS must be set: the host names the proxy answers for, separated by commas '
+        . '("cdn.example.com", or "cdn.example.com=https://origin.example.com" for another origin than SOURCE_ORIGIN)';
+
     public function testValidValuesHaveNoErrorsAndNoWarnings(): void
     {
         $validation = (new ConfigValidator())->validate(TestConfig::rawValues());
@@ -30,10 +33,11 @@ final class ConfigValidatorTest extends TestCase
         self::assertSame([], $validation->getWarnings());
     }
 
-    public function testOnlyOriginAndExtensionsAreRequired(): void
+    public function testOnlyOriginHostsAndExtensionsAreRequired(): void
     {
         $values = array_fill_keys(array_keys(TestConfig::rawValues()), null);
         $values['SOURCE_ORIGIN'] = 'http://origin.example.test';
+        $values['PROXY_HOSTS'] = 'cdn.example.test';
         $values['CACHEABLE_EXTENSIONS'] = 'css';
 
         $validation = (new ConfigValidator())->validate($values);
@@ -167,6 +171,18 @@ final class ConfigValidatorTest extends TestCase
                 ['QUERY_STRING_MODE' => 'drop'],
                 "QUERY_STRING_MODE must be one of: ignore, reject (got: 'drop')",
             ],
+            'missing hosts' => [['PROXY_HOSTS' => null], self::HOSTS_REQUIRED],
+            'wildcard host' => [['PROXY_HOSTS' => '*.example.test'], self::invalidHosts('*.example.test')],
+            'ipv6 host' => [['PROXY_HOSTS' => '[::1]'], self::invalidHosts('[::1]')],
+            'host listed twice' => [['PROXY_HOSTS' => 'a.example.test,A.example.test'], self::invalidHosts('a.example.test,A.example.test')],
+            'host origin not a url' => [['PROXY_HOSTS' => 'a.example.test=origin'], self::invalidHosts('a.example.test=origin')],
+            'host origin with a query' => [['PROXY_HOSTS' => 'a.example.test=https://o.example.test/?x=1'], self::invalidHosts('a.example.test=https://o.example.test/?x=1')],
+            'pinned server with two origins' => [
+                ['PROXY_HOSTS' => 'a.example.test,b.example.test=https://other.example.test', 'SOURCE_ORIGIN_SERVER' => '192.0.2.1'],
+                'SOURCE_ORIGIN_SERVER cannot be combined with PROXY_HOSTS entries of another origin: it pins the connections to every origin',
+            ],
+            'unknown sendfile' => [['SENDFILE' => 'apache'], "SENDFILE must be one of: none, x-sendfile, x-accel-redirect (got: 'apache')"],
+            'invalid precompress' => [['PRECOMPRESS' => 'yes'], "PRECOMPRESS must be one of: true, false, 1, 0 (got: 'yes')"],
         ];
     }
 
@@ -176,6 +192,7 @@ final class ConfigValidatorTest extends TestCase
 
         self::assertSame([
             'SOURCE_ORIGIN must be set',
+            self::HOSTS_REQUIRED,
             'CACHEABLE_EXTENSIONS must be set (comma-separated list of file extensions)',
         ], $validation->getErrors());
     }
@@ -385,5 +402,12 @@ final class ConfigValidatorTest extends TestCase
             'empty' => ['', null],
             'padded' => [' true', null],
         ];
+    }
+
+    private static function invalidHosts(string $value): string
+    {
+        return 'PROXY_HOSTS must list "host" or "host=origin URL" entries separated by commas, each host once: '
+            . 'a host is letters, digits, "-" and "." (no IPv6 literal, no wildcard), an origin an http or https URL (got: '
+            . var_export($value, true) . ')';
     }
 }

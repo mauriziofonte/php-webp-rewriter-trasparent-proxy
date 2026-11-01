@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 use Mfonte\ProxyCdn\Net\IpRange;
+use Mfonte\ProxyCdn\Security\HostAllowlist;
 
 /**
  * The proxy configuration, immutable and already validated.
@@ -24,6 +25,17 @@ final class Config
     public const CONVERSION_NATIVE = 'native';
     public const CONVERSION_API = 'api';
 
+    /** SENDFILE: PHP streams the files it serves itself. */
+    public const SENDFILE_NONE = 'none';
+
+    /** SENDFILE: PHP hands the files it serves to Apache mod_xsendfile. */
+    public const SENDFILE_X_SENDFILE = 'x-sendfile';
+
+    /** SENDFILE: PHP hands the files it serves to nginx. */
+    public const SENDFILE_X_ACCEL_REDIRECT = 'x-accel-redirect';
+
+    public const SENDFILE_MODES = [self::SENDFILE_NONE, self::SENDFILE_X_SENDFILE, self::SENDFILE_X_ACCEL_REDIRECT];
+
     /**
      * @var bool
      */
@@ -38,6 +50,26 @@ final class Config
      * @var string|null
      */
     private $sourceOriginServer;
+
+    /**
+     * @var list<string> "host=origin" entries, normalised
+     */
+    private $proxyHosts;
+
+    /**
+     * @var string
+     */
+    private $sendfile;
+
+    /**
+     * @var bool
+     */
+    private $precompress;
+
+    /**
+     * @var bool
+     */
+    private $legacyWebpUrls;
 
     /**
      * @var string
@@ -162,6 +194,10 @@ final class Config
         $config->debug = self::boolean($values, 'DEBUG');
         $config->sourceOrigin = self::string($values, 'SOURCE_ORIGIN');
         $config->sourceOriginServer = self::optionalString($values, 'SOURCE_ORIGIN_SERVER');
+        $config->proxyHosts = self::stringList($values, 'PROXY_HOSTS');
+        $config->sendfile = self::string($values, 'SENDFILE');
+        $config->precompress = self::boolean($values, 'PRECOMPRESS');
+        $config->legacyWebpUrls = self::boolean($values, 'LEGACY_WEBP_URLS');
         $config->charset = self::string($values, 'CHARSET');
         $config->timezone = self::optionalString($values, 'TIMEZONE');
         $config->locale = self::string($values, 'LOCALE');
@@ -187,6 +223,12 @@ final class Config
         if (!in_array($config->imageConversionMode, [self::CONVERSION_NONE, self::CONVERSION_NATIVE, self::CONVERSION_API], true)) {
             throw new InvalidConfigurationException(['IMAGE_CONVERSION_MODE has an unknown value']);
         }
+        if (!in_array($config->sendfile, self::SENDFILE_MODES, true)) {
+            throw new InvalidConfigurationException(['SENDFILE has an unknown value']);
+        }
+        if (HostAllowlist::parse($config->proxyHosts, $config->sourceOrigin) === null) {
+            throw self::wrongType('PROXY_HOSTS', 'a list of "host=origin" entries');
+        }
         if (!in_array($config->queryStringMode, [QueryStringPolicy::MODE_IGNORE, QueryStringPolicy::MODE_REJECT], true)) {
             throw new InvalidConfigurationException(['QUERY_STRING_MODE has an unknown value']);
         }
@@ -205,6 +247,10 @@ final class Config
             'DEBUG' => $this->debug,
             'SOURCE_ORIGIN' => $this->sourceOrigin,
             'SOURCE_ORIGIN_SERVER' => $this->sourceOriginServer,
+            'PROXY_HOSTS' => $this->proxyHosts,
+            'SENDFILE' => $this->sendfile,
+            'PRECOMPRESS' => $this->precompress,
+            'LEGACY_WEBP_URLS' => $this->legacyWebpUrls,
             'CHARSET' => $this->charset,
             'TIMEZONE' => $this->timezone,
             'LOCALE' => $this->locale,
@@ -253,6 +299,43 @@ final class Config
     public function getSourceOriginServer(): ?string
     {
         return $this->sourceOriginServer;
+    }
+
+    /**
+     * PROXY_HOSTS: the host names the proxy answers for, each with its
+     * origin (see HostAllowlist).
+     */
+    public function getHostAllowlist(): HostAllowlist
+    {
+        return new HostAllowlist(HostAllowlist::parse($this->proxyHosts, $this->sourceOrigin) ?? []);
+    }
+
+    /**
+     * SENDFILE: how PHP sends the cache files it serves, one of the
+     * SENDFILE_* constants.
+     */
+    public function getSendfile(): string
+    {
+        return $this->sendfile;
+    }
+
+    /**
+     * PRECOMPRESS: whether ".br" and ".gz" siblings are written next to the
+     * compressible entries, for the web server to serve.
+     */
+    public function shouldPrecompress(): bool
+    {
+        return $this->precompress;
+    }
+
+    /**
+     * LEGACY_WEBP_URLS: whether a request for "X.webp" that the origin does
+     * not have is answered from a raster sibling "X.jpg", "X.png"... (risk
+     * L-4: 2.x redirected raster URLs to such WEBP URLs, permanently).
+     */
+    public function shouldResolveLegacyWebpUrls(): bool
+    {
+        return $this->legacyWebpUrls;
     }
 
     /**

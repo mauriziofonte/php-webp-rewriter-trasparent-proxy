@@ -71,7 +71,7 @@ final class ConfigLoaderTest extends TestCase
             'CACHEABLE_EXTENSIONS' => 'css',
             'CACHE_EXPIRY' => '600',
         ]);
-        $this->environment = ['SOURCE_ORIGIN' => 'https://environment.example.test', 'CACHE_EXPIRY' => ''];
+        $this->environment = ['PROXY_HOSTS' => 'cdn.example.test', 'SOURCE_ORIGIN' => 'https://environment.example.test', 'CACHE_EXPIRY' => ''];
 
         $config = $this->loader()->load();
 
@@ -82,7 +82,7 @@ final class ConfigLoaderTest extends TestCase
 
     public function testTheEnvFileIsOptional(): void
     {
-        $this->environment = ['SOURCE_ORIGIN' => 'https://environment.example.test', 'CACHEABLE_EXTENSIONS' => 'js'];
+        $this->environment = ['PROXY_HOSTS' => 'cdn.example.test', 'SOURCE_ORIGIN' => 'https://environment.example.test', 'CACHEABLE_EXTENSIONS' => 'js'];
 
         $loader = $this->loader();
         $config = $loader->load();
@@ -147,7 +147,7 @@ final class ConfigLoaderTest extends TestCase
     #[Group('regression')]
     public function testTlsIsVerifiedByDefaultL6(): void
     {
-        $config = TestConfig::loader()->loadFromArray(['SOURCE_ORIGIN' => 'https://origin.example.test', 'CACHEABLE_EXTENSIONS' => 'css']);
+        $config = TestConfig::loader()->loadFromArray(['PROXY_HOSTS' => 'cdn.example.test', 'SOURCE_ORIGIN' => 'https://origin.example.test', 'CACHEABLE_EXTENSIONS' => 'css']);
 
         self::assertTrue($config->shouldVerifyUpstreamTls());
         self::assertFalse(TestConfig::create(['UPSTREAM_VERIFY_TLS' => 'false'])->shouldVerifyUpstreamTls());
@@ -178,7 +178,7 @@ final class ConfigLoaderTest extends TestCase
 
     public function testUnparsableEnvFileIsRejected(): void
     {
-        $this->directory->write('.env', "SOURCE_ORIGIN=https://origin.example.test with spaces\nCACHEABLE_EXTENSIONS=css\n");
+        $this->directory->write('.env', "SOURCE_ORIGIN=https://origin.example.test with spaces\nPROXY_HOSTS=cdn.example.test\nCACHEABLE_EXTENSIONS=css\n");
 
         try {
             $this->loader()->load();
@@ -245,7 +245,7 @@ final class ConfigLoaderTest extends TestCase
 
     public function testLoadFromArrayTreatsMissingKeysAsUnset(): void
     {
-        $config = $this->loader()->loadFromArray(['SOURCE_ORIGIN' => 'https://origin.example.test', 'CACHEABLE_EXTENSIONS' => 'png']);
+        $config = $this->loader()->loadFromArray(['PROXY_HOSTS' => 'cdn.example.test', 'SOURCE_ORIGIN' => 'https://origin.example.test', 'CACHEABLE_EXTENSIONS' => 'png']);
 
         self::assertSame(['png'], $config->getCacheableExtensions());
         self::assertSame(86400, $config->getCacheExpiry());
@@ -381,6 +381,9 @@ final class ConfigLoaderTest extends TestCase
      */
     private function writeEnvFile(array $values): string
     {
+        if (isset($values['SOURCE_ORIGIN']) && !isset($values['PROXY_HOSTS'])) {
+            $values['PROXY_HOSTS'] = 'cdn.example.test';
+        }
         $lines = '';
         foreach ($values as $name => $value) {
             $lines .= $name . '=' . $value . "\n";

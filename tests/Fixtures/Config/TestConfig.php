@@ -27,6 +27,7 @@ final class TestConfig
             'DEBUG' => 'false',
             'SOURCE_ORIGIN' => 'https://origin.example.test',
             'SOURCE_ORIGIN_SERVER' => null,
+            'PROXY_HOSTS' => 'cdn.example.test',
             'CHARSET' => 'UTF-8',
             'TIMEZONE' => 'UTC',
             'LOCALE' => 'en_US',
@@ -48,6 +49,9 @@ final class TestConfig
             'IMAGE_CONVERSION_MODE' => 'none',
             'WEBP_API_SERVER' => null,
             'WEBP_API_KEY' => null,
+            'SENDFILE' => null,
+            'PRECOMPRESS' => null,
+            'LEGACY_WEBP_URLS' => null,
         ], $overrides);
     }
 

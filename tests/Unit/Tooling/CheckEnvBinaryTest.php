@@ -86,7 +86,7 @@ final class CheckEnvBinaryTest extends TestCase
             'required values missing' => ["DEBUG=false\n", 'SOURCE_ORIGIN must be set'],
             'unparsable file' => ["INVALID KEY=value\n", 'The .env file cannot be parsed'],
             'invalid value' => [
-                "SOURCE_ORIGIN=\"https://origin.example.test\"\nCACHEABLE_EXTENSIONS=\"png\"\nUPSTREAM_TIMEOUT=\"soon\"\n",
+                "SOURCE_ORIGIN=\"https://origin.example.test\"\nPROXY_HOSTS=\"cdn.example.test\"\nCACHEABLE_EXTENSIONS=\"png\"\nUPSTREAM_TIMEOUT=\"soon\"\n",
                 'UPSTREAM_TIMEOUT must be a non-negative integer',
             ],
         ];
@@ -123,7 +123,7 @@ final class CheckEnvBinaryTest extends TestCase
     public function testExplicitRunPassesOnValidConfiguration(): void
     {
         $this->writeEnv(
-            "SOURCE_ORIGIN=\"https://origin.example.test\"\n"
+            "SOURCE_ORIGIN=\"https://origin.example.test\"\nPROXY_HOSTS=\"cdn.example.test\"\n"
             . "CACHEABLE_EXTENSIONS=\"css,js,png\"\n"
             . "IMAGE_CONVERSION_MODE=\"none\"\n"
             . "UPSTREAM_VERIFY_TLS=true\n"
@@ -142,6 +142,7 @@ final class CheckEnvBinaryTest extends TestCase
     {
         list($exitCode, $output) = $this->runBinary([], [
             'SOURCE_ORIGIN' => 'https://origin.example.test',
+            'PROXY_HOSTS' => 'cdn.example.test',
             'CACHEABLE_EXTENSIONS' => 'css',
             'UPSTREAM_VERIFY_TLS' => 'true',
         ]);
@@ -154,7 +155,7 @@ final class CheckEnvBinaryTest extends TestCase
     {
         $this->writeEnv("SOURCE_ORIGIN=\"not a url\"\nCACHEABLE_EXTENSIONS=\"css\"\nUPSTREAM_VERIFY_TLS=true\n");
 
-        list($exitCode, $output) = $this->runBinary([], ['SOURCE_ORIGIN' => 'https://origin.example.test']);
+        list($exitCode, $output) = $this->runBinary([], ['SOURCE_ORIGIN' => 'https://origin.example.test', 'PROXY_HOSTS' => 'cdn.example.test']);
 
         self::assertSame(0, $exitCode, $output);
     }

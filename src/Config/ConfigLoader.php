@@ -29,12 +29,14 @@ final class ConfigLoader
      * The configuration keys: those of 2.x, plus UPSTREAM_MAX_SIZE and
      * UPSTREAM_USER_AGENT (PRX-4), QUERY_STRING_ALLOWLIST,
      * QUERY_STRING_MODE, TRUSTED_PROXIES, PURGE_KEYS and
-     * CIRCUIT_BREAKER_THRESHOLD (PRX-5).
+     * CIRCUIT_BREAKER_THRESHOLD (PRX-5), PROXY_HOSTS, SENDFILE, PRECOMPRESS
+     * and LEGACY_WEBP_URLS (PRX-6).
      */
     public const KEYS = [
         'DEBUG',
         'SOURCE_ORIGIN',
         'SOURCE_ORIGIN_SERVER',
+        'PROXY_HOSTS',
         'CHARSET',
         'TIMEZONE',
         'LOCALE',
@@ -56,6 +58,9 @@ final class ConfigLoader
         'IMAGE_CONVERSION_MODE',
         'WEBP_API_SERVER',
         'WEBP_API_KEY',
+        'SENDFILE',
+        'PRECOMPRESS',
+        'LEGACY_WEBP_URLS',
     ];
 
     /**
@@ -80,13 +85,16 @@ final class ConfigLoader
         'QUERY_STRING_ALLOWLIST' => 'v,ver,version,id',
         'QUERY_STRING_MODE' => QueryStringPolicy::MODE_IGNORE,
         'IMAGE_CONVERSION_MODE' => Config::CONVERSION_NONE,
+        'SENDFILE' => Config::SENDFILE_NONE,
+        'PRECOMPRESS' => 'true',
+        'LEGACY_WEBP_URLS' => 'true',
     ];
 
     /**
      * Changes whenever the compiled format or the normalisation changes, so
      * that files compiled by another version are recompiled.
      */
-    private const FORMAT = 'proxy-cdn-config-3';
+    private const FORMAT = 'proxy-cdn-config-4';
 
     /**
      * @var string|null
@@ -184,6 +192,10 @@ final class ConfigLoader
             'DEBUG' => ConfigValidator::booleanOf($value('DEBUG')) === true,
             'SOURCE_ORIGIN' => rtrim($value('SOURCE_ORIGIN'), '/'),
             'SOURCE_ORIGIN_SERVER' => $optional('SOURCE_ORIGIN_SERVER'),
+            'PROXY_HOSTS' => ConfigValidator::hostEntries($optional('PROXY_HOSTS'), rtrim($value('SOURCE_ORIGIN'), '/')),
+            'SENDFILE' => $value('SENDFILE'),
+            'PRECOMPRESS' => ConfigValidator::booleanOf($value('PRECOMPRESS')) === true,
+            'LEGACY_WEBP_URLS' => ConfigValidator::booleanOf($value('LEGACY_WEBP_URLS')) === true,
             'CHARSET' => $value('CHARSET'),
             'TIMEZONE' => $value('TIMEZONE'),
             'LOCALE' => $value('LOCALE'),

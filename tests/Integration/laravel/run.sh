@@ -143,6 +143,7 @@ cat >>"$app/routes/web.php" <<PHP
 Route::get('/{path}', function (\Illuminate\Http\Request \$request) {
     \$config = (new \Mfonte\ProxyCdn\Config\ConfigLoader(null))->loadFromArray([
         'SOURCE_ORIGIN' => '$origin_url',
+        'PROXY_HOSTS' => '127.0.0.1',
         'CACHEABLE_EXTENSIONS' => 'css,js,png,jpg',
         'UPSTREAM_VERIFY_TLS' => 'true',
         'IMAGE_CONVERSION_MODE' => 'none',

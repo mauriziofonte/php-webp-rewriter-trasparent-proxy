@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
 use Mfonte\ProxyCdn\Net\IpRange;
 use Mfonte\ProxyCdn\Origin\HttpClientOptions;
+use Mfonte\ProxyCdn\Security\HostAllowlist;
 use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 
 /**
@@ -48,7 +49,7 @@ final class ConfigValidator
         'UPSTREAM_MAX_SIZE' => [1, self::MAX_UPSTREAM_MAX_SIZE],
     ];
 
-    private const BOOLEAN_KEYS = ['DEBUG', 'UPSTREAM_VERIFY_TLS', 'UPSTREAM_FOLLOW_REDIRECTS'];
+    private const BOOLEAN_KEYS = ['DEBUG', 'UPSTREAM_VERIFY_TLS', 'UPSTREAM_FOLLOW_REDIRECTS', 'PRECOMPRESS', 'LEGACY_WEBP_URLS'];
 
     /**
      * The QUERY_STRING_ALLOWLIST value that keeps no parameter.
@@ -74,9 +75,30 @@ final class ConfigValidator
             $errors[] = 'SOURCE_ORIGIN must use http:// or https:// scheme (got: ' . var_export($origin, true) . ')';
         }
 
+        // PROXY_HOSTS is checked only against a valid SOURCE_ORIGIN, the origin of its entries without one.
+        $originIsValid = $origin !== null && $errors === [];
+
         $server = $values['SOURCE_ORIGIN_SERVER'] ?? null;
         if ($server !== null && HttpClientOptions::parseAddress($server) === null) {
             $errors[] = 'SOURCE_ORIGIN_SERVER must be "address", "address:port" or "[IPv6 address]:port" (got: ' . var_export($server, true) . ')';
+        }
+
+        $hosts = $values['PROXY_HOSTS'] ?? null;
+        $origins = $originIsValid ? HostAllowlist::parse(self::entryList($hosts), rtrim((string) $origin, '/')) : null;
+        if ($hosts === null) {
+            $errors[] = 'PROXY_HOSTS must be set: the host names the proxy answers for, separated by commas '
+                . '("cdn.example.com", or "cdn.example.com=https://origin.example.com" for another origin than SOURCE_ORIGIN)';
+        } elseif ($originIsValid && $origins === null) {
+            $errors[] = 'PROXY_HOSTS must list "host" or "host=origin URL" entries separated by commas, each host once: '
+                . 'a host is letters, digits, "-" and "." (no IPv6 literal, no wildcard), an origin an http or https URL (got: '
+                . var_export($hosts, true) . ')';
+        } elseif ($server !== null && $origins !== null && count(array_unique($origins)) > 1) {
+            $errors[] = 'SOURCE_ORIGIN_SERVER cannot be combined with PROXY_HOSTS entries of another origin: it pins the connections to every origin';
+        }
+
+        $sendfile = $values['SENDFILE'] ?? null;
+        if ($sendfile !== null && !in_array($sendfile, Config::SENDFILE_MODES, true)) {
+            $errors[] = 'SENDFILE must be one of: ' . implode(', ', Config::SENDFILE_MODES) . ' (got: ' . var_export($sendfile, true) . ')';
         }
 
         $userAgent = $values['UPSTREAM_USER_AGENT'] ?? null;
@@ -216,6 +238,25 @@ final class ConfigValidator
             if ($entry !== '') {
                 $entries[] = $entry;
             }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * The entries of a PROXY_HOSTS value in the form the configuration
+     * keeps, "host=origin" with the host normalised; [] for null. The value
+     * must be valid.
+     *
+     * @param string $defaultOrigin SOURCE_ORIGIN without trailing slash
+     *
+     * @return list<string>
+     */
+    public static function hostEntries(?string $raw, string $defaultOrigin): array
+    {
+        $entries = [];
+        foreach (HostAllowlist::parse(self::entryList($raw), $defaultOrigin) ?? [] as $host => $origin) {
+            $entries[] = $host . '=' . $origin;
         }
 
         return $entries;
