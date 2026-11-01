@@ -9,6 +9,7 @@ use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
 use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
+use Mfonte\ProxyCdn\Compression\Precompressor;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\WebpConverter;
 use Mfonte\ProxyCdn\Origin\OriginCircuitBreaker;
@@ -59,6 +60,7 @@ final class ProxyKernelFactory
             new Purger($storage, $negativeCache),
             $origin,
             $converter,
+            new Precompressor($storage, $config->shouldPrecompress()),
             $responses,
             new FileResponder($storage, $responses),
             $logger

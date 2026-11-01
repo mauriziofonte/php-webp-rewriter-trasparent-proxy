@@ -11,6 +11,7 @@ use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
 use Mfonte\ProxyCdn\Cache\QueryString;
 use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
+use Mfonte\ProxyCdn\Compression\Precompressor;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\WebpConverter;
 use Mfonte\ProxyCdn\Origin\CircuitBreaker;
@@ -50,12 +51,13 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    which key the entry and reach the origin as the client wrote them; an
  *    entry on disk is served from disk, as its AVIF or WEBP variant to the
  *    clients that accept it, with "Vary: Accept" (finding P-1: 2.x
- *    redirected every client to the WEBP copy);
+ *    redirected every client to the WEBP copy), or as its Brotli or gzip
+ *    sibling;
  * 6. otherwise, unless the circuit breaker of the origin is open, the
  *    asset is fetched from the origin (a failure is answered by its kind,
- *    see failure(), finding P-13), stored as the origin sent it, a raster
- *    is converted to WEBP when a converter is configured, and the asset is
- *    served from the cache.
+ *    see failure(), finding P-13), stored as the origin sent it with its
+ *    compressed siblings, a raster is converted to WEBP when a converter is
+ *    configured, and the asset is served from the cache.
  *
  * The web server serves the cache files itself, without PHP, whenever it
  * can compute their location (see CacheKeyResolver); the kernel answers
@@ -149,6 +151,11 @@ final class ProxyKernel
     private $converter;
 
     /**
+     * @var Precompressor
+     */
+    private $precompressor;
+
+    /**
      * @var ResponseFactory
      */
     private $responses;
@@ -179,6 +186,7 @@ final class ProxyKernel
         Purger $purger,
         OriginFetcher $origin,
         ?WebpConverter $converter,
+        Precompressor $precompressor,
         ResponseFactory $responses,
         FileResponder $files,
         LoggerInterface $logger
@@ -196,6 +204,7 @@ final class ProxyKernel
         $this->purger = $purger;
         $this->origin = $origin;
         $this->converter = $converter;
+        $this->precompressor = $precompressor;
         $this->responses = $responses;
         $this->files = $files;
         $this->logger = $logger;
@@ -418,6 +427,7 @@ final class ProxyKernel
         if (!$this->storage->write($location->getFile(), $body)) {
             return ResponseFactory::ERROR_CACHE_FILE;
         }
+        $this->precompressor->compress($location, $extension);
 
         return null;
     }
@@ -438,7 +448,14 @@ final class ProxyKernel
             return null;
         }
         if (!$this->isRaster($extension)) {
-            return $this->files->respond($request, $file, $extension, $cacheStatus);
+            $encoded = [];
+            if (Precompressor::isCompressible($extension)) {
+                foreach (CacheLocation::ENCODINGS as $encoding) {
+                    $encoded[$encoding] = $location->getEncodedFile($encoding);
+                }
+            }
+
+            return $this->files->respond($request, $file, $extension, $cacheStatus, $encoded);
         }
 
         $webp = $location->getVariantFile(CacheLocation::FORMAT_WEBP);
@@ -449,11 +466,11 @@ final class ProxyKernel
         foreach (CacheLocation::FORMATS as $format) {
             $variant = $location->getVariantFile($format);
             if (AcceptHeader::accepts($accept, MediaTypes::of($format)) && $this->storage->isFile($variant)) {
-                return $this->files->respond($request, $variant, $format, $cacheStatus, ['Accept']);
+                return $this->files->respond($request, $variant, $format, $cacheStatus, [], ['Accept']);
             }
         }
 
-        return $this->files->respond($request, $file, $extension, $cacheStatus, ['Accept']);
+        return $this->files->respond($request, $file, $extension, $cacheStatus, [], ['Accept']);
     }
 
     /**

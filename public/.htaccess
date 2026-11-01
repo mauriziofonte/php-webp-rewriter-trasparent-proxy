@@ -3,7 +3,8 @@
 #
 # Apache serves every cache hit itself, without PHP: the file of the host
 # and of the query string under public/_cache/ (Cache\CacheKeyResolver),
-# as its AVIF or WEBP variant when the client accepts it. Everything else reaches index.php: misses, query
+# as its AVIF or WEBP variant or its Brotli or gzip encoding when the
+# client accepts it. Everything else reaches index.php: misses, query
 # strings that PHP must map, PURGE and OPTIONS.
 #
 # Requirements:
@@ -91,8 +92,8 @@ ErrorDocument 403 "Access Forbidden"
     RewriteRule ^ - [E=PCDN_D:_cache/%2/.q/%1]
 
     # A hit: the first file that exists of the AVIF variant, the WEBP
-    # variant and the entry itself.
-    # The variants count when the client lists them by name
+    # variant, the Brotli encoding, the gzip encoding and the entry itself.
+    # The variants and encodings count when the client lists them by name
     # without q=0 (Http\AcceptHeader). Paths of other characters than these
     # reach PHP, which serves them too. [END] serves the file without a
     # second pass through these rules.
@@ -105,6 +106,16 @@ ErrorDocument 403 "Access Forbidden"
     RewriteCond %{HTTP:Accept} (^|,)\s*image/webp\s*($|,|;(?![^,]*\bq\s*=\s*0(\.0*)?\s*($|,|;))) [NC,NV]
     RewriteCond %{DOCUMENT_ROOT}/%{ENV:PCDN_D}/.webp/$1.webp -f
     RewriteRule ^([A-Za-z0-9._~/-]+\.(?i:jpe?g|png|gif|bmp))$ %{ENV:PCDN_D}/.webp/$1.webp [END]
+
+    RewriteCond %{ENV:PCDN_D} .
+    RewriteCond %{HTTP:Accept-Encoding} (^|,)\s*br\s*($|,|;(?![^,]*\bq\s*=\s*0(\.0*)?\s*($|,|;))) [NC,NV]
+    RewriteCond %{DOCUMENT_ROOT}/%{ENV:PCDN_D}/.br/$1 -f
+    RewriteRule ^([A-Za-z0-9._~/-]+\.[A-Za-z0-9]+)$ %{ENV:PCDN_D}/.br/$1 [END]
+
+    RewriteCond %{ENV:PCDN_D} .
+    RewriteCond %{HTTP:Accept-Encoding} (^|,)\s*gzip\s*($|,|;(?![^,]*\bq\s*=\s*0(\.0*)?\s*($|,|;))) [NC,NV]
+    RewriteCond %{DOCUMENT_ROOT}/%{ENV:PCDN_D}/.gz/$1 -f
+    RewriteRule ^([A-Za-z0-9._~/-]+\.[A-Za-z0-9]+)$ %{ENV:PCDN_D}/.gz/$1 [END]
 
     RewriteCond %{ENV:PCDN_D} .
     RewriteCond %{DOCUMENT_ROOT}/%{ENV:PCDN_D}/$1 -f
@@ -125,7 +136,10 @@ ErrorDocument 403 "Access Forbidden"
 # -----------------------------------------------------------------------------
 <IfModule mod_setenvif.c>
     SetEnvIf Request_URI "^/_cache/" PCDN_HIT
+    SetEnvIf Request_URI "^/_cache/[^/]+/(\.q/[^/]+/)?\.br/" PCDN_BR no-gzip
+    SetEnvIf Request_URI "^/_cache/[^/]+/(\.q/[^/]+/)?\.gz/" PCDN_GZ no-gzip
     SetEnvIf Request_URI "\.(?i:jpe?g|png|gif|bmp)(\.avif|\.webp)?$" PCDN_RASTER
+    SetEnvIf Request_URI "\.(?i:css|js|mjs|json|map|svg|txt|xml|ico|ttf|ttc|otf|eot)$" PCDN_TEXT
     SetEnvIf Request_URI "\.(?i:svg)$" PCDN_SVG
 </IfModule>
 
@@ -144,7 +158,10 @@ ErrorDocument 403 "Access Forbidden"
     # An SVG opened from this origin is sandboxed and runs no script
     # (finding P-7): the policy of Http\ResponseFactory, which PHP sends.
     Header set Content-Security-Policy "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox" env=PCDN_SVG
+    Header set Content-Encoding "br" env=PCDN_BR
+    Header set Content-Encoding "gzip" env=PCDN_GZ
     Header merge Vary "Accept" env=PCDN_RASTER
+    Header merge Vary "Accept-Encoding" env=PCDN_TEXT
 
     Header always set Referrer-Policy "strict-origin-when-cross-origin"
 
@@ -193,7 +210,8 @@ FileETag MTime Size
 # -----------------------------------------------------------------------------
 # 4. Compression
 #
-# mod_deflate compresses the text files.
+# The proxy stores Brotli and gzip encodings of the text files
+# (PRECOMPRESS); mod_deflate compresses the rest, and never an encoding.
 # -----------------------------------------------------------------------------
 <IfModule mod_deflate.c>
     AddOutputFilterByType DEFLATE text/css text/plain text/xml text/html

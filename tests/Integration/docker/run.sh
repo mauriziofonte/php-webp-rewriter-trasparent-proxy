@@ -6,9 +6,9 @@
 # origin over TLS from PHP-FPM, the first request is fetched from the origin
 # through PHP-FPM, and every later one is served from the cache by the web
 # server without reaching PHP-FPM (its access log stays unchanged) or the
-# origin: the entry, its WEBP and AVIF variants and the entry of a query
-# string, each with the headers PHP sends, once. PURGE, OPTIONS and
-# unlisted hosts reach PHP.
+# origin: the entry, its WEBP and AVIF variants, its gzip encoding and the
+# entry of a query string, each with the headers PHP sends, once. PURGE,
+# OPTIONS and unlisted hosts reach PHP.
 #
 # Usage: tests/Integration/docker/run.sh [--php <version>] [--stack apache|nginx|all] [--keep]
 #
@@ -383,6 +383,33 @@ smoke() {
     expect "$s: query string, second request is a hit" "$(cache_status "$workdir/$s/query2.headers")" HIT
     fpm_quiet "$s: query string hit served" "$fpm_log" "$lines"
     expect "$s: query string fetched from the origin once" "$(origin_count "$asset")" 2
+
+    # Encodings: the proxy stores a gzip encoding of a text file.
+    css=/css/site.css
+    expect "$s: stylesheet, first request" "$(fetch "$base$css" "$workdir/$s/css1")" 200
+    [ -f "$app/.gz$css" ] || die "$s: no gzip encoding at .gz$css"
+    lines="$(lines_of "$fpm_log")"
+    expect "$s: gzip encoding" "$(fetch "$base$css" "$workdir/$s/css2" -H 'Accept-Encoding: gzip')" 200
+    expect "$s: gzip encoding is labelled" "$(header_of Content-Encoding "$workdir/$s/css2.headers")" gzip
+    varies_on "$s: gzip encoding varies on Accept-Encoding" "$workdir/$s/css2.headers" Accept-Encoding
+    gzip -dc <"$workdir/$s/css2.body" | cmp -s - "$root/tests/Fixtures/origin$css" ||
+        die "$s: the gzip encoding differs from the origin file"
+    expect "$s: identity without Accept-Encoding" "$(fetch "$base$css" "$workdir/$s/css3" -H 'Accept-Encoding: identity')" 200
+    cmp -s "$workdir/$s/css3.body" "$root/tests/Fixtures/origin$css" || die "$s: the identity hit differs from the origin file"
+    hit_headers "$s: gzip encoding" "$workdir/$s/css2.headers"
+    # Brotli: the PHP images have no brotli extension, so the harness writes
+    # the sibling the proxy would; the web server prefers it when accepted.
+    mkdir -p "$(dirname "$app/.br$css")"
+    printf 'brotli-sibling' >"$app/.br$css"
+    chmod a+r "$app/.br$css"
+    expect "$s: Brotli encoding" "$(fetch "$base$css" "$workdir/$s/css4" -H 'Accept-Encoding: gzip, br')" 200
+    expect "$s: Brotli encoding is labelled" "$(header_of Content-Encoding "$workdir/$s/css4.headers")" br
+    expect "$s: Brotli encoding is the sibling" "$(cat "$workdir/$s/css4.body")" brotli-sibling
+    varies_on "$s: Brotli encoding varies on Accept-Encoding" "$workdir/$s/css4.headers" Accept-Encoding
+    hit_headers "$s: Brotli encoding" "$workdir/$s/css4.headers"
+    expect "$s: gzip when Brotli is refused" "$(fetch "$base$css" "$workdir/$s/css5" -H 'Accept-Encoding: gzip, br;q=0')" 200
+    expect "$s: gzip when Brotli is refused is labelled" "$(header_of Content-Encoding "$workdir/$s/css5.headers")" gzip
+    fpm_quiet "$s: encodings served" "$fpm_log" "$lines"
 
     # SVG: the policy of PHP, once.
     svg=/images/logo.svg

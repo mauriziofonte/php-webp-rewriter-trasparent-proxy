@@ -13,11 +13,12 @@ namespace Mfonte\ProxyCdn\Cache;
  *     D/P                 the entry, as the origin sent it
  *     D/.avif/P.avif      its AVIF variant (raster images)
  *     D/.webp/P.webp      its WEBP variant (raster images)
+ *     D/.br/P, D/.gz/P    its Brotli and gzip encodings (compressible types)
  *
  * The variants keep the name of the entry and add the extension of their
- * format, so that the web server types them by that extension. Every
- * sibling lives in a directory whose name starts with ".", which no
- * request path names.
+ * format, so that the web server types them by that extension; the
+ * encodings keep the name, and the type, of the entry. Every sibling lives
+ * in a directory whose name starts with ".", which no request path names.
  *
  * Immutable; built by CacheKeyResolver.
  */
@@ -31,6 +32,15 @@ final class CacheLocation
      * The formats a raster entry may have a variant in, by preference.
      */
     public const FORMATS = [self::FORMAT_AVIF, self::FORMAT_WEBP];
+
+    public const ENCODING_BROTLI = 'br';
+
+    public const ENCODING_GZIP = 'gz';
+
+    /**
+     * The encodings an entry may have a sibling in, by preference.
+     */
+    public const ENCODINGS = [self::ENCODING_BROTLI, self::ENCODING_GZIP];
 
     /**
      * @var string
@@ -91,7 +101,15 @@ final class CacheLocation
     }
 
     /**
-     * Every file of the entry: the entry and its variants.
+     * The entry encoded with $encoding (one of ENCODINGS).
+     */
+    public function getEncodedFile(string $encoding): string
+    {
+        return $this->siblingDirectory($encoding) . DIRECTORY_SEPARATOR . $this->path;
+    }
+
+    /**
+     * Every file of the entry: the entry, its variants and its encodings.
      *
      * @return list<string>
      */
@@ -100,6 +118,9 @@ final class CacheLocation
         $files = [$this->getFile()];
         foreach (self::FORMATS as $format) {
             $files[] = $this->getVariantFile($format);
+        }
+        foreach (self::ENCODINGS as $encoding) {
+            $files[] = $this->getEncodedFile($encoding);
         }
 
         return $files;

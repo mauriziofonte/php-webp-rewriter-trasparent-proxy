@@ -45,7 +45,7 @@ final class FileResponderTest extends TestCase
         $file = $this->directory->write('images/logo.webp', 'WEBP-BYTES');
         touch($file, 1700000000);
 
-        $response = $this->responder()->respond(Request::create('/images/logo.webp'), $file, 'webp', 'HIT', ['Accept']);
+        $response = $this->responder()->respond(Request::create('/images/logo.webp'), $file, 'webp', 'HIT', [], ['Accept']);
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('WEBP-BYTES', self::body($response));
@@ -69,6 +69,37 @@ final class FileResponderTest extends TestCase
 
         self::assertSame(ResponseFactory::SVG_CONTENT_SECURITY_POLICY, $response->headers->get('content-security-policy'));
         self::assertSame('MISS', $response->headers->get('x-cache-status'));
+    }
+
+    public function testTheEncodingTheClientPrefersIsSent(): void
+    {
+        $file = $this->directory->write('a.css', 'plain');
+        $brotli = $this->directory->write('.br/a.css', 'brotli');
+        $gzip = $this->directory->write('.gz/a.css', 'gzip');
+        $encoded = ['br' => $brotli, 'gz' => $gzip];
+
+        $both = $this->responder()->respond(Request::create('/a.css', 'GET', [], [], [], ['HTTP_ACCEPT_ENCODING' => 'gzip, deflate, br']), $file, 'css', 'HIT', $encoded);
+        $gzipOnly = $this->responder()->respond(Request::create('/a.css', 'GET', [], [], [], ['HTTP_ACCEPT_ENCODING' => 'gzip, br;q=0']), $file, 'css', 'HIT', $encoded);
+        $none = $this->responder()->respond(Request::create('/a.css'), $file, 'css', 'HIT', $encoded);
+
+        self::assertSame('brotli', self::body($both));
+        self::assertSame('br', $both->headers->get('content-encoding'));
+        self::assertSame('text/css', $both->headers->get('content-type'));
+        self::assertSame('Accept-Encoding', $both->headers->get('vary'));
+        self::assertSame('gzip', self::body($gzipOnly));
+        self::assertSame('gzip', $gzipOnly->headers->get('content-encoding'));
+        self::assertSame('plain', self::body($none));
+        self::assertFalse($none->headers->has('content-encoding'));
+        self::assertSame('Accept-Encoding', $none->headers->get('vary'));
+    }
+
+    public function testAMissingSiblingFallsBackToTheFile(): void
+    {
+        $file = $this->directory->write('a.css', 'plain');
+
+        $response = $this->responder()->respond(Request::create('/a.css', 'GET', [], [], [], ['HTTP_ACCEPT_ENCODING' => 'br']), $file, 'css', 'HIT', ['br' => $this->directory->path('.br/a.css')]);
+
+        self::assertSame('plain', self::body($response));
     }
 
     public function testHeadSendsTheHeadersOnly(): void

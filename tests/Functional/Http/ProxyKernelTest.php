@@ -127,7 +127,7 @@ final class ProxyKernelTest extends TestCase
         self::assertSame('text/javascript', $response->headers->get('content-type'), 'the type of the extension');
         self::assertSame(sprintf('"%x-%x"', filemtime($file), 1), $response->headers->get('etag'));
         self::assertSame(gmdate('D, d M Y H:i:s', (int) filemtime($file)) . ' GMT', $response->headers->get('last-modified'));
-        self::assertFalse($response->headers->has('vary'));
+        self::assertSame('Accept-Encoding', $response->headers->get('vary'));
         self::assertSame('1', $response->headers->get('content-length'));
         self::assertFalse($response->headers->has('content-disposition'));
         self::assertFalse($response->headers->has('set-cookie'));
@@ -241,7 +241,7 @@ final class ProxyKernelTest extends TestCase
         self::assertSame('HIT', $response->headers->get('x-cache-status'));
         self::assertSame('text/javascript', $response->headers->get('content-type'));
         self::assertSame('9', $response->headers->get('content-length'));
-        self::assertFalse($response->headers->has('vary'));
+        self::assertSame('Accept-Encoding', $response->headers->get('vary'));
         self::assertSame('max-age=31536000, must-revalidate, public', $response->headers->get('cache-control'));
         self::assertCount(1, $this->origin->getRequests());
         self::assertFileExists($this->cachePath('.q/v=1/js/app.js'));

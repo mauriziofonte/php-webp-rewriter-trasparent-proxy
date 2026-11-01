@@ -119,16 +119,49 @@ final class CacheLayoutTest extends TestCase
     }
 
     /**
+     * Compressible entries get gzip siblings, which the clients that accept
+     * them receive (finding S-6).
+     */
+    public function testAStylesheetIsStoredWithItsGzipSibling(): void
+    {
+        if (!function_exists('gzencode')) {
+            self::markTestSkipped('ext-zlib is not loaded');
+        }
+        $css = str_repeat("a { color: red; }\n", 50);
+        $this->origin->serve(self::ORIGIN . '/css/a.css', $css);
+
+        $miss = $this->kernel()->handle(Request::create('https://cdn.example.test/css/a.css', 'GET', [], [], [], ['HTTP_ACCEPT_ENCODING' => 'gzip']));
+        $plain = $this->kernel()->handle(Request::create('https://cdn.example.test/css/a.css'));
+
+        self::assertSame('gzip', $miss->headers->get('content-encoding'));
+        self::assertSame($css, gzdecode(self::body($miss)));
+        self::assertSame('Accept-Encoding', $miss->headers->get('vary'));
+        self::assertSame($css, self::body($plain));
+        self::assertFileExists($this->directory->path('_cache/cdn.example.test/.gz/css/a.css'));
+    }
+
+    public function testPrecompressionCanBeTurnedOff(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/css/a.css', str_repeat("a { color: red; }\n", 50));
+
+        $this->kernel(['PRECOMPRESS' => 'false'])->handle(Request::create('https://cdn.example.test/css/a.css'));
+
+        self::assertDirectoryDoesNotExist($this->directory->path('_cache/cdn.example.test/.gz'));
+    }
+
+    /**
      * A new version of an entry replaces the siblings of the old one.
      */
     public function testANewVersionDropsTheOldSiblings(): void
     {
+        $this->write('.gz/css/a.css', 'old gzip');
         $this->write('.webp/css/a.css.webp', 'stale');
         $this->origin->serve(self::ORIGIN . '/css/a.css', 'new');
 
-        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/a.css'));
+        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/a.css', 'GET', [], [], [], ['HTTP_ACCEPT_ENCODING' => 'gzip']));
 
         self::assertSame('new', self::body($response));
+        self::assertFileDoesNotExist($this->directory->path('_cache/cdn.example.test/.gz/css/a.css'));
         self::assertFileDoesNotExist($this->directory->path('_cache/cdn.example.test/.webp/css/a.css.webp'));
     }
 
