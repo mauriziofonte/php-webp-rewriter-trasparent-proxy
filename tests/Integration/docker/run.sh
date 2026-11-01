@@ -9,7 +9,8 @@
 # origin: the entry, its WEBP and AVIF variants, its gzip encoding and the
 # entry of a query string, each with the headers PHP sends, once. PURGE,
 # OPTIONS and unlisted hosts reach PHP, and only a trusted proxy can tell
-# that the client used https.
+# that the client used https. Then 500 concurrent requests for one cold
+# entry cause exactly one origin fetch (request coalescing).
 #
 # Usage: tests/Integration/docker/run.sh [--php <version>] [--stack apache|nginx|all] [--keep]
 #
@@ -463,6 +464,40 @@ smoke() {
     esac
 }
 
+# burst <stack>: 500 concurrent requests for one cold entry, whose origin
+# answers after a second, cause exactly one origin fetch (request
+# coalescing, PRX-7), and every request gets the asset.
+burst() {
+    local s="$1" base path=/js/app.js config codes half fpm_log lines
+    base="http://127.0.0.1:$(port_of "$s")"
+    fpm_log="$workdir/$s/logs/php-fpm-access.log"
+    log "Coalescing: $s + PHP-FPM $php_version, $burst_size concurrent requests on one cold entry"
+    origin_reset
+    curl -fsS -X PUT "$origin/__origin/rules?path=$path&delay=1000" >/dev/null
+    # curl runs at most 300 transfers in parallel: two halves, side by side.
+    for half in 1 2; do
+        config="$workdir/$s/burst-$half.curlrc"
+        : >"$config"
+        for _ in $(seq $((burst_size / 2))); do
+            printf 'url = "%s"\noutput = "/dev/null"\n' "$base$path" >>"$config"
+        done
+    done
+    lines="$(lines_of "$fpm_log")"
+    for half in 1 2; do
+        curl -sS --parallel --parallel-immediate --parallel-max $((burst_size / 2)) -H 'X-Forwarded-Proto: https' \
+            -w '%{http_code}\n' --config "$workdir/$s/burst-$half.curlrc" >"$workdir/$s/burst-$half.codes" &
+    done
+    wait
+    codes="$(cat "$workdir/$s"/burst-*.codes | sort | uniq -c | sed 's/^ *//')"
+    expect "$s: every request of the burst got the asset" "$codes" "$burst_size 200"
+    expect "$s: the burst caused one origin fetch" "$(origin_count "$path")" 1
+    sleep 1
+    pass "$s: $(($(lines_of "$fpm_log") - lines)) of the $burst_size requests reached PHP-FPM, which waited for one fetch"
+    curl -fsS -X DELETE "$origin/__origin/rules?path=$path" >/dev/null
+    expect "$s: the burst left a cache entry" "$(fetch "$base$path" "$workdir/$s/burst")" 200
+    expect "$s: the entry of the burst is a hit" "$(cache_status "$workdir/$s/burst.headers")" HIT
+}
+
 # The transports from PHP-FPM against the TLS port of the origin: curl
 # negotiates HTTP/2 through ALPN, streams speak HTTP/1.1, and both store the
 # fixture unchanged.
@@ -477,9 +512,11 @@ client() {
     done <<<"$output"
 }
 
+burst_size=500
 for s in "${stacks[@]}"; do
     client "$s"
     smoke "$s"
+    burst "$s"
 done
 
 log "Integration smoke test passed on PHP $php_version (${stacks[*]})"

@@ -13,6 +13,7 @@ use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
 use Mfonte\ProxyCdn\Cache\QueryString;
 use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
+use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Compression\Precompressor;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\WebpConverter;
@@ -61,14 +62,15 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    served stale and revalidated after the response within its
  *    stale-while-revalidate, and revalidated first beyond (serveManaged(),
  *    finding P-15, opportunity O-D);
- * 6. otherwise, unless the circuit breaker of the origin is open, the
- *    entry is fetched from the origin; a failure is answered by its kind
- *    (see failure(), finding P-13); a response the origin forbids storing
- *    (no-store, private) is streamed to the client only; any other is
- *    stored as the origin sent it, streamed from its temporary file
- *    (finding P-17), in the tier its lifetime calls for, with its
- *    compressed siblings, a raster is converted to WEBP when a converter
- *    is configured, and the asset is served from the cache.
+ * 6. otherwise, unless the circuit breaker of the origin is open, one
+ *    request of those that miss the entry together fetches it while the
+ *    others wait for it (RequestCoalescer, finding P-24); a failure is
+ *    answered by its kind (see failure(), finding P-13); a response the
+ *    origin forbids storing (no-store, private) is streamed to the client
+ *    only; any other is stored as the origin sent it, streamed from its
+ *    temporary file (finding P-17), in the tier its lifetime calls for,
+ *    with its compressed siblings, a raster is converted to WEBP when a
+ *    converter is configured, and the asset is served from the cache.
  *
  * The web server serves the cache files itself, without PHP, whenever it
  * can compute their location (see CacheKeyResolver); the kernel answers
@@ -178,6 +180,11 @@ final class ProxyKernel
     private $files;
 
     /**
+     * @var RequestCoalescer
+     */
+    private $coalescer;
+
+    /**
      * @var LoggerInterface
      */
     private $logger;
@@ -208,6 +215,7 @@ final class ProxyKernel
         Precompressor $precompressor,
         ResponseFactory $responses,
         FileResponder $files,
+        RequestCoalescer $coalescer,
         LoggerInterface $logger
     ) {
         $this->config = $config;
@@ -226,6 +234,7 @@ final class ProxyKernel
         $this->precompressor = $precompressor;
         $this->responses = $responses;
         $this->files = $files;
+        $this->coalescer = $coalescer;
         $this->logger = $logger;
     }
 
@@ -375,14 +384,47 @@ final class ProxyKernel
         }
 
         if ($remembered === null) {
-            $fetched = $this->fetch($request, $origin, $path, $query);
-            if ($fetched->isSuccessful()) {
-                return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
+            // Finding P-24: one fetch in flight for a burst of requests on a
+            // cold entry, also while the origin fails it.
+            $key = $location->getKey();
+            $lease = $this->coalescer->isRecentlyUncacheable($key) ? null : $this->coalescer->enter($key, function () use ($location, $file): bool {
+                return $this->storage->isFile($file)
+                    || $this->storage->isFile($location->managed()->getFile())
+                    || $this->negativeCache->lookup($file) !== null;
+            });
+            if ($lease === false) {
+                return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
             }
-            if ($legacy === [] || !$fetched->isNotFound()) {
-                return $this->failure($origin, $path, $location, $fetched);
+            try {
+                // What the leader, or another request, has done meanwhile.
+                $remembered = $this->negativeCache->lookup($file);
+                if ($remembered !== null && $legacy === []) {
+                    return $this->notFound($path, $remembered);
+                }
+                $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT)
+                    ?? $this->serveManaged($request, $location, $extension, $origin, $path, $query, $lease !== null);
+                if ($stored !== null) {
+                    return $stored;
+                }
+                // A request that waited for a leader the origin failed.
+                $failed = $lease === null ? $this->coalescer->recentFailure($key) : null;
+                if ($failed !== null) {
+                    return $this->responses->error($path, $failed);
+                }
+
+                $fetched = $this->fetch($request, $origin, $path, $query);
+                if ($fetched->isSuccessful()) {
+                    return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
+                }
+                if ($legacy === [] || !$fetched->isNotFound()) {
+                    return $this->failure($origin, $path, $location, $fetched);
+                }
+                $this->negativeCache->remember($file, 404);
+            } finally {
+                if ($lease !== null) {
+                    $lease->release();
+                }
             }
-            $this->negativeCache->remember($file, 404);
         }
 
         return $this->fetchLegacy($request, $origin, $path, $query, $legacy);
@@ -401,9 +443,21 @@ final class ProxyKernel
         $this->pendingRevalidations = [];
         foreach ($pending as $revalidation) {
             list($location, $extension, $origin, $path, $query) = $revalidation;
-            $metadata = $this->readMetadata($location);
-            if ($metadata === null || !$metadata->isFresh(time())) {
-                $this->revalidate(null, $location, $extension, $origin, $path, $query, $metadata);
+            $key = $location->unmanaged()->getKey();
+            $lease = $this->coalescer->tryEnter($key);
+            if ($lease === null && $this->coalescer->isEnabled()) {
+                // Another request is fetching or revalidating the entry.
+                continue;
+            }
+            try {
+                $metadata = $this->readMetadata($location);
+                if ($metadata === null || !$metadata->isFresh(time())) {
+                    $this->revalidate(null, $location, $extension, $origin, $path, $query, $metadata);
+                }
+            } finally {
+                if ($lease !== null) {
+                    $lease->release();
+                }
             }
         }
     }
@@ -421,14 +475,16 @@ final class ProxyKernel
      * (finding P-15, opportunity O-D), when it is on disk: fresh, it is
      * served with the max-age it has left; expired within its
      * stale-while-revalidate, it is served stale and revalidated after the
-     * response (terminate()); expired beyond, it is revalidated first.
-     * Null when the entry is not on disk.
+     * response (terminate()); expired beyond, it is revalidated first, by
+     * one request at a time. Null when the entry is not on disk.
      *
-     * @param CacheLocation $location the entry, in the tier the web server serves
+     * @param CacheLocation $location  the entry, in the tier the web server serves
+     * @param bool          $holdsLock whether this request already holds the lock of the entry (the lock is not
+     *                                 reentrant)
      *
      * @phpstan-impure
      */
-    private function serveManaged(Request $request, CacheLocation $location, string $extension, string $origin, string $path, QueryString $query): ?Response
+    private function serveManaged(Request $request, CacheLocation $location, string $extension, string $origin, string $path, QueryString $query, bool $holdsLock = false): ?Response
     {
         $managed = $location->managed();
         if (!$this->storage->isFile($managed->getFile())) {
@@ -445,7 +501,58 @@ final class ProxyKernel
             return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0);
         }
 
-        return $this->revalidate($request, $managed, $extension, $origin, $path, $query, $metadata);
+        if ($holdsLock) {
+            return $this->revalidate($request, $managed, $extension, $origin, $path, $query, $metadata);
+        }
+        // One lock per entry, in either tier: the one of the miss path.
+        $key = $location->getKey();
+        $lease = $this->coalescer->enter($key, function () use ($managed): bool {
+            $current = $this->readMetadata($managed);
+
+            return $current === null || $current->isFresh(time());
+        });
+        if ($lease === false) {
+            return $this->staleOrError($request, $managed, $extension, $path, $metadata, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+        }
+        try {
+            $metadata = $this->readMetadata($managed);
+            $now = time();
+            if ($metadata !== null && $metadata->isFresh($now)) {
+                return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_HIT, $metadata->getRemainingLifetime($now));
+            }
+            if (!$this->storage->isFile($managed->getFile())) {
+                // Purged, or found gone, meanwhile.
+                return null;
+            }
+            // A request that waited for a leader the origin failed.
+            $failed = $lease === null ? $this->coalescer->recentFailure($key) : null;
+            if ($failed !== null) {
+                return $this->staleOrError($request, $managed, $extension, $path, $metadata, $failed);
+            }
+
+            return $this->revalidate($request, $managed, $extension, $origin, $path, $query, $metadata);
+        } finally {
+            if ($lease !== null) {
+                $lease->release();
+            }
+        }
+    }
+
+    /**
+     * The answer of an expired entry that the origin cannot revalidate now
+     * (another request has just found it failing, or waited too long for
+     * it): the entry served stale while its stale-if-error allows, else
+     * the error.
+     *
+     * @param int $error one of the ResponseFactory::ERROR_* constants
+     */
+    private function staleOrError(Request $request, CacheLocation $managed, string $extension, string $path, ?EntryMetadata $metadata, int $error): Response
+    {
+        $stale = $metadata === null || $metadata->isWithinStaleIfError(time())
+            ? $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0)
+            : null;
+
+        return $stale ?? $this->responses->error($path, $error);
     }
 
     /**
@@ -510,6 +617,7 @@ final class ProxyKernel
             }
         } elseif ($mayServeStale && (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429)) {
             $this->circuitBreaker->recordFailure($breakerKey);
+            $this->coalescer->recordFailure($web->getKey(), ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
             $this->logger->warning('stale entry served, origin unavailable', ['path' => $path, 'reason' => $reason]);
 
             return $request === null ? null : $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0);
@@ -572,6 +680,8 @@ final class ProxyKernel
         $freshness = Freshness::fromHeaders($fetched->getHeaders(), time());
         if (!$freshness->isStorable()) {
             $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
+            // The requests of the entry need not wait for one another.
+            $this->coalescer->recordUncacheable($location->getKey());
             // An expired entry that the origin no longer lets be stored.
             foreach ($location->managed()->getFiles() as $file) {
                 $this->storage->delete($file);
@@ -631,6 +741,7 @@ final class ProxyKernel
             return $error;
         }
         $this->negativeCache->forget($location->getFile());
+        $this->coalescer->forget($location->getKey());
         if (!$isManaged) {
             return [$target, null];
         }
@@ -845,7 +956,7 @@ final class ProxyKernel
         if (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429) {
             $this->circuitBreaker->recordFailure($breakerKey);
 
-            return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+            return $this->sharedError($location, $path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
         if ($fetched->getStatus() > 0 && $fetched->getTransportErrorCode() === 0) {
             $this->circuitBreaker->reset($breakerKey);
@@ -858,7 +969,7 @@ final class ProxyKernel
             return $this->responses->error($path, $gone ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
         }
         if ($reason === OriginResponse::FAILURE_FORBIDDEN) {
-            return $this->responses->error($path, ResponseFactory::ERROR_ORIGIN_FORBIDDEN);
+            return $this->sharedError($location, $path, ResponseFactory::ERROR_ORIGIN_FORBIDDEN);
         }
         if ($reason === OriginResponse::FAILURE_REDIRECT) {
             $target = $this->proxyLocation($origin, $fetched->getLocation());
@@ -868,7 +979,22 @@ final class ProxyKernel
                 : $this->responses->redirect($fetched->getStatus(), $target);
         }
 
-        return $this->responses->error($path, ResponseFactory::ERROR_BAD_GATEWAY);
+        return $this->sharedError($location, $path, ResponseFactory::ERROR_BAD_GATEWAY);
+    }
+
+    /**
+     * The error response of a failed fetch, recorded for the requests that
+     * coalesce on the entry (RequestCoalescer): they answer with it for a
+     * few seconds instead of fetching in turn.
+     *
+     * @param CacheLocation $location the entry, in the tier the web server serves
+     * @param int           $error    one of the ResponseFactory::ERROR_* constants
+     */
+    private function sharedError(CacheLocation $location, string $path, int $error): Response
+    {
+        $this->coalescer->recordFailure($location->getKey(), $error);
+
+        return $this->responses->error($path, $error);
     }
 
     /**
