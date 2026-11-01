@@ -400,6 +400,71 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
+     * A transport failure the breaker does not map (here an HTTP/2 stream
+     * error) is neutral: it does not start the count again, so the
+     * connection failures around it still open the breaker.
+     */
+    public function testATransportFailureDoesNotResetTheCount(): void
+    {
+        $kernel = $this->kernelWithThreshold(5);
+        $this->origin->respond(self::ORIGIN . '/js/down.js', OriginResponse::failure(OriginResponse::FAILURE_CONNECT, 0, 7, 'refused'));
+        $this->origin->respond(self::ORIGIN . '/js/stream.js', OriginResponse::failure(OriginResponse::FAILURE_OTHER, 0, 92, 'stream error'));
+
+        for ($attempt = 0; $attempt < 4; ++$attempt) {
+            self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/down.js'))->getStatusCode());
+        }
+        self::assertSame(502, $kernel->handle(Request::create('https://cdn.example.test/js/stream.js'))->getStatusCode());
+        // The fifth failure in a row opens the breaker.
+        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/down.js'))->getStatusCode());
+        $requests = count($this->origin->getRequests());
+        for ($attempt = 0; $attempt < 3; ++$attempt) {
+            self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/down.js'))->getStatusCode());
+        }
+
+        self::assertCount($requests, $this->origin->getRequests(), 'the open breaker fetches nothing');
+        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/css/site.css'))->getStatusCode());
+    }
+
+    /**
+     * @return array<string, array{OriginResponse, bool}>
+     */
+    public static function provideProbeAnswers(): array
+    {
+        return [
+            'HTTP/2 stream error' => [OriginResponse::failure(OriginResponse::FAILURE_OTHER, 0, 92, 'stream error'), false],
+            'malformed reply' => [OriginResponse::failure(OriginResponse::FAILURE_OTHER, 0, 8, 'weird server reply'), false],
+            'transport exception' => [OriginResponse::failure(OriginResponse::FAILURE_OTHER, 0, 0, 'protocol error'), false],
+            'status 404' => [OriginResponse::failure(OriginResponse::FAILURE_NOT_FOUND, 404), true],
+            'other 4xx' => [OriginResponse::failure(OriginResponse::FAILURE_CLIENT_ERROR, 400), true],
+            'redirect' => [OriginResponse::redirect(302, 'https://elsewhere.example.test/x'), true],
+        ];
+    }
+
+    /**
+     * A half-open probe closes the breaker only when the origin sent an
+     * HTTP status; a probe that fails at the transport level leaves it
+     * open.
+     *
+     * @dataProvider provideProbeAnswers
+     */
+    #[DataProvider('provideProbeAnswers')]
+    public function testOnlyAProbeAnsweredWithAStatusClosesTheBreaker(OriginResponse $answer, bool $closes): void
+    {
+        $kernel = $this->kernelWithThreshold(1);
+        $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_CONNECT, 0, 7, 'refused'));
+        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+        $this->origin->respond(self::ORIGIN . '/js/app.js', $answer);
+        $this->shiftBreakerTimes(-31);
+
+        $probe = $kernel->handle(Request::create('https://cdn.example.test/js/app.js'));
+        $after = $kernel->handle(Request::create('https://cdn.example.test/css/site.css'));
+
+        self::assertNotSame(503, $probe->getStatusCode(), 'the probe reached the origin');
+        self::assertSame($closes ? 200 : 503, $after->getStatusCode());
+        self::assertSame(['https://origin.example.test/js/app.js', 'https://origin.example.test/js/app.js'], array_slice($this->origin->getRequestedUrls(), 0, 2));
+    }
+
+    /**
      * @return array<string, array{OriginResponse, int, bool}>
      */
     public static function provideOriginFailures(): array
@@ -767,6 +832,34 @@ final class ProxyKernelTest extends TestCase
             $converter,
             $this->logger
         );
+    }
+
+    private function kernelWithThreshold(int $threshold): ProxyKernel
+    {
+        return TestKernel::create(
+            TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'CIRCUIT_BREAKER_THRESHOLD' => (string) $threshold]),
+            $this->directory->path(),
+            $this->origin,
+            null,
+            $this->logger
+        );
+    }
+
+    /**
+     * Moves the times kept by every breaker by $seconds.
+     */
+    private function shiftBreakerTimes(int $seconds): void
+    {
+        foreach (glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/breaker/*.breaker')) ?: [] as $file) {
+            $state = json_decode((string) file_get_contents($file), true);
+            self::assertIsArray($state);
+            foreach (['last_failure_at', 'opened_at', 'probe_at'] as $name) {
+                if (isset($state[$name]) && is_int($state[$name]) && $state[$name] !== 0) {
+                    $state[$name] += $seconds;
+                }
+            }
+            file_put_contents($file, json_encode($state));
+        }
     }
 
     /**

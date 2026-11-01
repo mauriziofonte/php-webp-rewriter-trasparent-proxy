@@ -377,9 +377,12 @@ final class ProxyKernel
      *   rewritten to the proxy, so that the client never leaves it; a
      *   redirect anywhere else, another 4xx or a body too large is a 502;
      * - only unavailability (5xx, 429, timeout, DNS, connection, TLS and
-     *   network failures) opens the breaker and answers 503; any other
-     *   answer means the origin is up and closes it, so that a half-open
-     *   probe answered 404, 403, 410 or 3xx does not leave it open.
+     *   network failures) opens the breaker and answers 503; an HTTP
+     *   status the origin sent means it is up and closes the breaker, so
+     *   that a half-open probe answered 404, 403, 410 or 3xx does not
+     *   leave it open; a transport failure that is none of those (a
+     *   malformed reply, an HTTP/2 stream error, a local write error) is
+     *   neutral: it neither counts nor closes.
      */
     private function failure(string $path, string $file, OriginResponse $fetched): Response
     {
@@ -390,7 +393,9 @@ final class ProxyKernel
 
             return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
-        $this->circuitBreaker->reset($origin);
+        if ($fetched->getStatus() > 0 && $fetched->getTransportErrorCode() === 0) {
+            $this->circuitBreaker->reset($origin);
+        }
 
         if ($reason === OriginResponse::FAILURE_NOT_FOUND || $reason === OriginResponse::FAILURE_GONE) {
             $gone = $reason === OriginResponse::FAILURE_GONE;
