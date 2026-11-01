@@ -38,6 +38,8 @@ final class ConfigTest extends TestCase
         self::assertFalse($config->shouldFollowUpstreamRedirects());
         self::assertSame(1000000, $config->getUpstreamMaxSize());
         self::assertSame('agent/1.0', $config->getUpstreamUserAgent());
+        self::assertSame(['v', 'lang'], $config->getQueryStringAllowlist());
+        self::assertSame('reject', $config->getQueryStringMode());
         self::assertSame(Config::CONVERSION_API, $config->getImageConversionMode());
         self::assertSame('https://api.example.test/convert', $config->getWebpApiServer());
         self::assertSame('secret', $config->getWebpApiKey());
@@ -124,7 +126,14 @@ final class ConfigTest extends TestCase
             'empty item' => ['CACHEABLE_EXTENSIONS', ['css', ''], 'CACHEABLE_EXTENSIONS must be a non-empty list of strings'],
             'string instead of list' => ['CACHEABLE_EXTENSIONS', 'css', 'CACHEABLE_EXTENSIONS must be a non-empty list of strings'],
             'unknown mode' => ['IMAGE_CONVERSION_MODE', 'gd', 'IMAGE_CONVERSION_MODE has an unknown value'],
+            'empty allowlist item' => ['QUERY_STRING_ALLOWLIST', ['v', ''], 'QUERY_STRING_ALLOWLIST must be a list of non-empty strings'],
+            'unknown query mode' => ['QUERY_STRING_MODE', 'drop', 'QUERY_STRING_MODE has an unknown value'],
         ];
+    }
+
+    public function testTheAllowlistMayBeEmpty(): void
+    {
+        self::assertSame([], Config::fromArray(self::values(['QUERY_STRING_ALLOWLIST' => []]))->getQueryStringAllowlist());
     }
 
     public function testExceptionWithoutErrorsHasAGenericError(): void
@@ -166,6 +175,8 @@ final class ConfigTest extends TestCase
             'UPSTREAM_FOLLOW_REDIRECTS' => false,
             'UPSTREAM_MAX_SIZE' => 1000000,
             'UPSTREAM_USER_AGENT' => 'agent/1.0',
+            'QUERY_STRING_ALLOWLIST' => ['v', 'lang'],
+            'QUERY_STRING_MODE' => 'reject',
             'IMAGE_CONVERSION_MODE' => Config::CONVERSION_API,
             'WEBP_API_SERVER' => 'https://api.example.test/convert',
             'WEBP_API_KEY' => 'secret',

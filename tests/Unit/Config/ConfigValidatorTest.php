@@ -137,6 +137,22 @@ final class ConfigValidatorTest extends TestCase
                 'SOURCE_ORIGIN_SERVER must be "address", "address:port" or "[IPv6 address]:port" (got: \'2001:db8::1:443\')',
             ],
             'unknown time zone' => [['TIMEZONE' => 'Mars/Olympus'], "TIMEZONE must be a valid time zone identifier (got: 'Mars/Olympus')"],
+            'empty allowlist' => [
+                ['QUERY_STRING_ALLOWLIST' => ' , '],
+                'QUERY_STRING_ALLOWLIST must list parameter names separated by commas, "*" or "none" (got: \' , \')',
+            ],
+            'allowlist with an invalid name' => [
+                ['QUERY_STRING_ALLOWLIST' => 'v,a=b'],
+                'QUERY_STRING_ALLOWLIST holds an invalid parameter name (got: \'v,a=b\')',
+            ],
+            'allowlist mixing "*" and names' => [
+                ['QUERY_STRING_ALLOWLIST' => '*,v'],
+                'QUERY_STRING_ALLOWLIST must be "*" alone to keep every parameter (got: \'*,v\')',
+            ],
+            'unknown query string mode' => [
+                ['QUERY_STRING_MODE' => 'drop'],
+                "QUERY_STRING_MODE must be one of: ignore, reject (got: 'drop')",
+            ],
         ];
     }
 
@@ -193,6 +209,9 @@ final class ConfigValidatorTest extends TestCase
             'smallest max size' => [['UPSTREAM_MAX_SIZE' => '1']],
             'largest max size' => [['UPSTREAM_MAX_SIZE' => '268435456']],
             'custom User-Agent' => [['UPSTREAM_USER_AGENT' => 'my-cdn/1.0 (+https://cdn.example.test)']],
+            'allowlist of names' => [['QUERY_STRING_ALLOWLIST' => 'v, lang ,a[]']],
+            'allowlist of none' => [['QUERY_STRING_ALLOWLIST' => 'None']],
+            'reject mode' => [['QUERY_STRING_MODE' => 'reject']],
         ];
     }
 
@@ -228,6 +247,18 @@ final class ConfigValidatorTest extends TestCase
             . "address of the origin host name, which they keep for the Host header\n"
             . "and TLS. This intentionally bypasses any CDN / WAF that may sit in\n"
             . 'front of the origin hostname.',
+        ], $validation->getWarnings());
+    }
+
+    public function testKeepingEveryQueryParameterIsNotedP5(): void
+    {
+        $validation = (new ConfigValidator())->validate(TestConfig::rawValues(['QUERY_STRING_ALLOWLIST' => '*']));
+
+        self::assertTrue($validation->isValid());
+        self::assertSame([
+            "NOTE: QUERY_STRING_ALLOWLIST is \"*\": every distinct query string is\n"
+            . "a cache entry and an origin fetch of its own, as in 2.x, so random\n"
+            . 'query strings can fill the disk and bypass the cache.',
         ], $validation->getWarnings());
     }
 

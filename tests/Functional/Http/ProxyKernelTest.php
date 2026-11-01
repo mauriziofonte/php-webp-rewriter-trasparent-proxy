@@ -108,29 +108,60 @@ final class ProxyKernelTest extends TestCase
         self::assertFalse($response->headers->has('x-origin-only'));
     }
 
-    public function testTheOriginRequestCarriesTheCanonicalQueryAndTheReferer(): void
+    /**
+     * The origin receives the allowlisted parameters as the client sent
+     * them, without the others (findings P-5 and P-9).
+     *
+     * @group regression
+     */
+    #[Group('regression')]
+    public function testTheOriginRequestCarriesTheOriginalQueryAndTheRefererP9(): void
     {
-        $this->origin->serve(self::ORIGIN . '/js/app.js?a=1&b=2', 'x');
+        $this->origin->serve(self::ORIGIN . '/js/app.js?ver=2&v=1', 'x');
 
-        $this->kernel()->handle(Request::create('http://cdn.example.test:8080/js/app.js?b=2&a=1'));
+        $this->kernel()->handle(Request::create('http://cdn.example.test:8080/js/app.js?ver=2&utm_source=mail&v=1'));
 
         $requests = $this->origin->getRequests();
         self::assertCount(1, $requests);
-        self::assertSame(self::ORIGIN . '/js/app.js?a=1&b=2', $requests[0]->getUrl());
+        self::assertSame(self::ORIGIN . '/js/app.js?ver=2&v=1', $requests[0]->getUrl());
         self::assertSame(['Referer' => 'http://cdn.example.test:8080'], $requests[0]->getHeaders());
+        self::assertFileExists($this->directory->path('_qs/' . substr(hash('sha256', 'v=1&ver=2'), 0, 16) . '/js/app.js'));
     }
 
     /**
-     * Without query string the web server serves the stored file itself;
-     * when the request reaches PHP anyway, 2.x fetches it again.
+     * A path whose request reaches PHP although its file is stored (a web
+     * server that does not serve it, or a parameter outside the allowlist)
+     * is served from disk; 2.x fetched it again every time (finding P-5).
+     *
+     * @group regression
      */
-    public function testAPathWithoutQueryIsFetchedEveryTime(): void
+    #[Group('regression')]
+    public function testAStoredPathIsServedFromDiskP5(): void
     {
         $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
-        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
+        $again = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
+        $busted = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css?_=1700000000'));
 
-        self::assertSame('miss', $response->headers->get('x-cache-status'));
-        self::assertCount(2, $this->origin->getRequests());
+        self::assertSame('hit', $again->headers->get('x-cache-status'));
+        self::assertSame('hit', $busted->headers->get('x-cache-status'));
+        self::assertCount(1, $this->origin->getRequests());
+        self::assertDirectoryDoesNotExist($this->directory->path('_qs'));
+    }
+
+    public function testRejectModeRefusesOtherParameters(): void
+    {
+        $kernel = TestKernel::create(
+            TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'QUERY_STRING_MODE' => 'reject']),
+            $this->directory->path(),
+            $this->origin,
+            null,
+            $this->logger
+        );
+
+        $response = $kernel->handle(Request::create('https://cdn.example.test/css/site.css?x=1'));
+
+        self::assertSame(400, $response->getStatusCode());
+        self::assertSame([], $this->origin->getRequests());
     }
 
     public function testAQueryStringBucketIsServedFromDisk(): void

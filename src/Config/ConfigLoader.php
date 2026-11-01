@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Config;
 
 use Dotenv\Dotenv;
+use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 
 /**
@@ -26,7 +27,8 @@ final class ConfigLoader
 {
     /**
      * The configuration keys: those of 2.x, plus UPSTREAM_MAX_SIZE and
-     * UPSTREAM_USER_AGENT (PRX-4).
+     * UPSTREAM_USER_AGENT (PRX-4), QUERY_STRING_ALLOWLIST and
+     * QUERY_STRING_MODE (PRX-5).
      */
     public const KEYS = [
         'DEBUG',
@@ -45,6 +47,8 @@ final class ConfigLoader
         'UPSTREAM_FOLLOW_REDIRECTS',
         'UPSTREAM_MAX_SIZE',
         'UPSTREAM_USER_AGENT',
+        'QUERY_STRING_ALLOWLIST',
+        'QUERY_STRING_MODE',
         'IMAGE_CONVERSION_MODE',
         'WEBP_API_SERVER',
         'WEBP_API_KEY',
@@ -68,6 +72,8 @@ final class ConfigLoader
         'UPSTREAM_VERIFY_TLS' => 'true',
         'UPSTREAM_FOLLOW_REDIRECTS' => 'false',
         'UPSTREAM_MAX_SIZE' => '67108864',
+        'QUERY_STRING_ALLOWLIST' => 'v,ver,version',
+        'QUERY_STRING_MODE' => QueryStringPolicy::MODE_IGNORE,
         'IMAGE_CONVERSION_MODE' => Config::CONVERSION_NONE,
     ];
 
@@ -75,7 +81,7 @@ final class ConfigLoader
      * Changes whenever the compiled format or the normalisation changes, so
      * that files compiled by another version are recompiled.
      */
-    private const FORMAT = 'proxy-cdn-config-2';
+    private const FORMAT = 'proxy-cdn-config-3';
 
     /**
      * @var string|null
@@ -186,6 +192,8 @@ final class ConfigLoader
             'UPSTREAM_FOLLOW_REDIRECTS' => ConfigValidator::booleanOf($value('UPSTREAM_FOLLOW_REDIRECTS')) === true,
             'UPSTREAM_MAX_SIZE' => (int) $value('UPSTREAM_MAX_SIZE'),
             'UPSTREAM_USER_AGENT' => $optional('UPSTREAM_USER_AGENT'),
+            'QUERY_STRING_ALLOWLIST' => ConfigValidator::parameterList($value('QUERY_STRING_ALLOWLIST')),
+            'QUERY_STRING_MODE' => $value('QUERY_STRING_MODE'),
             'IMAGE_CONVERSION_MODE' => $value('IMAGE_CONVERSION_MODE'),
             'WEBP_API_SERVER' => $optional('WEBP_API_SERVER'),
             'WEBP_API_KEY' => $optional('WEBP_API_KEY'),

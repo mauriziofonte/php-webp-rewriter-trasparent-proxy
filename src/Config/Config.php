@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Config;
 
+use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 
 /**
@@ -102,6 +103,16 @@ final class Config
     private $upstreamUserAgent;
 
     /**
+     * @var list<string>
+     */
+    private $queryStringAllowlist;
+
+    /**
+     * @var string
+     */
+    private $queryStringMode;
+
+    /**
      * @var string
      */
     private $imageConversionMode;
@@ -147,12 +158,17 @@ final class Config
         $config->upstreamFollowRedirects = self::boolean($values, 'UPSTREAM_FOLLOW_REDIRECTS');
         $config->upstreamMaxSize = self::integer($values, 'UPSTREAM_MAX_SIZE');
         $config->upstreamUserAgent = self::optionalString($values, 'UPSTREAM_USER_AGENT');
+        $config->queryStringAllowlist = self::stringList($values, 'QUERY_STRING_ALLOWLIST', true);
+        $config->queryStringMode = self::string($values, 'QUERY_STRING_MODE');
         $config->imageConversionMode = self::string($values, 'IMAGE_CONVERSION_MODE');
         $config->webpApiServer = self::optionalString($values, 'WEBP_API_SERVER');
         $config->webpApiKey = self::optionalString($values, 'WEBP_API_KEY');
 
         if (!in_array($config->imageConversionMode, [self::CONVERSION_NONE, self::CONVERSION_NATIVE, self::CONVERSION_API], true)) {
             throw new InvalidConfigurationException(['IMAGE_CONVERSION_MODE has an unknown value']);
+        }
+        if (!in_array($config->queryStringMode, [QueryStringPolicy::MODE_IGNORE, QueryStringPolicy::MODE_REJECT], true)) {
+            throw new InvalidConfigurationException(['QUERY_STRING_MODE has an unknown value']);
         }
 
         return $config;
@@ -182,6 +198,8 @@ final class Config
             'UPSTREAM_FOLLOW_REDIRECTS' => $this->upstreamFollowRedirects,
             'UPSTREAM_MAX_SIZE' => $this->upstreamMaxSize,
             'UPSTREAM_USER_AGENT' => $this->upstreamUserAgent,
+            'QUERY_STRING_ALLOWLIST' => $this->queryStringAllowlist,
+            'QUERY_STRING_MODE' => $this->queryStringMode,
             'IMAGE_CONVERSION_MODE' => $this->imageConversionMode,
             'WEBP_API_SERVER' => $this->webpApiServer,
             'WEBP_API_KEY' => $this->webpApiKey,
@@ -334,6 +352,27 @@ final class Config
     }
 
     /**
+     * QUERY_STRING_ALLOWLIST: the decoded names of the query parameters that
+     * key the cache and reach the origin; ["*"] for every parameter, [] for
+     * none (see QueryStringPolicy).
+     *
+     * @return list<string>
+     */
+    public function getQueryStringAllowlist(): array
+    {
+        return $this->queryStringAllowlist;
+    }
+
+    /**
+     * QUERY_STRING_MODE: what happens to the other parameters, one of the
+     * QueryStringPolicy::MODE_* constants.
+     */
+    public function getQueryStringMode(): string
+    {
+        return $this->queryStringMode;
+    }
+
+    /**
      * IMAGE_CONVERSION_MODE: one of the CONVERSION_* constants.
      */
     public function getImageConversionMode(): string
@@ -427,16 +466,17 @@ final class Config
      *
      * @return list<string>
      */
-    private static function stringList(array $values, string $key): array
+    private static function stringList(array $values, string $key, bool $mayBeEmpty = false): array
     {
+        $expected = $mayBeEmpty ? 'a list of non-empty strings' : 'a non-empty list of strings';
         $value = self::value($values, $key);
-        if (!is_array($value) || $value === [] || array_values($value) !== $value) {
-            throw self::wrongType($key, 'a non-empty list of strings');
+        if (!is_array($value) || ($value === [] && !$mayBeEmpty) || array_values($value) !== $value) {
+            throw self::wrongType($key, $expected);
         }
         $list = [];
         foreach ($value as $item) {
             if (!is_string($item) || $item === '') {
-                throw self::wrongType($key, 'a non-empty list of strings');
+                throw self::wrongType($key, $expected);
             }
             $list[] = $item;
         }

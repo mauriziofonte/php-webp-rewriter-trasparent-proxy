@@ -100,6 +100,8 @@ Every setting is read from the environment first and from `.env` second: a varia
 | `UPSTREAM_CONNECT_TIMEOUT`        | seconds   | `5`                       | Socket-level connect timeout.                                                                                                                                   |
 | `UPSTREAM_VERIFY_TLS`             | bool      | `true`                    | Verifies the origin TLS certificate and host name. 2.x defaulted to `false`; `check-env` notes the change when the key is unset and the origin is https.        |
 | `UPSTREAM_FOLLOW_REDIRECTS`       | bool      | `false`                   | If `true`, cURL follows 30x responses. Default off: a compromised origin that redirects to an internal host would turn the proxy into an SSRF vector.           |
+| `QUERY_STRING_ALLOWLIST`          | CSV       | `v,ver,version`           | Query parameters that key the cache and reach the origin, by decoded name and letter case; `*` keeps every parameter (as 2.x did), `none` keeps none.          |
+| `QUERY_STRING_MODE`               | enum      | `ignore`                  | `ignore` drops the other parameters from the cache key and the origin request; `reject` answers 400 `Query parameter not allowed`.                              |
 | `IMAGE_CONVERSION_MODE`           | enum      | `none`                    | One of `native`, `api`, `none`.                                                                                                                                 |
 | `WEBP_API_SERVER`                 | URL       | `null`                    | Only used when mode = `api`.                                                                                                                                    |
 | `WEBP_API_KEY`                    | string    | `null`                    | Only used when mode = `api`.                                                                                                                                    |
@@ -155,15 +157,19 @@ Purge is **public** (anyone can invoke it). If that is unacceptable, protect the
 
 Cache-busted URLs (e.g. `/hero.jpg?v=42`) are a common origin idiom. A naive disk cache keyed on path alone would pin the very first version the proxy saw and never re-fetch. To avoid that:
 
-- An **empty** (or purge-only) query string keys on the path: `public/<path>`. Apache serves directly on cache hit, zero PHP.
+Only the parameters named in `QUERY_STRING_ALLOWLIST` (default `v,ver,version`) count. The others, such as `utm_source` or a random `?_=<timestamp>`, are left out of the cache key and of the origin request (`QUERY_STRING_MODE=ignore`, the default) or refused with a 400 (`QUERY_STRING_MODE=reject`). In 2.x every distinct query string was a cache entry and an origin fetch of its own, so random query strings filled the disk and bypassed the cache.
 
-- A **non-empty** query string is canonicalized (proxy-control params stripped, remaining params sorted by key) and hashed with SHA-256; the first 64 bits of the hash become a subdirectory under `public/_qs/`:
+- A query string with **no allowlisted parameter** keys on the path: `public/<path>`. Apache serves directly on cache hit, zero PHP; when the request reaches PHP (because it carries a query string) the stored file is served from disk.
+
+- Otherwise the allowlisted parameters, sorted by name (repeated names keep their order, escapes in upper case), are hashed with SHA-256; the first 64 bits of the hash become a subdirectory under `public/_qs/`:
 
   ``` text
-  /hero.jpg?a=1&b=2  -> public/_qs/<sha256_prefix>/hero.jpg
-  /hero.jpg?b=2&a=1  -> same file (canonicalized to a=1&b=2)
-  /hero.jpg?v=42     -> public/_qs/<other_hash>/hero.jpg
+  /hero.jpg?v=1&ver=2         -> public/_qs/<sha256_prefix>/hero.jpg
+  /hero.jpg?ver=2&utm_x=1&v=1 -> same file (key v=1&ver=2)
+  /hero.jpg?v=42              -> public/_qs/<other_hash>/hero.jpg
   ```
+
+  The origin receives the allowlisted parameters as the client wrote them, in their order (`?ver=2&v=1` above); 2.x forwarded its canonical form, which turned `a.b=1` into `a_b=1` and `v` into `v=`.
 
   Apache always routes such requests through `index.php` (the rewrite rule matches `QUERY_STRING .`), because it cannot compute the SHA-256 on its own. `index.php` reads or writes the correct bucket and serves.
 

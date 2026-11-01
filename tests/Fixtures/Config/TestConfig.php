@@ -40,6 +40,8 @@ final class TestConfig
             'UPSTREAM_FOLLOW_REDIRECTS' => 'false',
             'UPSTREAM_MAX_SIZE' => '67108864',
             'UPSTREAM_USER_AGENT' => null,
+            'QUERY_STRING_ALLOWLIST' => null,
+            'QUERY_STRING_MODE' => null,
             'IMAGE_CONVERSION_MODE' => 'none',
             'WEBP_API_SERVER' => null,
             'WEBP_API_KEY' => null,

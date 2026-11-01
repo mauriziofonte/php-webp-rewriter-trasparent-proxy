@@ -11,7 +11,8 @@ namespace Mfonte\ProxyCdn\Cache;
  * - without a meaningful query string the entry is <cache>/<path>, where the
  *   web server serves it on later requests without running PHP;
  * - otherwise it is <cache>/_qs/<hash>/<path>, where <hash> is the first 16
- *   hexadecimal digits of the SHA-256 of the canonical query string.
+ *   hexadecimal digits of the SHA-256 of the canonical query string
+ *   (QueryString::getCanonical(), see QueryStringPolicy).
  *
  * The path is the decoded one of PathSanitizer, so that the file has the
  * name the web server looks for (finding P-8); PathSanitizer refuses the
@@ -19,11 +20,6 @@ namespace Mfonte\ProxyCdn\Cache;
  */
 final class CacheKeyResolver
 {
-    /**
-     * Query parameters that control the proxy and never key an entry.
-     */
-    private const CONTROL_PARAMETERS = ['purge', 'purge_all'];
-
     /**
      * The directory of the query-string buckets, below the cache root.
      */
@@ -43,38 +39,8 @@ final class CacheKeyResolver
     }
 
     /**
-     * Canonical form of a raw query string: the control parameters removed
-     * and the others sorted by name, so that equivalent query strings share
-     * an entry ("b=2&a=1" and "a=1&b=2" both give "a=1&b=2"; "purge=1" gives
-     * "").
-     *
-     * The string is rebuilt by parse_str() and http_build_query(), which
-     * also changes names and values ("a.b=1" gives "a_b=1", "v" gives "v="):
-     * finding P-9, resolved by PRX-5.
-     *
-     * @param string $rawQuery the query string as the client sent it
-     */
-    public function canonicalQueryString(string $rawQuery): string
-    {
-        if ($rawQuery === '') {
-            return '';
-        }
-        $parameters = [];
-        parse_str($rawQuery, $parameters);
-        foreach (self::CONTROL_PARAMETERS as $name) {
-            unset($parameters[$name]);
-        }
-        if ($parameters === []) {
-            return '';
-        }
-        ksort($parameters, SORT_STRING);
-
-        return http_build_query($parameters);
-    }
-
-    /**
      * @param string $path           decoded request path (PathSanitizer::sanitize()), starting with "/"
-     * @param string $canonicalQuery output of canonicalQueryString()
+     * @param string $canonicalQuery QueryString::getCanonical(), empty for none
      */
     public function resolve(string $path, string $canonicalQuery): CacheLocation
     {

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Config;
 
+use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Origin\HttpClientOptions;
 
 /**
@@ -45,6 +46,11 @@ final class ConfigValidator
 
     private const BOOLEAN_KEYS = ['DEBUG', 'UPSTREAM_VERIFY_TLS', 'UPSTREAM_FOLLOW_REDIRECTS'];
 
+    /**
+     * The QUERY_STRING_ALLOWLIST value that keeps no parameter.
+     */
+    private const NO_PARAMETER = 'none';
+
     private const CONVERSION_MODES = [Config::CONVERSION_NATIVE, Config::CONVERSION_API, Config::CONVERSION_NONE];
 
     /**
@@ -83,6 +89,31 @@ final class ConfigValidator
             $warnings[] = 'WARNING: CACHEABLE_EXTENSIONS includes session/auth-sensitive types: ' . implode(', ', $sensitive) . ".\n"
                 . "If the origin ever serves authenticated content with these extensions,\n"
                 . 'the proxy will cache and re-serve it to unrelated clients.';
+        }
+
+        $allowlist = $values['QUERY_STRING_ALLOWLIST'] ?? null;
+        if ($allowlist !== null) {
+            $names = self::parameterList($allowlist);
+            $special = array_intersect($names, [QueryStringPolicy::ANY_PARAMETER]);
+            $invalid = array_filter($names, static function (string $name): bool {
+                return !QueryStringPolicy::isParameterName($name);
+            });
+            if ($names === [] && strtolower(trim($allowlist)) !== self::NO_PARAMETER) {
+                $errors[] = 'QUERY_STRING_ALLOWLIST must list parameter names separated by commas, "*" or "none" (got: ' . var_export($allowlist, true) . ')';
+            } elseif ($invalid !== []) {
+                $errors[] = 'QUERY_STRING_ALLOWLIST holds an invalid parameter name (got: ' . var_export($allowlist, true) . ')';
+            } elseif ($special !== [] && count($names) > 1) {
+                $errors[] = 'QUERY_STRING_ALLOWLIST must be "*" alone to keep every parameter (got: ' . var_export($allowlist, true) . ')';
+            }
+        }
+        $queryMode = $values['QUERY_STRING_MODE'] ?? null;
+        if ($queryMode !== null && !in_array($queryMode, [QueryStringPolicy::MODE_IGNORE, QueryStringPolicy::MODE_REJECT], true)) {
+            $errors[] = 'QUERY_STRING_MODE must be one of: ignore, reject (got: ' . var_export($queryMode, true) . ')';
+        }
+        if ($allowlist !== null && trim($allowlist) === QueryStringPolicy::ANY_PARAMETER) {
+            $warnings[] = "NOTE: QUERY_STRING_ALLOWLIST is \"*\": every distinct query string is\n"
+                . "a cache entry and an origin fetch of its own, as in 2.x, so random\n"
+                . 'query strings can fill the disk and bypass the cache.';
         }
 
         $mode = $values['IMAGE_CONVERSION_MODE'] ?? Config::CONVERSION_NONE;
@@ -153,6 +184,28 @@ final class ConfigValidator
         }
 
         return new ConfigValidation($errors, $warnings);
+    }
+
+    /**
+     * The trimmed, non-empty names of a QUERY_STRING_ALLOWLIST value, in
+     * their letter case; the literal "none" (any case) is the empty list.
+     *
+     * @return list<string>
+     */
+    public static function parameterList(string $raw): array
+    {
+        if (strtolower(trim($raw)) === self::NO_PARAMETER) {
+            return [];
+        }
+        $names = [];
+        foreach (explode(',', $raw) as $token) {
+            $token = trim($token);
+            if ($token !== '') {
+                $names[] = $token;
+            }
+        }
+
+        return $names;
     }
 
     /**

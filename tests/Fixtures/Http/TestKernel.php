@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
+use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Http\FileResponder;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
@@ -39,6 +40,7 @@ final class TestKernel
             $config,
             new PathSanitizer(),
             new CacheKeyResolver($cacheDirectory),
+            QueryStringPolicy::fromConfig($config),
             $storage,
             $negativeCache,
             new MarkerFileCircuitBreaker($storage, $config->getNetworkErrorTtl()),

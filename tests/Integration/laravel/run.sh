@@ -155,6 +155,7 @@ Route::get('/{path}', function (\Illuminate\Http\Request \$request) {
         \$config,
         new \Mfonte\ProxyCdn\Security\PathSanitizer(),
         new \Mfonte\ProxyCdn\Cache\CacheKeyResolver(storage_path('proxy-cdn')),
+        \Mfonte\ProxyCdn\Cache\QueryStringPolicy::fromConfig(\$config),
         \$storage,
         \$negativeCache,
         new \Mfonte\ProxyCdn\Origin\MarkerFileCircuitBreaker(\$storage, \$config->getNetworkErrorTtl()),

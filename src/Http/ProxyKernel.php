@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\CacheStorage;
 use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
+use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\WebpConverter;
 use Mfonte\ProxyCdn\Origin\CircuitBreaker;
@@ -30,8 +31,10 @@ use Symfony\Component\HttpFoundation\Response;
  *    (anonymously: finding L-7);
  * 3. a fresh 404 marker or an open circuit breaker answers without asking
  *    the origin;
- * 4. a raster whose WEBP sibling exists is served as WEBP to clients that
- *    accept it; an entry of a query-string bucket is served from disk;
+ * 4. the query string is reduced to the parameters of QueryStringPolicy,
+ *    which key the entry and reach the origin as the client wrote them;
+ *    a raster whose WEBP sibling exists is served as WEBP to clients that
+ *    accept it; an entry on disk is served from disk;
  * 5. otherwise the asset is fetched from the origin and stored as the
  *    origin sent it (2.x rewrote stylesheets, findings P-2, P-3, P-4), a
  *    raster is converted to WEBP when a converter is configured, and the
@@ -58,6 +61,11 @@ final class ProxyKernel
      * @var CacheKeyResolver
      */
     private $keyResolver;
+
+    /**
+     * @var QueryStringPolicy
+     */
+    private $queryPolicy;
 
     /**
      * @var CacheStorage
@@ -111,6 +119,7 @@ final class ProxyKernel
         Config $config,
         PathSanitizer $pathSanitizer,
         CacheKeyResolver $keyResolver,
+        QueryStringPolicy $queryPolicy,
         CacheStorage $storage,
         NegativeCache $negativeCache,
         CircuitBreaker $circuitBreaker,
@@ -124,6 +133,7 @@ final class ProxyKernel
         $this->config = $config;
         $this->pathSanitizer = $pathSanitizer;
         $this->keyResolver = $keyResolver;
+        $this->queryPolicy = $queryPolicy;
         $this->storage = $storage;
         $this->negativeCache = $negativeCache;
         $this->circuitBreaker = $circuitBreaker;
@@ -173,8 +183,11 @@ final class ProxyKernel
 
         $rawQuery = $request->server->get('QUERY_STRING');
         $rawQuery = is_scalar($rawQuery) ? (string) $rawQuery : '';
-        $canonicalQuery = $this->keyResolver->canonicalQueryString($rawQuery);
-        $location = $this->keyResolver->resolve($path, $canonicalQuery);
+        $query = $this->queryPolicy->apply($rawQuery);
+        if ($query === null) {
+            return $this->responses->error($path, ResponseFactory::ERROR_QUERY_NOT_ALLOWED);
+        }
+        $location = $this->keyResolver->resolve($path, $query->getCanonical());
         $file = $location->getFile();
 
         $purgeAll = self::hasFlag($rawQuery, 'purge_all');
@@ -200,9 +213,11 @@ final class ProxyKernel
             return $this->files->respond($webpFile, 'webp');
         }
 
-        // Entries of a query-string bucket are never served by the web
-        // server, which routes every request with a query string here.
-        if ($location->isQueryStringBucket() && $this->storage->isFile($file)) {
+        // The web server serves the entries of the path itself, but routes
+        // every request with a query string here: an entry on disk is
+        // served, whether it is a bucket's or the path's one (a query
+        // string the policy ignored, finding P-5).
+        if ($this->storage->isFile($file)) {
             if ($isRaster && $this->converter !== null && !$this->storage->isFile($webpFile)) {
                 $this->converter->convert($file);
                 if ($acceptsWebp && $this->storage->isFile($webpFile)) {
@@ -214,7 +229,8 @@ final class ProxyKernel
         }
 
         $server = $request->getScheme() . '://' . $request->getHttpHost();
-        $originUrl = $this->config->getSourceOrigin() . PathSanitizer::encode($path) . ($canonicalQuery !== '' ? '?' . $canonicalQuery : '');
+        $forwardedQuery = $query->getForwarded();
+        $originUrl = $this->config->getSourceOrigin() . PathSanitizer::encode($path) . ($forwardedQuery !== '' ? '?' . $forwardedQuery : '');
         $fetched = $this->origin->fetch(new OriginRequest($originUrl, ['Referer' => $server]));
 
         if (!$fetched->isSuccessful()) {

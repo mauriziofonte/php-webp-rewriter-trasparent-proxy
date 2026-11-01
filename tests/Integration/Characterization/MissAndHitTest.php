@@ -72,17 +72,28 @@ final class MissAndHitTest extends CharacterizationTestCase
     }
 
     /**
-     * Without a query string the web server serves a cached file itself; a
-     * request that still reaches PHP is fetched from the origin again.
+     * A stored file whose request still reaches PHP (a web server that does
+     * not serve it, or a query string) is served from disk, and parameters
+     * outside QUERY_STRING_ALLOWLIST neither create an entry nor reach the
+     * origin (finding P-5: 2.x fetched the file again for every request
+     * that reached PHP, and stored a new entry for every query string).
+     *
+     * @group regression
      */
-    public function testRequestWithoutQueryStringReachingPhpIsFetchedAgain(): void
+    #[Group('regression')]
+    public function testStoredFileReachingPhpIsServedFromDiskP5(): void
     {
         $this->get('/images/gradient.png');
-        $response = $this->get('/images/gradient.png');
+        $again = $this->get('/images/gradient.png');
+        $busted = $this->get('/images/gradient.png?_=1700000000');
+        $tracked = $this->get('/images/gradient.png?utm_source=mail&fbclid=x');
 
-        self::assertSame(200, $response->getStatus());
-        self::assertSame('miss', $response->getHeader('X-Cache-Status'));
-        self::assertSame(2, $this->origin->countRequestsFor('/images/gradient.png'));
+        foreach ([$again, $busted, $tracked] as $response) {
+            self::assertSame(200, $response->getStatus());
+            self::assertSame('hit', $response->getHeader('X-Cache-Status'));
+        }
+        self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
+        self::assertDirectoryDoesNotExist($this->publicPath('_qs'));
     }
 
     public function testQueryStringRequestIsCachedInItsBucketAndServedFromDisk(): void
@@ -111,41 +122,45 @@ final class MissAndHitTest extends CharacterizationTestCase
 
     public function testEquivalentQueryStringsShareABucket(): void
     {
-        $this->get('/images/gradient.png?b=2&a=1');
-        $hit = $this->get('/images/gradient.png?a=1&b=2');
+        $this->get('/images/gradient.png?ver=2&v=1');
+        $hit = $this->get('/images/gradient.png?v=1&utm_source=mail&ver=2');
 
         self::assertSame('hit', $hit->getHeader('X-Cache-Status'));
-        self::assertFileExists($this->bucketPath('a=1&b=2', 'images/gradient.png'));
+        self::assertFileExists($this->bucketPath('v=1&ver=2', 'images/gradient.png'));
         self::assertSame(1, $this->origin->countRequestsFor('/images/gradient.png'));
-        self::assertSame('/images/gradient.png?a=1&b=2', $this->origin->getLastRequest()['uri']);
+        self::assertSame('/images/gradient.png?ver=2&v=1', $this->origin->getLastRequest()['uri']);
     }
 
     /**
-     * @return array<string, array{string, string}>
+     * @return array<string, array{string, string, string}>
      */
-    public static function provideAlteredQueryStrings(): array
+    public static function provideForwardedQueryStrings(): array
     {
         return [
-            'dots become underscores' => ['a.b=1', 'a_b=1'],
-            'a bare key gains an equals sign' => ['v', 'v='],
-            'parameters are sorted' => ['z=1&y=2', 'y=2&z=1'],
+            'a bare key stays bare' => ['v', 'v', 'v'],
+            'the order is kept' => ['ver=2&v=1', 'ver=2&v=1', 'v=1&ver=2'],
+            'other parameters are left out' => ['utm_source=mail&v=3', 'v=3', 'v=3'],
         ];
     }
 
     /**
-     * The canonical query string keys the cache and is also what the origin
-     * receives (finding P-9, resolved by PRX-5).
+     * The origin receives the allowlisted parameters as the client wrote
+     * them; only the cache key is canonical (finding P-9: 2.x forwarded its
+     * canonical form, "v=" for "v" and the parameters sorted).
      *
-     * @dataProvider provideAlteredQueryStrings
+     * @dataProvider provideForwardedQueryStrings
+     *
+     * @group regression
      */
-    #[DataProvider('provideAlteredQueryStrings')]
-    public function testCanonicalQueryStringIsWhatReachesTheOriginP9(string $sent, string $forwarded): void
+    #[DataProvider('provideForwardedQueryStrings')]
+    #[Group('regression')]
+    public function testOriginalQueryStringReachesTheOriginP9(string $sent, string $forwarded, string $canonical): void
     {
         $response = $this->get('/images/gradient.png?' . $sent);
 
         self::assertSame(200, $response->getStatus());
         self::assertSame('/images/gradient.png?' . $forwarded, $this->origin->getLastRequest()['uri']);
-        self::assertFileExists($this->bucketPath($forwarded, 'images/gradient.png'));
+        self::assertFileExists($this->bucketPath($canonical, 'images/gradient.png'));
     }
 
     /**

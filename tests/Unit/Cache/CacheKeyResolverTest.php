@@ -6,7 +6,6 @@ namespace Mfonte\ProxyCdn\Tests\Unit\Cache;
 
 use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\DataProvider;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -15,35 +14,6 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 #[CoversClass(CacheKeyResolver::class)]
 final class CacheKeyResolverTest extends TestCase
 {
-    /**
-     * @return array<string, array{string, string}>
-     */
-    public static function provideQueryStrings(): array
-    {
-        return [
-            'empty' => ['', ''],
-            'one parameter' => ['v=1', 'v=1'],
-            'sorted by name' => ['b=2&a=1', 'a=1&b=2'],
-            'purge only' => ['purge=1', ''],
-            'purge and purge_all only' => ['purge_all=true&purge=1', ''],
-            'purge removed' => ['v=1&purge=1', 'v=1'],
-            'upper-case purge is a parameter' => ['PURGE=1', 'PURGE=1'],
-            'dots become underscores (P-9)' => ['a.b=1', 'a_b=1'],
-            'bare key gains "=" (P-9)' => ['v', 'v='],
-            'encoding is normalised' => ['q=a%20b', 'q=a+b'],
-            'arrays' => ['a[]=1&a[]=2', 'a%5B0%5D=1&a%5B1%5D=2'],
-        ];
-    }
-
-    /**
-     * @dataProvider provideQueryStrings
-     */
-    #[DataProvider('provideQueryStrings')]
-    public function testCanonicalQueryString(string $raw, string $canonical): void
-    {
-        self::assertSame($canonical, (new CacheKeyResolver('/srv/public'))->canonicalQueryString($raw));
-    }
-
     public function testPathWithoutQueryStringIsKeyedOnThePath(): void
     {
         $location = (new CacheKeyResolver('/srv/public/'))->resolve('/images/a.png', '');

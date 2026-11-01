@@ -40,6 +40,9 @@ final class ResponseFactory
     /** The method is neither GET, HEAD nor OPTIONS. */
     public const ERROR_METHOD_NOT_ALLOWED = 6;
 
+    /** The query string holds a parameter outside QUERY_STRING_ALLOWLIST, in "reject" mode. */
+    public const ERROR_QUERY_NOT_ALLOWED = 7;
+
     /**
      * The methods the proxy answers (finding P-19).
      */
@@ -67,6 +70,7 @@ final class ResponseFactory
      */
     private const STATUSES = [
         self::ERROR_REFUSED => 400,
+        self::ERROR_QUERY_NOT_ALLOWED => 400,
         self::ERROR_NOT_CACHEABLE => 404,
         self::ERROR_ORIGIN_NOT_FOUND => 404,
         self::ERROR_METHOD_NOT_ALLOWED => 405,
@@ -88,6 +92,7 @@ final class ResponseFactory
         self::ERROR_NOT_CACHEABLE => 'Request cannot be processed',
         self::ERROR_UPSTREAM_UNAVAILABLE => 'Upstream temporarily unavailable',
         self::ERROR_METHOD_NOT_ALLOWED => 'Method not allowed',
+        self::ERROR_QUERY_NOT_ALLOWED => 'Query parameter not allowed',
     ];
 
     /**
