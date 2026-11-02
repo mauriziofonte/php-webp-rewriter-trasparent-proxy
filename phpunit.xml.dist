@@ -24,5 +24,9 @@
         <testsuite name="integration">
             <directory>tests/Integration</directory>
         </testsuite>
+        <!-- Skipped unless tests/Contract/run.sh runs it against the API. -->
+        <testsuite name="contract">
+            <directory>tests/Contract</directory>
+        </testsuite>
     </testsuites>
 </phpunit>
