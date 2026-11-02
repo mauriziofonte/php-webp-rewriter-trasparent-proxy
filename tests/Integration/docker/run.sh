@@ -344,8 +344,76 @@ untrusted_https() {
         echo explode(" ", $http_response_header[0] ?? "x 000")[1];' "http://$1/images/gradient.png"
 }
 
+# php_length <label> <headers file> <size> <stack> [head]: the framing of
+# a response of PHP. nginx sends the length PHP declared; Apache never
+# trusts it, and sends none on a HEAD and, on a GET, either none
+# (chunked) or the length it counted.
+php_length() {
+    local length
+    length="$(header_of Content-Length "$2")"
+    if [ "$4" = nginx ]; then
+        expect "$1: Content-Length" "$length" "$3"
+    elif [ "${5:-}" = head ]; then
+        expect "$1: no Content-Length from Apache" "$length" ""
+    elif [ -n "$length" ]; then
+        expect "$1: Content-Length counted by Apache" "$length" "$3"
+    else
+        expect "$1: chunked by Apache" "$(header_of Transfer-Encoding "$2")" chunked
+    fi
+}
+
+# http_response <raw file> <offset> <prefix>: reads the HTTP/1.1 response
+# that starts at byte <offset> of the raw file into <prefix>.headers and
+# <prefix>.body (de-chunked), and prints the offset that follows it.
+http_response() {
+    local raw="$1" at="$2" length line chunk
+    tail -c +$((at + 1)) "$raw" | sed -n '/^\r$/{p;q};p' >"$3.headers"
+    at=$((at + $(wc -c <"$3.headers")))
+    length="$(header_of Content-Length "$3.headers")"
+    if [ -n "$length" ]; then
+        tail -c +$((at + 1)) "$raw" | head -c "$length" >"$3.body"
+        at=$((at + length))
+    elif [ "$(header_of Transfer-Encoding "$3.headers")" = chunked ]; then
+        : >"$3.body"
+        while :; do
+            line="$(tail -c +$((at + 1)) "$raw" | head -n 1 | tr -d '\r')"
+            [[ "$line" =~ ^[0-9a-fA-F]+$ ]] || die "$3: not a chunk size at byte $at: '$line'"
+            at=$((at + ${#line} + 2))
+            chunk=$((16#$line))
+            [ "$chunk" -eq 0 ] && break
+            tail -c +$((at + 1)) "$raw" | head -c "$chunk" >>"$3.body"
+            at=$((at + chunk + 2))
+        done
+        at=$((at + 2))
+    else
+        die "$3: a response without Content-Length nor chunked body"
+    fi
+    echo "$at"
+}
+
+# pipelined <stack> <base> <path 1> <file 1> <path 2> <file 2>: two GETs
+# that PHP answers, sent at once on one keep-alive connection. Each
+# response must be framed exactly: the first one ends where the second
+# one starts, and nothing follows the second (no split, no merge).
+pipelined() {
+    local out="$workdir/$1/pipelined" port="${2##*:}" at request
+    request="GET %s HTTP/1.1\r\nHost: 127.0.0.1:$port\r\nX-Forwarded-Proto: https\r\nAccept-Encoding: identity\r\n%b\r\n"
+    exec 3<>"/dev/tcp/127.0.0.1/$port"
+    # shellcheck disable=SC2059
+    printf "$request$request" "$3" "" "$5" 'Connection: close\r\n' >&3
+    timeout 10 cat <&3 >"$out.raw" || true
+    exec 3<&-
+    at="$(http_response "$out.raw" 0 "$out.1")"
+    at="$(http_response "$out.raw" "$at" "$out.2")"
+    expect "$1: pipelined, first status" "$(head -n 1 "$out.1.headers" | cut -d' ' -f2)" 200
+    cmp -s "$out.1.body" "$4" || die "$1: pipelined, the first body differs from $4"
+    expect "$1: pipelined, second status" "$(head -n 1 "$out.2.headers" | cut -d' ' -f2)" 200
+    cmp -s "$out.2.body" "$6" || die "$1: pipelined, the second body differs from $6"
+    expect "$1: pipelined, nothing after the second response" "$(wc -c <"$out.raw" | tr -d ' ')" "$at"
+}
+
 smoke() {
-    local s="$1" base fpm_log lines app css svg redirect size
+    local s="$1" base fpm_log lines app css svg redirect size css_size
     base="http://127.0.0.1:$(port_of "$s")"
     fpm_log="$workdir/$s/logs/php-fpm-access.log"
     app="$workdir/$s/app/public/_cache/127.0.0.1"
@@ -438,16 +506,19 @@ smoke() {
     expect "$s: PHP-path hit is a hit" "$(cache_status "$workdir/$s/phphit.headers")" HIT
     wait_for "$s: PHP-path hit went through PHP-FPM" 10 has_lines "$fpm_log" $((lines + 1))
     hit_headers "$s: PHP-path hit" "$workdir/$s/phphit.headers"
-    # The length of a file PHP serves reaches the client, on GET and HEAD
-    # (Apache drops it unless public/.htaccess trusts it).
+    # nginx passes on the Content-Length of PHP, which is the length of the
+    # file it measured. Apache drops it (CVE-2024-24795, public/.htaccess)
+    # and frames the body itself: a counted length or chunked, and no
+    # length on a HEAD.
     size="$(wc -c <"$fixture" | tr -d ' ')"
-    expect "$s: PHP-path hit Content-Length" "$(header_of Content-Length "$workdir/$s/phphit.headers")" "$size"
+    css_size="$(wc -c <"$root/tests/Fixtures/origin/css/site.css" | tr -d ' ')"
+    php_length "$s: PHP-path hit" "$workdir/$s/phphit.headers" "$size" "$s"
     expect "$s: HEAD of a PHP-path hit" "$(fetch "$base$asset?v=3&zz=1" "$workdir/$s/phphead" -I)" 200
-    expect "$s: HEAD of a PHP-path hit Content-Length" "$(header_of Content-Length "$workdir/$s/phphead.headers")" "$size"
+    php_length "$s: HEAD of a PHP-path hit" "$workdir/$s/phphead.headers" "$size" "$s" head
     expect "$s: HEAD of a miss" "$(fetch "$base/css/site.css?v=9&zz=2" "$workdir/$s/headmiss" -I)" 200
     expect "$s: HEAD of a miss is a miss" "$(cache_status "$workdir/$s/headmiss.headers")" MISS
-    expect "$s: HEAD of a miss Content-Length" "$(header_of Content-Length "$workdir/$s/headmiss.headers")" \
-        "$(wc -c <"$root/tests/Fixtures/origin/css/site.css" | tr -d ' ')"
+    php_length "$s: HEAD of a miss" "$workdir/$s/headmiss.headers" "$css_size" "$s" head
+    pipelined "$s" "$base" "$asset?v=3&zz=1" "$fixture" "/css/site.css?v=9&zz=2" "$root/tests/Fixtures/origin/css/site.css"
     expect "$s: PHP-path hit has the Cache-Control of a web-server hit" \
         "$(cache_directives "$workdir/$s/phphit.headers")" "$(cache_directives "$workdir/$s/second.headers")"
 
