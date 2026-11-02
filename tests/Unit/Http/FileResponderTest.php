@@ -10,6 +10,7 @@ use Mfonte\ProxyCdn\Http\FileResponder;
 use Mfonte\ProxyCdn\Http\ResponseFactory;
 use Mfonte\ProxyCdn\Origin\ResponseBody;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
+use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\HttpFoundation\Request;
@@ -425,6 +426,94 @@ final class FileResponderTest extends TestCase
         self::assertNull($response->headers->get('content-range'));
     }
 
+    /**
+     * A purge unlinks the file between the response and its body: the
+     * handle opened for the response still holds it, so the body is the
+     * length declared.
+     */
+    public function testAFileUnlinkedBeforeItsBodyIsSentWhole(): void
+    {
+        $content = str_repeat('a', 1000);
+        $file = $this->directory->write('a.js', $content);
+
+        $response = $this->responder()->respond(Request::create('/a.js'), $file, 'js', 'HIT');
+        unlink($file);
+
+        self::assertSame('1000', $response->headers->get('content-length'));
+        self::assertSame($content, self::body($response));
+    }
+
+    /**
+     * A revalidation renames a new file over the entry between the
+     * response and its body: the body is still the file that was
+     * measured, with its entity tag, whole or in the range asked.
+     */
+    public function testAFileReplacedBeforeItsBodyIsTheOneMeasured(): void
+    {
+        $content = str_repeat('b', 1000);
+        $file = $this->directory->write('a.js', $content);
+        touch($file, 1700000000);
+
+        $whole = $this->responder()->respond(Request::create('/a.js'), $file, 'js', 'HIT');
+        $range = $this->responder()->respond(self::withRange('bytes=990-'), $file, 'js', 'HIT');
+        $replacement = $this->directory->write('a.js.tmp', 'short');
+        rename($replacement, $file);
+
+        self::assertSame('1000', $whole->headers->get('content-length'));
+        self::assertSame('"6553f100-3e8"', $whole->headers->get('etag'));
+        self::assertSame($content, self::body($whole));
+        self::assertSame('10', $range->headers->get('content-length'));
+        self::assertSame(str_repeat('b', 10), self::body($range));
+    }
+
+    /**
+     * A file truncated in place leaves less than was declared: the body
+     * stops there, without padding, and the cut is logged.
+     */
+    public function testAFileTruncatedBeforeItsBodyIsCutShortAndLogged(): void
+    {
+        $file = $this->directory->write('a.js', str_repeat('c', 1000));
+        $logger = new MemoryLogger();
+
+        $response = $this->responder(Config::SENDFILE_NONE, $logger)->respond(Request::create('/a.js'), $file, 'js', 'HIT');
+        $handle = fopen($file, 'r+');
+        self::assertNotFalse($handle);
+        ftruncate($handle, 5);
+        fclose($handle);
+
+        self::assertSame('1000', $response->headers->get('content-length'));
+        self::assertSame('ccccc', self::body($response));
+        $records = $logger->recordsWithMessage('response body cut short');
+        self::assertCount(1, $records);
+        self::assertSame('error', $records[0]['level']);
+        self::assertSame(['file' => $file, 'declared' => 1000, 'sent' => 5], $records[0]['context']);
+    }
+
+    /**
+     * The temporary file of an uncached response is open once the
+     * response is built: it is sent whole even if it is gone by then.
+     */
+    public function testAnUncachedBodyIsSentFromTheHandleOpenedForIt(): void
+    {
+        $body = ResponseBody::fromString(str_repeat('d', 1000), $this->directory->path());
+        self::assertNotNull($body);
+
+        $response = $this->responder()->respondUncached(Request::create('/a.js'), $body, 'js', true);
+        unlink($body->getPath());
+
+        self::assertSame('1000', $response->headers->get('content-length'));
+        self::assertSame(str_repeat('d', 1000), self::body($response));
+    }
+
+    public function testADirectoryIsAnInternalError(): void
+    {
+        $this->directory->write('dir/a.js', 'x');
+
+        $response = $this->responder()->respond(Request::create('/dir'), $this->directory->path('dir'), 'css', 'HIT');
+
+        self::assertSame(500, $response->getStatusCode());
+    }
+
     public function testAMissingFileIsAnInternalError(): void
     {
         $response = $this->responder()->respond(Request::create('/missing.css'), $this->directory->path('missing.css'), 'css', 'HIT');
@@ -462,9 +551,9 @@ final class FileResponderTest extends TestCase
         return Request::create($uri, 'GET', [], [], [], ['PROXYCDN_SENDFILE' => $mode]);
     }
 
-    private function responder(string $mode = Config::SENDFILE_NONE): FileResponder
+    private function responder(string $mode = Config::SENDFILE_NONE, ?MemoryLogger $logger = null): FileResponder
     {
-        return new FileResponder(new FilesystemStorage(), new ResponseFactory(600, 30), $mode, $this->directory->path('_cache'));
+        return new FileResponder(new FilesystemStorage(), new ResponseFactory(600, 30), $mode, $this->directory->path('_cache'), $logger);
     }
 
     private static function body(Response $response): string

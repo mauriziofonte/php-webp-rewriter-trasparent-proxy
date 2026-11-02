@@ -72,7 +72,7 @@ final class ProxyKernelFactory
             $converter,
             new Precompressor($storage, $config->shouldPrecompress()),
             $responses,
-            new FileResponder($storage, $responses, $config->getSendfile(), $cacheDirectory),
+            new FileResponder($storage, $responses, $config->getSendfile(), $cacheDirectory, $logger),
             new RequestCoalescer(self::lock($stateDirectory . '/locks', $logger), $config->getUpstreamTimeout() + self::COALESCING_MARGIN, $logger, $storage, $stateDirectory . '/coalescing'),
             $logger
         );

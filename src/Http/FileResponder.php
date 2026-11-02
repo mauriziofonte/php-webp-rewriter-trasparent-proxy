@@ -9,6 +9,8 @@ use Mfonte\ProxyCdn\Cache\CacheLocation;
 use Mfonte\ProxyCdn\Cache\CacheStorage;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Origin\ResponseBody;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -38,6 +40,15 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * Last-Modified the time of the file.
  * When the client accepts it, the Brotli or gzip sibling of the file is
  * sent instead, with Content-Encoding.
+ *
+ * A file PHP streams is opened when the response is built, and its
+ * Content-Length, entity tag and Last-Modified come from fstat() on that
+ * handle, which the body is then copied from: a purge or a revalidation
+ * that unlinks or replaces the file in between changes neither the length
+ * declared nor the bytes sent. A copy that still comes up short (the file
+ * truncated in place) stops there and is logged, never padded: nginx,
+ * which passes the declared length on, sees the body end early and closes
+ * the client connection rather than start another response on it.
  */
 final class FileResponder
 {
@@ -70,15 +81,21 @@ final class FileResponder
     private $cacheDirectory;
 
     /**
+     * @var LoggerInterface
+     */
+    private $logger;
+
+    /**
      * @param string $mode           one of the Config::SENDFILE_* constants
      * @param string $cacheDirectory absolute path of the cache root, which X-Accel-Redirect maps to "/_cache/"
      */
-    public function __construct(CacheStorage $storage, ResponseFactory $responses, string $mode = Config::SENDFILE_NONE, string $cacheDirectory = '')
+    public function __construct(CacheStorage $storage, ResponseFactory $responses, string $mode = Config::SENDFILE_NONE, string $cacheDirectory = '', ?LoggerInterface $logger = null)
     {
         $this->storage = $storage;
         $this->responses = $responses;
         $this->mode = $mode;
         $this->cacheDirectory = rtrim($cacheDirectory, '/');
+        $this->logger = $logger ?? new NullLogger();
     }
 
     /**
@@ -103,12 +120,6 @@ final class FileResponder
             }
         }
 
-        $size = $this->storage->size($file);
-        $modified = $this->storage->modifiedAt($file);
-        if ($size === null || $modified === null) {
-            return $this->responses->internalError('Cannot read cached file from disk');
-        }
-
         $headers = $this->responses->assetHeaders($extension, $cacheStatus, $maxAge);
         if ($encoded !== []) {
             $vary[] = 'Accept-Encoding';
@@ -120,10 +131,10 @@ final class FileResponder
             $headers['Content-Encoding'] = $contentEncoding;
         }
 
-        if ($maxAge !== null) {
-            return $this->stream($request, $file, $size, $modified, $headers);
+        $mode = $maxAge === null ? $this->serverSendfile($request) : Config::SENDFILE_NONE;
+        if ($mode !== Config::SENDFILE_NONE && !$this->storage->isFile($file)) {
+            return $this->responses->internalError('Cannot read cached file from disk');
         }
-        $mode = $this->serverSendfile($request);
         if ($mode === Config::SENDFILE_X_SENDFILE) {
             $headers['X-Sendfile'] = $file;
 
@@ -136,7 +147,34 @@ final class FileResponder
             return new Response('', 200, $headers);
         }
 
-        return $this->stream($request, $file, $size, $modified, $headers);
+        $input = self::open($file);
+        if ($input === null) {
+            return $this->responses->internalError('Cannot read cached file from disk');
+        }
+
+        return $this->stream($request, $input[0], $input[1], $input[2], $headers, $file);
+    }
+
+    /**
+     * $file opened for reading, with its size and modification time from
+     * fstat() on the handle; null when it is not a readable regular file.
+     *
+     * @return array{resource, int, int}|null
+     */
+    private static function open(string $file): ?array
+    {
+        $input = @fopen($file, 'rb');
+        if ($input === false) {
+            return null;
+        }
+        $stat = @fstat($input);
+        if ($stat === false || ($stat['mode'] & 0170000) !== 0100000) {
+            fclose($input);
+
+            return null;
+        }
+
+        return [$input, (int) $stat['size'], (int) $stat['mtime']];
     }
 
     /**
@@ -171,33 +209,40 @@ final class FileResponder
     {
         $headers = $this->responses->assetHeaders($extension, ResponseFactory::CACHE_BYPASS);
         $headers['Cache-Control'] = $noStore ? 'no-store' : 'private, no-cache';
-        $headers['Content-Length'] = (string) $body->getSize();
-        if ($request->getRealMethod() === 'HEAD' || $body->getSize() === 0) {
+        $input = self::open($body->getPath());
+        if ($input === null) {
+            $body->delete();
+
+            return $this->responses->internalError('Cannot read the origin response from disk');
+        }
+        $length = $input[1];
+        $headers['Content-Length'] = (string) $length;
+        if ($request->getRealMethod() === 'HEAD' || $length === 0) {
+            fclose($input[0]);
             $body->delete();
 
             return new Response('', 200, $headers);
         }
 
-        return new StreamedResponse(static function () use ($body): void {
-            $input = @fopen($body->getPath(), 'rb');
-            $output = @fopen('php://output', 'wb');
-            if ($input !== false && $output !== false) {
-                stream_copy_to_stream($input, $output);
+        $handle = $input[0];
+        $logger = $this->logger;
+
+        return new StreamedResponse(static function () use ($handle, $length, $body, $logger): void {
+            try {
+                self::copy($handle, 0, $length, $body->getPath(), $logger);
+            } finally {
+                $body->delete();
             }
-            if ($input !== false) {
-                fclose($input);
-            }
-            if ($output !== false) {
-                fclose($output);
-            }
-            $body->delete();
         }, 200, $headers);
     }
 
     /**
+     * @param resource              $input    $file, open for reading
+     * @param int                   $size     its size, from fstat() on $input
+     * @param int                   $modified its modification time, from fstat() on $input
      * @param array<string, string> $headers
      */
-    private function stream(Request $request, string $file, int $size, int $modified, array $headers): Response
+    private function stream(Request $request, $input, int $size, int $modified, array $headers, string $file): Response
     {
         $etag = sprintf('"%x-%x"', $modified, $size);
         $lastModified = gmdate('D, d M Y H:i:s', $modified) . ' GMT';
@@ -207,6 +252,7 @@ final class FileResponder
 
         if (self::isNotModified($request, $etag, $modified)) {
             unset($headers['Content-Type'], $headers['Content-Encoding']);
+            fclose($input);
 
             return new Response('', 304, $headers);
         }
@@ -220,6 +266,7 @@ final class FileResponder
             if ($bounds === null) {
                 $headers['Content-Range'] = 'bytes */' . $size;
                 unset($headers['Content-Encoding']);
+                fclose($input);
 
                 return new Response('', 416, $headers);
             }
@@ -231,23 +278,37 @@ final class FileResponder
         $headers['Content-Length'] = (string) $length;
 
         if ($request->getRealMethod() === 'HEAD' || $length === 0) {
+            fclose($input);
+
             return new Response('', $status, $headers);
         }
 
-        return new StreamedResponse(static function () use ($file, $start, $length): void {
-            $input = @fopen($file, 'rb');
-            $output = @fopen('php://output', 'wb');
-            if ($input !== false && $output !== false) {
-                // Copied in chunks by the stream layer: the file is never held in memory.
-                stream_copy_to_stream($input, $output, $length, $start);
-            }
-            if ($input !== false) {
-                fclose($input);
-            }
-            if ($output !== false) {
-                fclose($output);
-            }
+        $logger = $this->logger;
+
+        return new StreamedResponse(static function () use ($input, $start, $length, $file, $logger): void {
+            self::copy($input, $start, $length, $file, $logger);
         }, $status, $headers);
+    }
+
+    /**
+     * Copies $length bytes of $input from $start to the output, in chunks
+     * of the stream layer (the file is never held in memory), then closes
+     * $input. Fewer bytes than declared are logged and left as they are:
+     * padding them would send bytes the file does not hold.
+     *
+     * @param resource $input
+     */
+    private static function copy($input, int $start, int $length, string $file, LoggerInterface $logger): void
+    {
+        $output = @fopen('php://output', 'wb');
+        $copied = $output === false ? false : stream_copy_to_stream($input, $output, $length, $start);
+        if ($output !== false) {
+            fclose($output);
+        }
+        fclose($input);
+        if ($copied !== $length) {
+            $logger->error('response body cut short', ['file' => $file, 'declared' => $length, 'sent' => (int) $copied]);
+        }
     }
 
     /**
