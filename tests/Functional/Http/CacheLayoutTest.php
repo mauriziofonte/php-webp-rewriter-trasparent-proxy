@@ -263,6 +263,55 @@ final class CacheLayoutTest extends TestCase
     }
 
     /**
+     * The sibling of a legacy URL goes where its lifetime puts it, as any
+     * fetched asset: a short one in the tier PHP revalidates, served with
+     * the max-age it has left, and fetched again once expired.
+     */
+    public function testALegacySiblingWithAShortLifetimeIsManaged(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/images/a.png', 'PNG', ['cache-control' => 'max-age=60']);
+
+        $first = $this->kernel()->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        $second = $this->kernel()->handle(Request::create('https://cdn.example.test/images/a.webp'));
+
+        self::assertSame('MISS', $first->headers->get('x-cache-status'));
+        self::assertSame('HIT', $second->headers->get('x-cache-status'));
+        self::assertSame('PNG', self::body($second));
+        self::assertMatchesRegularExpression('/\bmax-age=(60|59)\b/', (string) $second->headers->get('cache-control'));
+        self::assertFileExists($this->directory->path('_cache/cdn.example.test/.m/images/a.png'));
+        self::assertFileDoesNotExist($this->directory->path('_cache/cdn.example.test/images/a.png'), 'never served by the web server');
+        $fetches = count($this->origin->getRequests());
+
+        $metadata = $this->directory->path('_cache/cdn.example.test/.m/.meta/images/a.png.json');
+        $data = json_decode((string) file_get_contents($metadata), true);
+        self::assertIsArray($data);
+        self::assertIsInt($data['validated_at'] ?? null);
+        $data['validated_at'] -= 3600;
+        file_put_contents($metadata, json_encode($data));
+
+        $third = $this->kernel()->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        self::assertSame('MISS', $third->headers->get('x-cache-status'), 'expired: fetched again');
+        self::assertGreaterThan($fetches, count($this->origin->getRequests()));
+    }
+
+    /**
+     * A sibling the origin forbids storing is streamed, never stored
+     * (finding P-15).
+     */
+    public function testANoStoreLegacySiblingIsNeverStored(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/images/a.png', 'PNG', ['cache-control' => 'no-store']);
+
+        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/images/a.webp'));
+
+        self::assertSame('PNG', self::body($response));
+        self::assertSame('BYPASS', $response->headers->get('x-cache-status'));
+        self::assertSame('no-store, private', $response->headers->get('cache-control'));
+        self::assertFileDoesNotExist($this->directory->path('_cache/cdn.example.test/images/a.png'));
+        self::assertFileDoesNotExist($this->directory->path('_cache/cdn.example.test/.m/images/a.png'));
+    }
+
+    /**
      * @param array<string, string|null> $overrides
      */
     private function kernel(array $overrides = [], ?FakeWebpConverter $converter = null): ProxyKernel

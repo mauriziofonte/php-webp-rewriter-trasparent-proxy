@@ -358,10 +358,9 @@ final class ProxyKernel
         }
 
         $legacy = $this->isLegacyWebpRequest($extension, $location) ? $this->legacySiblings($host, $path, $query) : [];
-        foreach ($legacy as $sibling) {
-            if ($this->storage->isFile($sibling[1]->getFile())) {
-                return $this->serveLegacy($request, $sibling[1], $sibling[0], ResponseFactory::CACHE_HIT);
-            }
+        $legacyHit = $this->serveLegacyHit($request, $legacy);
+        if ($legacyHit !== null) {
+            return $legacyHit;
         }
 
         $remembered = $this->negativeCache->lookup($file);
@@ -384,35 +383,41 @@ final class ProxyKernel
             return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
 
-        if ($remembered === null) {
-            // Finding P-24: one fetch in flight for a burst of requests on a
-            // cold entry, also while the origin fails it.
-            $key = $location->getKey();
-            $lease = $this->coalescer->isRecentlyUncacheable($key) ? null : $this->coalescer->enter($key, function () use ($location, $file): bool {
-                return $this->storage->isFile($file)
-                    || $this->storage->isFile($location->managed()->getFile())
-                    || $this->negativeCache->lookup($file) !== null;
-            });
-            if ($lease === false) {
-                return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+        // Finding P-24: one fetch in flight for a burst of requests on a
+        // cold entry, also while the origin fails it; for "X.webp", the
+        // fetches of its raster siblings too.
+        $key = $location->getKey();
+        $lease = $this->coalescer->isRecentlyUncacheable($key) ? null : $this->coalescer->enter($key, function () use ($location, $file, $legacy): bool {
+            return $this->storage->isFile($file)
+                || $this->storage->isFile($location->managed()->getFile())
+                || ($legacy === [] && $this->negativeCache->lookup($file) !== null)
+                || $this->isLegacyStored($legacy);
+        });
+        if ($lease === false) {
+            return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+        }
+        try {
+            // What the leader, or another request, has done meanwhile.
+            $legacyHit = $this->serveLegacyHit($request, $legacy);
+            if ($legacyHit !== null) {
+                return $legacyHit;
             }
-            try {
-                // What the leader, or another request, has done meanwhile.
-                $remembered = $this->negativeCache->lookup($file);
-                if ($remembered !== null && $legacy === []) {
-                    return $this->notFound($path, $remembered);
-                }
-                $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT)
-                    ?? $this->serveManaged($request, $location, $extension, $origin, $path, $query, $lease !== null);
-                if ($stored !== null) {
-                    return $stored;
-                }
-                // A request that waited for a leader that stored nothing.
-                $shared = $lease === null ? $this->sharedOutcome($key, $path) : null;
-                if ($shared !== null) {
-                    return $shared;
-                }
+            $remembered = $this->negativeCache->lookup($file);
+            if ($remembered !== null && $legacy === []) {
+                return $this->notFound($path, $remembered);
+            }
+            $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT)
+                ?? $this->serveManaged($request, $location, $extension, $origin, $path, $query, $lease !== null);
+            if ($stored !== null) {
+                return $stored;
+            }
+            // A request that waited for a leader that stored nothing.
+            $shared = $lease === null ? $this->sharedOutcome($key, $path) : null;
+            if ($shared !== null) {
+                return $shared;
+            }
 
+            if ($remembered === null) {
                 $fetched = $this->fetch($request, $origin, $path, $query);
                 if ($fetched->isSuccessful()) {
                     return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
@@ -421,14 +426,14 @@ final class ProxyKernel
                     return $this->failure($origin, $path, $location, $fetched);
                 }
                 $this->negativeCache->remember($file, 404);
-            } finally {
-                if ($lease !== null) {
-                    $lease->release();
-                }
+            }
+
+            return $this->fetchLegacy($request, $origin, $path, $query, $legacy, $location);
+        } finally {
+            if ($lease !== null) {
+                $lease->release();
             }
         }
-
-        return $this->fetchLegacy($request, $origin, $path, $query, $legacy);
     }
 
     /**
@@ -873,27 +878,76 @@ final class ProxyKernel
      * cached a 301 of 2.x to "X.webp" keep asking for it, and the origin
      * has no such file).
      */
-    private function serveLegacy(Request $request, CacheLocation $location, string $extension, string $cacheStatus): Response
+    private function serveLegacy(Request $request, CacheLocation $location, string $extension, string $cacheStatus, ?int $maxAge = null): Response
     {
         $webp = $location->getVariantFile(CacheLocation::FORMAT_WEBP);
         if ($this->converter !== null && !$this->storage->isFile($webp)) {
             $this->converter->convert($location->getFile(), $webp);
         }
         if ($this->storage->isFile($webp)) {
-            return $this->files->respond($request, $webp, CacheLocation::FORMAT_WEBP, $cacheStatus);
+            return $this->files->respond($request, $webp, CacheLocation::FORMAT_WEBP, $cacheStatus, [], [], $maxAge);
         }
 
-        return $this->files->respond($request, $location->getFile(), $extension, $cacheStatus);
+        return $this->files->respond($request, $location->getFile(), $extension, $cacheStatus, [], [], $maxAge);
+    }
+
+    /**
+     * The answer to "X.webp" from a raster sibling the cache holds: in the
+     * tier the web server serves, or fresh in the one PHP revalidates (an
+     * expired one is fetched again); null when none is held.
+     *
+     * @param list<array{string, CacheLocation}> $siblings
+     *
+     * @phpstan-impure
+     */
+    private function serveLegacyHit(Request $request, array $siblings): ?Response
+    {
+        $now = time();
+        foreach ($siblings as $sibling) {
+            list($extension, $location) = $sibling;
+            if ($this->storage->isFile($location->getFile())) {
+                return $this->serveLegacy($request, $location, $extension, ResponseFactory::CACHE_HIT);
+            }
+            $managed = $location->managed();
+            $metadata = $this->storage->isFile($managed->getFile()) ? $this->readMetadata($managed) : null;
+            if ($metadata !== null && $metadata->isFresh($now)) {
+                return $this->serveLegacy($request, $managed, $extension, ResponseFactory::CACHE_HIT, $metadata->getRemainingLifetime($now));
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether the cache holds a raster sibling of "X.webp", in either tier.
+     *
+     * @param list<array{string, CacheLocation}> $siblings
+     *
+     * @phpstan-impure
+     */
+    private function isLegacyStored(array $siblings): bool
+    {
+        foreach ($siblings as $sibling) {
+            if ($this->storage->isFile($sibling[1]->getFile()) || $this->storage->isFile($sibling[1]->managed()->getFile())) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
      * Fetches the raster siblings of "X.webp" from the origin, in order,
-     * until one exists, then stores and answers it; the 404 of "X.webp"
-     * when none does.
+     * until one exists, then answers it as a fetched asset is answered: it
+     * is streamed without being stored when the origin forbids storing it,
+     * else stored in the tier its lifetime calls for; the 404 of "X.webp"
+     * when none exists. What it answers without storing is shared with the
+     * requests that wait on "X.webp".
      *
      * @param list<array{string, CacheLocation}> $siblings
+     * @param CacheLocation                      $webp     the entry of "X.webp", whose lock this request holds
      */
-    private function fetchLegacy(Request $request, string $origin, string $path, QueryString $query, array $siblings): Response
+    private function fetchLegacy(Request $request, string $origin, string $path, QueryString $query, array $siblings, CacheLocation $webp): Response
     {
         foreach ($siblings as $sibling) {
             list($extension, $location) = $sibling;
@@ -907,20 +961,33 @@ final class ProxyKernel
                 continue;
             }
             if (!$fetched->isSuccessful()) {
-                return $this->failure($origin, $path, $location, $fetched);
+                return $this->failure($origin, $path, $location, $fetched, $webp);
             }
-            $error = $this->store($location, $extension, $fetched);
-            if ($error !== null) {
-                return $this->responses->error($path, $error);
-            }
-            $this->negativeCache->forget($location->getFile());
             $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
             $this->logger->info('legacy webp url', ['path' => $path, 'sibling' => $siblingPath]);
+            $freshness = Freshness::fromHeaders($fetched->getHeaders(), time());
+            if (!$freshness->isStorable()) {
+                $this->coalescer->recordUncacheable($webp->getKey());
+                foreach ($location->managed()->getFiles() as $file) {
+                    $this->storage->delete($file);
+                }
+                $body = $fetched->getBodyFile() ?? ResponseBody::fromString($fetched->getBody(), sys_get_temp_dir());
+                if ($body === null) {
+                    return $this->responses->error($path, ResponseFactory::ERROR_CACHE_FILE);
+                }
 
-            return $this->serveLegacy($request, $location, $extension, ResponseFactory::CACHE_MISS);
+                return $this->files->respondUncached($request, $body, $extension, $freshness->isNoStore());
+            }
+            $result = $this->storeFetched($location, $extension, $fetched, $freshness);
+            if (is_int($result)) {
+                return $this->sharedError($webp, $path, $result);
+            }
+            list($stored, $maxAge) = $result;
+
+            return $this->serveLegacy($request, $stored, $extension, ResponseFactory::CACHE_MISS, $maxAge);
         }
 
-        return $this->responses->error($path, ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
+        return $this->sharedError($webp, $path, ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
     }
 
     private function isRaster(string $extension): bool
@@ -952,16 +1019,20 @@ final class ProxyKernel
      *   leave it open; a transport failure that is none of those (a
      *   malformed reply, an HTTP/2 stream error, a local write error) is
      *   neutral: it neither counts nor closes.
+     *
+     * What it answers is recorded for the requests waiting on $sharedAs,
+     * the entry whose lock this request holds (by default $location).
      */
-    private function failure(string $origin, string $path, CacheLocation $location, OriginResponse $fetched): Response
+    private function failure(string $origin, string $path, CacheLocation $location, OriginResponse $fetched, ?CacheLocation $sharedAs = null): Response
     {
         $file = $location->getFile();
+        $shared = $sharedAs ?? $location;
         $reason = $fetched->getFailureReason();
         $breakerKey = RedirectTarget::originOf($origin);
         if (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429) {
             $this->circuitBreaker->recordFailure($breakerKey);
 
-            return $this->sharedError($location, $path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+            return $this->sharedError($shared, $path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
         if ($fetched->getStatus() > 0 && $fetched->getTransportErrorCode() === 0) {
             $this->circuitBreaker->reset($breakerKey);
@@ -972,22 +1043,22 @@ final class ProxyKernel
             $this->negativeCache->remember($file, $gone ? 410 : 404);
 
             // Shared also when NEGATIVE_CACHE_TTL is 0.
-            return $this->sharedError($location, $path, $gone ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
+            return $this->sharedError($shared, $path, $gone ? ResponseFactory::ERROR_ORIGIN_GONE : ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
         }
         if ($reason === OriginResponse::FAILURE_FORBIDDEN) {
-            return $this->sharedError($location, $path, ResponseFactory::ERROR_ORIGIN_FORBIDDEN);
+            return $this->sharedError($shared, $path, ResponseFactory::ERROR_ORIGIN_FORBIDDEN);
         }
         if ($reason === OriginResponse::FAILURE_REDIRECT) {
             $target = $this->proxyLocation($origin, $fetched->getLocation());
             if ($target === null) {
-                return $this->sharedError($location, $path, ResponseFactory::ERROR_BAD_GATEWAY);
+                return $this->sharedError($shared, $path, ResponseFactory::ERROR_BAD_GATEWAY);
             }
-            $this->coalescer->recordRedirect($location->getKey(), $fetched->getStatus(), $target);
+            $this->coalescer->recordRedirect($shared->getKey(), $fetched->getStatus(), $target);
 
             return $this->responses->redirect($fetched->getStatus(), $target);
         }
 
-        return $this->sharedError($location, $path, ResponseFactory::ERROR_BAD_GATEWAY);
+        return $this->sharedError($shared, $path, ResponseFactory::ERROR_BAD_GATEWAY);
     }
 
     /**

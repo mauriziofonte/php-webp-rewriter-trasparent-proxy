@@ -38,6 +38,25 @@ final class PrivateOriginTest extends CharacterizationTestCase
         }
     }
 
+    /**
+     * The raster sibling that answers a legacy "X.webp" URL is not stored
+     * either when the origin marks it private: the web server would serve
+     * it to everyone, for a year.
+     */
+    public function testAPrivateLegacySiblingIsServedButNeverStored(): void
+    {
+        foreach ([1, 2] as $request) {
+            $response = $this->get('/images/gradient.webp');
+
+            self::assertSame(200, $response->getStatus());
+            self::assertSame('BYPASS', $response->getHeader('X-Cache-Status'));
+            self::assertStringContainsString('private', (string) $response->getHeader('Cache-Control'));
+            self::assertFileDoesNotExist($this->cachePath('images/gradient.png'));
+            self::assertFileDoesNotExist($this->cachePath('.m/images/gradient.png'));
+            self::assertSame($request, $this->origin->countRequestsFor('/images/gradient.png'), 'fetched each time');
+        }
+    }
+
     protected function originCacheControl(): ?string
     {
         return null;

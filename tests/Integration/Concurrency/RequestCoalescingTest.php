@@ -144,6 +144,23 @@ final class RequestCoalescingTest extends TestCase
     }
 
     /**
+     * A legacy "X.webp" URL: the fetch of "X.webp" and of its raster
+     * siblings happen once for the burst, under the lock of "X.webp".
+     */
+    public function testALegacyWebpBurstFetchesTheSiblingOnceP24(): void
+    {
+        $results = $this->burst('https://cdn.example.test/img/a.webp', 'legacy');
+
+        $fetches = file($this->directory->path('fetches.log'), FILE_IGNORE_NEW_LINES) ?: [];
+        self::assertSame(['https://origin.example.test/img/a.webp', 'https://origin.example.test/img/a.jpg'], $fetches);
+        $hash = hash('sha256', str_repeat("body { color: red; }\n", 100));
+        foreach ($results as $result) {
+            self::assertSame(200, $result['status']);
+            self::assertSame($hash, $result['hash']);
+        }
+    }
+
+    /**
      * Runs PROCESSES requests for $url at the same moment, each in its own
      * PHP process, and returns what each printed.
      *

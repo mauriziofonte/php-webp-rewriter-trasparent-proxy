@@ -10,8 +10,10 @@ declare(strict_types=1);
  * SHA-256 of the body and the Location as JSON. The origin answers with
  * the stylesheet (mode "ok", the default), with a 503 ("fail"), with the
  * stylesheet marked "Cache-Control: private" ("private"), with a 302 to
- * "/css/moved.css" ("redirect"), or with a 404 ("notfound", with
- * NEGATIVE_CACHE_TTL 0, so that only the coalescer can share it).
+ * "/css/moved.css" ("redirect"), with a 404 ("notfound", with
+ * NEGATIVE_CACHE_TTL 0, so that only the coalescer can share it), or with
+ * a 404 for the ".webp" URLs and the stylesheet for any other ("legacy":
+ * the raster sibling of a legacy WEBP URL).
  *
  * Usage: php coalesce-child.php <directory> <fetch log> <url> <delay ms> <start time> [<mode>]
  */
@@ -70,7 +72,7 @@ $origin = new class ($fetchLog, (int) $delay, $mode) implements OriginFetcher {
         if ($this->mode === 'redirect') {
             return OriginResponse::redirect(302, 'https://origin.example.test/css/moved.css');
         }
-        if ($this->mode === 'notfound') {
+        if ($this->mode === 'notfound' || ($this->mode === 'legacy' && substr($request->getUrl(), -5) === '.webp')) {
             return OriginResponse::failure(OriginResponse::FAILURE_NOT_FOUND, 404);
         }
         $headers = ['content-type' => 'text/css'];
