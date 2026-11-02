@@ -50,9 +50,27 @@ final class ConfigValidator
         'UPSTREAM_TIMEOUT' => [1, 300],
         'UPSTREAM_CONNECT_TIMEOUT' => [1, 60],
         'UPSTREAM_MAX_SIZE' => [1, self::MAX_UPSTREAM_MAX_SIZE],
+        'IMAGE_CONVERSION_TIMEOUT' => [1, 600],
     ];
 
-    private const BOOLEAN_KEYS = ['DEBUG', 'UPSTREAM_VERIFY_TLS', 'UPSTREAM_FOLLOW_REDIRECTS', 'PRECOMPRESS', 'LEGACY_WEBP_URLS'];
+    private const BOOLEAN_KEYS = ['DEBUG', 'UPSTREAM_VERIFY_TLS', 'UPSTREAM_FOLLOW_REDIRECTS', 'PRECOMPRESS', 'LEGACY_WEBP_URLS', 'IMAGE_API_FALLBACK'];
+
+    /**
+     * The shortest IMAGE_API_KEY, in bytes: the shortest key the
+     * conversion API accepts.
+     */
+    public const MIN_IMAGE_API_KEY_BYTES = 16;
+
+    /**
+     * The shortest RESIZE_KEY, in bytes: an HMAC-SHA256 key of 256 bits.
+     */
+    public const MIN_RESIZE_KEY_BYTES = 32;
+
+    /**
+     * The most RESIZE_WIDTHS: each width is one more entry of every
+     * resized image, and of each of its variants (risk L-14).
+     */
+    public const MAX_RESIZE_WIDTHS = 16;
 
     /**
      * The largest resize width: the largest dimension the conversion
@@ -181,6 +199,10 @@ final class ConfigValidator
             }
         }
 
+        list($conversionErrors, $conversionWarnings) = self::validateConversion($values);
+        $errors = array_merge($errors, $conversionErrors);
+        $warnings = array_merge($warnings, $conversionWarnings);
+
         foreach (self::INTEGER_RANGES as $key => $range) {
             $raw = $values[$key] ?? null;
             if ($raw === null) {
@@ -236,6 +258,90 @@ final class ConfigValidator
         }
 
         return new ConfigValidation($errors, $warnings);
+    }
+
+    /**
+     * The errors and warnings of the image conversion and resize keys
+     * (PRX-8). The values of IMAGE_API_KEY and RESIZE_KEY are secrets: no
+     * message quotes them.
+     *
+     * @param array<string, string|null> $values
+     *
+     * @return array{list<string>, list<string>}
+     */
+    private static function validateConversion(array $values): array
+    {
+        $errors = [];
+        $warnings = [];
+        $converter = $values['IMAGE_CONVERTER'] ?? Config::CONVERTER_NONE;
+        if (!in_array($converter, Config::CONVERTERS, true)) {
+            $errors[] = 'IMAGE_CONVERTER must be one of: ' . implode(', ', Config::CONVERTERS) . ' (got: ' . var_export($converter, true) . ')';
+        }
+
+        $formats = $values['IMAGE_FORMATS'] ?? null;
+        if ($formats !== null) {
+            $list = self::formatList($formats);
+            if ($list === [] || count($list) !== count(self::entryList($formats)) || array_diff($list, self::IMAGE_FORMATS) !== []) {
+                $errors[] = 'IMAGE_FORMATS must list ' . implode(' and/or ', self::IMAGE_FORMATS) . ', separated by commas, each once (got: ' . var_export($formats, true) . ')';
+            }
+        }
+
+        $url = $values['IMAGE_API_URL'] ?? null;
+        if ($url !== null) {
+            $parts = parse_url($url);
+            if (filter_var($url, FILTER_VALIDATE_URL) === false || !is_array($parts)
+                || !in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)
+                || isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])
+            ) {
+                $errors[] = 'IMAGE_API_URL must be the http:// or https:// base URL of the conversion API, without credentials, query string or fragment (got: ' . var_export($url, true) . ')';
+            } elseif (strtolower($parts['scheme']) === 'http') {
+                $warnings[] = "WARNING: IMAGE_API_URL uses plain http://: the API key and the images\n"
+                    . 'travel in clear text. Use https:// outside a private network.';
+            }
+        }
+
+        $key = $values['IMAGE_API_KEY'] ?? null;
+        if ($key !== null && (strlen(trim($key)) < self::MIN_IMAGE_API_KEY_BYTES || trim($key) !== $key || preg_match('/\A[\x20-\x7E]+\z/', $key) !== 1)) {
+            $errors[] = 'IMAGE_API_KEY must be ' . self::MIN_IMAGE_API_KEY_BYTES . ' or more printable ASCII characters, without leading or trailing spaces';
+        }
+
+        $caFile = $values['IMAGE_API_CA_FILE'] ?? null;
+        if ($caFile !== null && (strncmp($caFile, '/', 1) !== 0 || !is_file($caFile) || !is_readable($caFile))) {
+            $errors[] = 'IMAGE_API_CA_FILE must be the absolute path of a readable PEM file (got: ' . var_export($caFile, true) . ')';
+        }
+
+        if ($converter === Config::CONVERTER_REMOTE) {
+            if ($url === null) {
+                $errors[] = 'IMAGE_API_URL must be set for IMAGE_CONVERTER "remote"';
+            }
+            if ($key === null) {
+                $errors[] = 'IMAGE_API_KEY must be set for IMAGE_CONVERTER "remote"';
+            }
+        } elseif (self::booleanOf($values['IMAGE_API_FALLBACK'] ?? 'false') === true) {
+            $warnings[] = 'NOTE: IMAGE_API_FALLBACK is only used with IMAGE_CONVERTER "remote".';
+        }
+
+        $widths = $values['RESIZE_WIDTHS'] ?? null;
+        if ($widths !== null) {
+            $list = self::widthList($widths);
+            $entries = self::entryList($widths);
+            if ($list === [] || count($list) !== count($entries) || count($list) !== count(array_unique($list)) || count($list) > self::MAX_RESIZE_WIDTHS) {
+                $errors[] = 'RESIZE_WIDTHS must list 1 to ' . self::MAX_RESIZE_WIDTHS . ' distinct widths in pixels, from 1 to '
+                    . self::MAX_RESIZE_WIDTH . ', separated by commas (got: ' . var_export($widths, true) . ')';
+            }
+            if (($values['RESIZE_KEY'] ?? null) === null) {
+                $errors[] = 'RESIZE_KEY must be set when RESIZE_WIDTHS is';
+            }
+            if ($converter === Config::CONVERTER_NONE) {
+                $errors[] = 'RESIZE_WIDTHS needs a converter: set IMAGE_CONVERTER to "local" or "remote"';
+            }
+        }
+        $resizeKey = $values['RESIZE_KEY'] ?? null;
+        if ($resizeKey !== null && (strlen($resizeKey) < self::MIN_RESIZE_KEY_BYTES || preg_match('/\A[\x21-\x7E]+\z/', $resizeKey) !== 1)) {
+            $errors[] = 'RESIZE_KEY must be ' . self::MIN_RESIZE_KEY_BYTES . ' or more printable ASCII characters without spaces';
+        }
+
+        return [$errors, $warnings];
     }
 
     /**

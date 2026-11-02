@@ -83,17 +83,85 @@ final class ConfigValidatorTest extends TestCase
                 ['IMAGE_CONVERSION_MODE' => 'gd'],
                 "IMAGE_CONVERSION_MODE must be one of: native, api, none (got: 'gd')",
             ],
-            'mode in upper case' => [
-                ['IMAGE_CONVERSION_MODE' => 'NATIVE'],
-                "IMAGE_CONVERSION_MODE must be one of: native, api, none (got: 'NATIVE')",
-            ],
             'api without server' => [
                 ['IMAGE_CONVERSION_MODE' => 'api', 'WEBP_API_KEY' => 'key'],
                 'WEBP_API_SERVER must be set for API mode',
             ],
-            'api without key' => [
-                ['IMAGE_CONVERSION_MODE' => 'api', 'WEBP_API_SERVER' => 'https://api.example.test'],
-                'WEBP_API_KEY must be set for API mode',
+            'unknown converter' => [
+                ['IMAGE_CONVERTER' => 'gd'],
+                "IMAGE_CONVERTER must be one of: none, local, remote (got: 'gd')",
+            ],
+            'converter in upper case' => [
+                ['IMAGE_CONVERTER' => 'LOCAL'],
+                "IMAGE_CONVERTER must be one of: none, local, remote (got: 'LOCAL')",
+            ],
+            'unknown format' => [
+                ['IMAGE_FORMATS' => 'avif,jxl'],
+                "IMAGE_FORMATS must list avif and/or webp, separated by commas, each once (got: 'avif,jxl')",
+            ],
+            'no format' => [
+                ['IMAGE_FORMATS' => ' , '],
+                "IMAGE_FORMATS must list avif and/or webp, separated by commas, each once (got: ' , ')",
+            ],
+            'conversion timeout above range' => [
+                ['IMAGE_CONVERSION_TIMEOUT' => '601'],
+                'IMAGE_CONVERSION_TIMEOUT must be between 1 and 600 (got: 601)',
+            ],
+            'remote without URL' => [
+                ['IMAGE_CONVERTER' => 'remote', 'IMAGE_API_KEY' => '0123456789abcdef'],
+                'IMAGE_API_URL must be set for IMAGE_CONVERTER "remote"',
+            ],
+            'remote without key' => [
+                ['IMAGE_CONVERTER' => 'remote', 'IMAGE_API_URL' => 'https://api.example.test'],
+                'IMAGE_API_KEY must be set for IMAGE_CONVERTER "remote"',
+            ],
+            'API URL with credentials' => [
+                ['IMAGE_API_URL' => 'https://user:pass@api.example.test'],
+                "IMAGE_API_URL must be the http:// or https:// base URL of the conversion API, without credentials, query string or fragment (got: 'https://user:pass@api.example.test')",
+            ],
+            'API URL with a query string' => [
+                ['IMAGE_API_URL' => 'https://api.example.test/?key=1'],
+                "IMAGE_API_URL must be the http:// or https:// base URL of the conversion API, without credentials, query string or fragment (got: 'https://api.example.test/?key=1')",
+            ],
+            'API key below 16 bytes' => [
+                ['IMAGE_API_KEY' => '0123456789abcde'],
+                'IMAGE_API_KEY must be 16 or more printable ASCII characters, without leading or trailing spaces',
+            ],
+            'API key with a control character' => [
+                ['IMAGE_API_KEY' => "0123456789abcdef\x01"],
+                'IMAGE_API_KEY must be 16 or more printable ASCII characters, without leading or trailing spaces',
+            ],
+            'relative CA file' => [
+                ['IMAGE_API_CA_FILE' => 'ca.pem'],
+                "IMAGE_API_CA_FILE must be the absolute path of a readable PEM file (got: 'ca.pem')",
+            ],
+            'resize widths without key' => [
+                ['IMAGE_CONVERTER' => 'local', 'RESIZE_WIDTHS' => '320'],
+                'RESIZE_KEY must be set when RESIZE_WIDTHS is',
+            ],
+            'resize widths without converter' => [
+                ['RESIZE_WIDTHS' => '320', 'RESIZE_KEY' => str_repeat('k', 32)],
+                'RESIZE_WIDTHS needs a converter: set IMAGE_CONVERTER to "local" or "remote"',
+            ],
+            'resize width of zero' => [
+                ['IMAGE_CONVERTER' => 'local', 'RESIZE_WIDTHS' => '0,320', 'RESIZE_KEY' => str_repeat('k', 32)],
+                "RESIZE_WIDTHS must list 1 to 16 distinct widths in pixels, from 1 to 16383, separated by commas (got: '0,320')",
+            ],
+            'resize width listed twice' => [
+                ['IMAGE_CONVERTER' => 'local', 'RESIZE_WIDTHS' => '320,320', 'RESIZE_KEY' => str_repeat('k', 32)],
+                "RESIZE_WIDTHS must list 1 to 16 distinct widths in pixels, from 1 to 16383, separated by commas (got: '320,320')",
+            ],
+            'resize width above range' => [
+                ['IMAGE_CONVERTER' => 'local', 'RESIZE_WIDTHS' => '16384', 'RESIZE_KEY' => str_repeat('k', 32)],
+                "RESIZE_WIDTHS must list 1 to 16 distinct widths in pixels, from 1 to 16383, separated by commas (got: '16384')",
+            ],
+            'too many resize widths' => [
+                ['IMAGE_CONVERTER' => 'local', 'RESIZE_WIDTHS' => implode(',', range(1, 17)), 'RESIZE_KEY' => str_repeat('k', 32)],
+                "RESIZE_WIDTHS must list 1 to 16 distinct widths in pixels, from 1 to 16383, separated by commas (got: '" . implode(',', range(1, 17)) . "')",
+            ],
+            'short resize key' => [
+                ['RESIZE_KEY' => str_repeat('k', 31)],
+                'RESIZE_KEY must be 32 or more printable ASCII characters without spaces',
             ],
             'integer with letters' => [['CACHE_EXPIRY' => '1d'], "CACHE_EXPIRY must be a non-negative integer (got: '1d')"],
             'negative integer' => [['NEGATIVE_CACHE_TTL' => '-1'], "NEGATIVE_CACHE_TTL must be a non-negative integer (got: '-1')"],
@@ -222,10 +290,19 @@ final class ConfigValidatorTest extends TestCase
             'origin with upper-case scheme' => [['SOURCE_ORIGIN' => 'HTTPS://origin.example.test']],
             'origin with path' => [['SOURCE_ORIGIN' => 'https://origin.example.test/assets/']],
             'native mode' => [['IMAGE_CONVERSION_MODE' => 'native']],
-            'api mode' => [[
-                'IMAGE_CONVERSION_MODE' => 'api',
-                'WEBP_API_SERVER' => 'https://api.example.test',
-                'WEBP_API_KEY' => 'key',
+            'local converter' => [['IMAGE_CONVERTER' => 'local', 'IMAGE_FORMATS' => 'WEBP']],
+            'remote converter' => [[
+                'IMAGE_CONVERTER' => 'remote',
+                'IMAGE_API_URL' => 'https://api.example.test/base/',
+                'IMAGE_API_KEY' => '0123456789abcdef',
+                'IMAGE_API_CA_FILE' => __FILE__,
+                'IMAGE_API_FALLBACK' => 'true',
+                'IMAGE_CONVERSION_TIMEOUT' => '600',
+            ]],
+            'resize' => [[
+                'IMAGE_CONVERTER' => 'local',
+                'RESIZE_WIDTHS' => '320, 640,16383',
+                'RESIZE_KEY' => str_repeat('k', 32),
             ]],
             'largest cache expiry' => [['CACHE_EXPIRY' => (string) PHP_INT_MAX]],
             'zero TTLs' => [['CACHE_EXPIRY' => '0', 'NEGATIVE_CACHE_TTL' => '0', 'NETWORK_ERROR_TTL' => '0']],
@@ -250,6 +327,25 @@ final class ConfigValidatorTest extends TestCase
             'purge keys' => [['PURGE_KEYS' => 'origin.example.test=0123456789abcdef, *=fedcba9876543210']],
             'trusted proxies' => [['TRUSTED_PROXIES' => '10.0.0.0/8, 192.0.2.10, 2001:db8::/32, ::ffff:198.51.100.0/120']],
         ];
+    }
+
+    public function testAPlainHttpApiIsWarnedAbout(): void
+    {
+        $validation = (new ConfigValidator())->validate(TestConfig::rawValues([
+            'IMAGE_CONVERTER' => 'remote',
+            'IMAGE_API_URL' => 'http://api.internal',
+            'IMAGE_API_KEY' => '0123456789abcdef',
+        ]));
+
+        self::assertTrue($validation->isValid());
+        self::assertSame(["WARNING: IMAGE_API_URL uses plain http://: the API key and the images\ntravel in clear text. Use https:// outside a private network."], $validation->getWarnings());
+    }
+
+    public function testTheApiKeyIsNeverQuoted(): void
+    {
+        $validation = (new ConfigValidator())->validate(TestConfig::rawValues(['IMAGE_API_KEY' => 'short-secret']));
+
+        self::assertStringNotContainsString('short-secret', implode("\n", $validation->getErrors()));
     }
 
     public function testSensitiveExtensionsAreWarnedAbout(): void
