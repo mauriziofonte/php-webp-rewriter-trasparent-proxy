@@ -363,8 +363,10 @@ final class ProxyKernel
             return $legacyHit;
         }
 
+        // For "X.webp", what the negative cache remembers is that neither it
+        // nor any raster sibling exists (fetchLegacy()).
         $remembered = $this->negativeCache->lookup($file);
-        if ($remembered !== null && $legacy === []) {
+        if ($remembered !== null) {
             return $this->notFound($path, $remembered);
         }
 
@@ -390,7 +392,7 @@ final class ProxyKernel
         $lease = $this->coalescer->isRecentlyUncacheable($key) ? null : $this->coalescer->enter($key, function () use ($location, $file, $legacy): bool {
             return $this->storage->isFile($file)
                 || $this->storage->isFile($location->managed()->getFile())
-                || ($legacy === [] && $this->negativeCache->lookup($file) !== null)
+                || $this->negativeCache->lookup($file) !== null
                 || $this->isLegacyStored($legacy);
         });
         if ($lease === false) {
@@ -403,7 +405,7 @@ final class ProxyKernel
                 return $legacyHit;
             }
             $remembered = $this->negativeCache->lookup($file);
-            if ($remembered !== null && $legacy === []) {
+            if ($remembered !== null) {
                 return $this->notFound($path, $remembered);
             }
             $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT)
@@ -417,15 +419,12 @@ final class ProxyKernel
                 return $shared;
             }
 
-            if ($remembered === null) {
-                $fetched = $this->fetch($request, $origin, $path, $query);
-                if ($fetched->isSuccessful()) {
-                    return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
-                }
-                if ($legacy === [] || !$fetched->isNotFound()) {
-                    return $this->failure($origin, $path, $location, $fetched);
-                }
-                $this->negativeCache->remember($file, 404);
+            $fetched = $this->fetch($request, $origin, $path, $query);
+            if ($fetched->isSuccessful()) {
+                return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
+            }
+            if ($legacy === [] || !$fetched->isNotFound()) {
+                return $this->failure($origin, $path, $location, $fetched);
             }
 
             return $this->fetchLegacy($request, $origin, $path, $query, $legacy, $location);
@@ -947,7 +946,8 @@ final class ProxyKernel
      * until one exists, then answers it as a fetched asset is answered: it
      * is streamed without being stored when the origin forbids storing it,
      * else stored in the tier its lifetime calls for; the 404 of "X.webp"
-     * when none exists. What it answers without storing is shared with the
+     * when none exists, which the negative cache then remembers for
+     * "X.webp" itself. What it answers without storing is shared with the
      * requests that wait on "X.webp".
      *
      * @param list<array{string, CacheLocation}> $siblings
@@ -992,6 +992,12 @@ final class ProxyKernel
 
             return $this->serveLegacy($request, $stored, $extension, ResponseFactory::CACHE_MISS, $maxAge);
         }
+
+        // Remembered last, and once for all the siblings: the next request
+        // answers 404 from this one entry, even when two of the entries of
+        // the siblings share a slot of the negative cache and evict each
+        // other.
+        $this->negativeCache->remember($webp->getFile(), 404);
 
         return $this->sharedError($webp, $path, ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
     }

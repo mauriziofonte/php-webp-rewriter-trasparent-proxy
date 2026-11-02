@@ -231,6 +231,30 @@ final class CacheLayoutTest extends TestCase
         self::assertCount(6, $this->origin->getRequests(), 'remembered by the negative cache');
     }
 
+    /**
+     * The negative cache keeps one entry per slot (the first three hex
+     * digits of the SHA-256 of the cache file). When the entries of two
+     * siblings share a slot, each evicts the other: before the URL was
+     * remembered on its own, every request fetched both again (the
+     * failure that a random test directory produced about once in 270
+     * runs). The directory is chosen so that two of them collide.
+     */
+    public function testALegacyWebpUrlWithoutSiblingIsRememberedWhenSiblingsShareASlot(): void
+    {
+        $public = $this->collidingPublicDirectory();
+        $kernel = TestKernel::create(TestConfig::create(), $public, $this->origin, null, new MemoryLogger());
+
+        $first = $kernel->handle(Request::create('https://cdn.example.test/images/none.webp'));
+        $count = count($this->origin->getRequests());
+        $second = $kernel->handle(Request::create('https://cdn.example.test/images/none.webp'));
+
+        self::assertSame(404, $first->getStatusCode());
+        self::assertSame(404, $second->getStatusCode());
+        self::assertSame(6, $count, 'the URL and its five raster siblings');
+        self::assertCount(5, (array) glob($public . '/' . TestKernel::STATE_DIRECTORY . '/negative/*.neg'), 'six entries in five slots');
+        self::assertCount(6, $this->origin->getRequests(), 'remembered by the negative cache');
+    }
+
     public function testAnExistingWebpIsNeverReplacedByASibling(): void
     {
         $this->origin->serve(self::ORIGIN . '/images/a.webp', 'REAL-WEBP');
@@ -317,6 +341,28 @@ final class CacheLayoutTest extends TestCase
     private function kernel(array $overrides = [], ?FakeWebpConverter $converter = null): ProxyKernel
     {
         return TestKernel::create(TestConfig::create($overrides), $this->directory->path(), $this->origin, $converter, new MemoryLogger());
+    }
+
+    /**
+     * A directory of the test directory, to serve as the public directory,
+     * where the cache files of two raster siblings of "/images/none.webp"
+     * share a slot of the negative cache, and no other entry does.
+     */
+    private function collidingPublicDirectory(): string
+    {
+        for ($attempt = 0; $attempt < 100000; ++$attempt) {
+            $public = $this->directory->path('public-' . $attempt);
+            $slots = [];
+            foreach (['webp', 'jpg', 'jpeg', 'png', 'gif', 'bmp'] as $extension) {
+                $slots[] = substr(hash('sha256', $public . '/_cache/cdn.example.test/images/none.' . $extension), 0, 3);
+            }
+            if (count(array_unique($slots)) === 5 && array_search($slots[0], array_slice($slots, 1), true) === false) {
+                mkdir($public);
+
+                return $public;
+            }
+        }
+        self::fail('no colliding directory found');
     }
 
     private function write(string $relativePath, string $contents): void
