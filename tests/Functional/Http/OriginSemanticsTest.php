@@ -255,6 +255,56 @@ final class OriginSemanticsTest extends TestCase
         self::assertSame(503, $this->kernel()->handle(Request::create(self::URL))->getStatusCode());
     }
 
+    /**
+     * RFC 9111 5.2.2.4: a no-cache response is never used without a
+     * successful validation, so the default stale-while-revalidate does
+     * not apply to it, and neither does any stale-if-error.
+     */
+    public function testANoCacheEntryIsValidatedBeforeEachUse(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'fresh();', ['cache-control' => 'no-cache', 'etag' => '"v1"']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(5);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::notModified([]));
+
+        $revalidated = $this->kernel()->handle(Request::create(self::URL));
+        self::assertSame('REVALIDATED', $revalidated->headers->get('x-cache-status'));
+        self::assertCount(2, $this->origin->getRequests());
+
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 503));
+        self::assertSame(503, $this->kernel()->handle(Request::create(self::URL))->getStatusCode());
+    }
+
+    /**
+     * RFC 9111 5.2.2.10: s-maxage implies proxy-revalidate, so an expired
+     * entry is not served stale when the origin fails.
+     */
+    public function testSMaxageForbidsServingStale(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'shared();', ['cache-control' => 's-maxage=60']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(500);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 503));
+
+        self::assertSame(503, $this->kernel()->handle(Request::create(self::URL))->getStatusCode());
+    }
+
+    /**
+     * Without a stale-if-error of the origin, STALE_IF_ERROR bounds how
+     * long an expired entry outlives a failing origin.
+     */
+    public function testStaleIfErrorDefaultsToTheConfiguredBound(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+        $this->kernel(['STALE_IF_ERROR' => '100'])->handle(Request::create(self::URL));
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_TIMEOUT, 0));
+
+        $this->age(150);
+        self::assertSame('STALE', $this->kernel(['STALE_IF_ERROR' => '100'])->handle(Request::create(self::URL))->headers->get('x-cache-status'));
+        $this->age(100);
+        self::assertSame(503, $this->kernel(['STALE_IF_ERROR' => '100'])->handle(Request::create(self::URL))->getStatusCode());
+    }
+
     public function testAnEntryGoneFromTheOriginIsRemoved(): void
     {
         $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);

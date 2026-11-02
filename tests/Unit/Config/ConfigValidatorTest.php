@@ -102,6 +102,7 @@ final class ConfigValidatorTest extends TestCase
             'negative TTL above range' => [['NEGATIVE_CACHE_TTL' => '86401'], 'NEGATIVE_CACHE_TTL must be between 0 and 86400 (got: 86401)'],
             'revalidation threshold above range' => [['CACHE_REVALIDATE_BELOW' => '31536001'], 'CACHE_REVALIDATE_BELOW must be between 0 and 31536000 (got: 31536001)'],
             'stale-while-revalidate above range' => [['STALE_WHILE_REVALIDATE' => '86401'], 'STALE_WHILE_REVALIDATE must be between 0 and 86400 (got: 86401)'],
+            'stale-if-error above range' => [['STALE_IF_ERROR' => '604801'], 'STALE_IF_ERROR must be between 0 and 604800 (got: 604801)'],
             'network TTL above range' => [['NETWORK_ERROR_TTL' => '3601'], 'NETWORK_ERROR_TTL must be between 0 and 3600 (got: 3601)'],
             'breaker threshold of zero' => [['CIRCUIT_BREAKER_THRESHOLD' => '0'], 'CIRCUIT_BREAKER_THRESHOLD must be between 1 and 1000 (got: 0)'],
             'timeout below range' => [['UPSTREAM_TIMEOUT' => '0'], 'UPSTREAM_TIMEOUT must be between 1 and 300 (got: 0)'],

@@ -109,6 +109,11 @@ final class Config
     /**
      * @var int
      */
+    private $staleIfError;
+
+    /**
+     * @var int
+     */
     private $negativeCacheTtl;
 
     /**
@@ -215,6 +220,7 @@ final class Config
         $config->cacheExpiry = self::integer($values, 'CACHE_EXPIRY');
         $config->cacheRevalidateBelow = self::integer($values, 'CACHE_REVALIDATE_BELOW');
         $config->staleWhileRevalidate = self::integer($values, 'STALE_WHILE_REVALIDATE');
+        $config->staleIfError = self::integer($values, 'STALE_IF_ERROR');
         $config->negativeCacheTtl = self::integer($values, 'NEGATIVE_CACHE_TTL');
         $config->networkErrorTtl = self::integer($values, 'NETWORK_ERROR_TTL');
         $config->circuitBreakerThreshold = self::integer($values, 'CIRCUIT_BREAKER_THRESHOLD');
@@ -270,6 +276,7 @@ final class Config
             'CACHE_EXPIRY' => $this->cacheExpiry,
             'CACHE_REVALIDATE_BELOW' => $this->cacheRevalidateBelow,
             'STALE_WHILE_REVALIDATE' => $this->staleWhileRevalidate,
+            'STALE_IF_ERROR' => $this->staleIfError,
             'NEGATIVE_CACHE_TTL' => $this->negativeCacheTtl,
             'NETWORK_ERROR_TTL' => $this->networkErrorTtl,
             'CIRCUIT_BREAKER_THRESHOLD' => $this->circuitBreakerThreshold,
@@ -419,6 +426,16 @@ final class Config
     public function getStaleWhileRevalidate(): int
     {
         return $this->staleWhileRevalidate;
+    }
+
+    /**
+     * STALE_IF_ERROR: seconds an expired entry is still served while the
+     * origin fails to revalidate it, when the origin sets no
+     * stale-if-error of its own.
+     */
+    public function getStaleIfError(): int
+    {
+        return $this->staleIfError;
     }
 
     /**

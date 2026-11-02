@@ -592,7 +592,7 @@ final class ProxyKernel
         $fetched = $this->origin->fetch($this->originRequest($request, $origin, $path, $query, $metadata === null ? [] : $metadata->conditionalHeaders()));
         $now = time();
         if ($fetched->isNotModified() && $metadata !== null) {
-            $renewed = $metadata->revalidated($fetched->getHeaders(), $now, $this->config->getStaleWhileRevalidate());
+            $renewed = $metadata->revalidated($fetched->getHeaders(), $now, $this->config->getStaleWhileRevalidate(), $this->config->getStaleIfError());
             $this->storage->write($managed->getMetadataFile(), $renewed->toJson());
             $this->circuitBreaker->reset($breakerKey);
 
@@ -755,7 +755,7 @@ final class ProxyKernel
         if (!$isManaged) {
             return [$target, null];
         }
-        $metadata = EntryMetadata::fromResponse($fetched->getHeaders(), $freshness, $now, $this->config->getStaleWhileRevalidate());
+        $metadata = EntryMetadata::fromResponse($fetched->getHeaders(), $freshness, $now, $this->config->getStaleWhileRevalidate(), $this->config->getStaleIfError());
         if (!$this->storage->write($target->getMetadataFile(), $metadata->toJson())) {
             return ResponseFactory::ERROR_CACHE_FILE;
         }

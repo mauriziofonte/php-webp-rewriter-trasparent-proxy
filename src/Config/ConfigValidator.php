@@ -43,6 +43,7 @@ final class ConfigValidator
         'CACHE_EXPIRY' => [0, PHP_INT_MAX],
         'CACHE_REVALIDATE_BELOW' => [0, 31536000],
         'STALE_WHILE_REVALIDATE' => [0, 86400],
+        'STALE_IF_ERROR' => [0, 604800],
         'NEGATIVE_CACHE_TTL' => [0, 86400],
         'NETWORK_ERROR_TTL' => [0, 3600],
         'CIRCUIT_BREAKER_THRESHOLD' => [1, 1000],

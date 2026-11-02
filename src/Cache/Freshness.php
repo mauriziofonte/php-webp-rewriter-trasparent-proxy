@@ -15,7 +15,10 @@ namespace Mfonte\ProxyCdn\Cache;
  *   without any of them the lifetime is unknown (null), and the entry is
  *   kept until it is purged, as in 2.x;
  * - "stale-while-revalidate" and "stale-if-error" extend the use of an
- *   expired entry; "must-revalidate" and "proxy-revalidate" forbid it.
+ *   expired entry; "must-revalidate", "proxy-revalidate", "s-maxage"
+ *   (which implies proxy-revalidate, RFC 9111 5.2.2.10) and "no-cache"
+ *   without field names (no use without a successful validation, 5.2.2.4)
+ *   forbid it.
  *
  * Immutable.
  */
@@ -69,7 +72,11 @@ final class Freshness
         $directives = self::directives($headers['cache-control'] ?? '');
         $noStore = isset($directives['no-store']);
         $storable = !$noStore && !isset($directives['private']);
-        $mustRevalidate = isset($directives['must-revalidate']) || isset($directives['proxy-revalidate']);
+        $noCache = isset($directives['no-cache']) && $directives['no-cache'] === '';
+        $mustRevalidate = $noCache
+            || isset($directives['must-revalidate'])
+            || isset($directives['proxy-revalidate'])
+            || self::seconds($directives, 's-maxage') !== null;
 
         $lifetime = self::seconds($directives, 's-maxage') ?? self::seconds($directives, 'max-age');
         if ($lifetime === null && isset($headers['expires'])) {
@@ -78,7 +85,7 @@ final class Freshness
             // An invalid Expires, "0" included, means already expired.
             $lifetime = $expires === false ? 0 : max(0, $expires - ($date === false ? $now : $date));
         }
-        if (isset($directives['no-cache']) && $directives['no-cache'] === '') {
+        if ($noCache) {
             $lifetime = 0;
         }
         if ($lifetime !== null && isset($headers['age']) && preg_match('/\A\s*([0-9]{1,10})\s*\z/', $headers['age'], $match) === 1) {
@@ -139,7 +146,8 @@ final class Freshness
     }
 
     /**
-     * Whether an expired entry must never be served without revalidation.
+     * Whether an expired entry must never be served without a successful
+     * revalidation: must-revalidate, proxy-revalidate, s-maxage, no-cache.
      */
     public function mustRevalidate(): bool
     {

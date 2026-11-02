@@ -35,6 +35,7 @@ final class TestConfig
             'CACHE_EXPIRY' => '31536000',
             'CACHE_REVALIDATE_BELOW' => null,
             'STALE_WHILE_REVALIDATE' => null,
+            'STALE_IF_ERROR' => null,
             'NEGATIVE_CACHE_TTL' => '300',
             'NETWORK_ERROR_TTL' => '30',
             'UPSTREAM_TIMEOUT' => '30',

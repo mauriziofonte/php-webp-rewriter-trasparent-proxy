@@ -33,6 +33,7 @@ final class ConfigTest extends TestCase
         self::assertSame(200, $config->getNegativeCacheTtl());
         self::assertSame(600, $config->getCacheRevalidateBelow());
         self::assertSame(30, $config->getStaleWhileRevalidate());
+        self::assertSame(900, $config->getStaleIfError());
         self::assertSame(300, $config->getNetworkErrorTtl());
         self::assertSame(40, $config->getUpstreamTimeout());
         self::assertSame(5, $config->getUpstreamConnectTimeout());
@@ -185,6 +186,7 @@ final class ConfigTest extends TestCase
             'CACHE_EXPIRY' => 100,
             'CACHE_REVALIDATE_BELOW' => 600,
             'STALE_WHILE_REVALIDATE' => 30,
+            'STALE_IF_ERROR' => 900,
             'NEGATIVE_CACHE_TTL' => 200,
             'NETWORK_ERROR_TTL' => 300,
             'CIRCUIT_BREAKER_THRESHOLD' => 3,

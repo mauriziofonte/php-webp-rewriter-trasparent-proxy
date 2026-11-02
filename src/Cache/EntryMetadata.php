@@ -30,7 +30,7 @@ final class EntryMetadata
     private $staleWhileRevalidate;
 
     /**
-     * @var int|null
+     * @var int
      */
     private $staleIfError;
 
@@ -48,16 +48,16 @@ final class EntryMetadata
      * @param int         $validatedAt          Unix time the origin last confirmed the entry
      * @param int         $lifetime             seconds it stays fresh from then
      * @param int         $staleWhileRevalidate seconds it may then be served while it is revalidated in the background
-     * @param int|null    $staleIfError         seconds it may then be served when the origin fails; null without limit
+     * @param int         $staleIfError         seconds it may then be served when the origin fails
      * @param string|null $etag                 the ETag of the origin, for If-None-Match
      * @param string|null $lastModified         the Last-Modified of the origin, for If-Modified-Since
      */
-    public function __construct(int $validatedAt, int $lifetime, int $staleWhileRevalidate, ?int $staleIfError, ?string $etag, ?string $lastModified)
+    public function __construct(int $validatedAt, int $lifetime, int $staleWhileRevalidate, int $staleIfError, ?string $etag, ?string $lastModified)
     {
         $this->validatedAt = $validatedAt;
         $this->lifetime = max(0, $lifetime);
         $this->staleWhileRevalidate = max(0, $staleWhileRevalidate);
-        $this->staleIfError = $staleIfError === null ? null : max(0, $staleIfError);
+        $this->staleIfError = max(0, $staleIfError);
         $this->etag = $etag;
         $this->lastModified = $lastModified;
     }
@@ -67,8 +67,9 @@ final class EntryMetadata
      *
      * @param array<string, string> $headers                     the response headers, keyed by lower-case name
      * @param int                   $defaultStaleWhileRevalidate STALE_WHILE_REVALIDATE, when the origin sets none
+     * @param int                   $defaultStaleIfError         STALE_IF_ERROR, when the origin sets none
      */
-    public static function fromResponse(array $headers, Freshness $freshness, int $now, int $defaultStaleWhileRevalidate): self
+    public static function fromResponse(array $headers, Freshness $freshness, int $now, int $defaultStaleWhileRevalidate, int $defaultStaleIfError): self
     {
         $mustRevalidate = $freshness->mustRevalidate();
 
@@ -76,7 +77,7 @@ final class EntryMetadata
             $now,
             (int) $freshness->getLifetime(),
             $mustRevalidate ? 0 : ($freshness->getStaleWhileRevalidate() ?? $defaultStaleWhileRevalidate),
-            $mustRevalidate ? 0 : $freshness->getStaleIfError(),
+            $mustRevalidate ? 0 : ($freshness->getStaleIfError() ?? $defaultStaleIfError),
             self::validator($headers['etag'] ?? null),
             self::validator($headers['last-modified'] ?? null)
         );
@@ -88,10 +89,9 @@ final class EntryMetadata
     public static function fromJson(string $json): ?self
     {
         $data = json_decode($json, true);
-        if (!is_array($data) || !is_int($data['validated_at'] ?? null) || !is_int($data['lifetime'] ?? null) || !is_int($data['swr'] ?? null)) {
+        if (!is_array($data) || !is_int($data['validated_at'] ?? null) || !is_int($data['lifetime'] ?? null) || !is_int($data['swr'] ?? null) || !is_int($data['sie'] ?? null)) {
             return null;
         }
-        $staleIfError = $data['sie'] ?? null;
         $etag = $data['etag'] ?? null;
         $lastModified = $data['last_modified'] ?? null;
 
@@ -99,7 +99,7 @@ final class EntryMetadata
             $data['validated_at'],
             $data['lifetime'],
             $data['swr'],
-            is_int($staleIfError) ? $staleIfError : null,
+            $data['sie'],
             is_string($etag) ? $etag : null,
             is_string($lastModified) ? $lastModified : null
         );
@@ -123,14 +123,15 @@ final class EntryMetadata
      *
      * @param array<string, string> $headers                     the headers of the 304, keyed by lower-case name
      * @param int                   $defaultStaleWhileRevalidate STALE_WHILE_REVALIDATE, when the origin sets none
+     * @param int                   $defaultStaleIfError         STALE_IF_ERROR, when the origin sets none
      */
-    public function revalidated(array $headers, int $now, int $defaultStaleWhileRevalidate): self
+    public function revalidated(array $headers, int $now, int $defaultStaleWhileRevalidate, int $defaultStaleIfError): self
     {
         $freshness = Freshness::fromHeaders($headers, $now);
         if ($freshness->getLifetime() === null) {
             return new self($now, $this->lifetime, $this->staleWhileRevalidate, $this->staleIfError, self::validator($headers['etag'] ?? null) ?? $this->etag, self::validator($headers['last-modified'] ?? null) ?? $this->lastModified);
         }
-        $updated = self::fromResponse($headers, $freshness, $now, $defaultStaleWhileRevalidate);
+        $updated = self::fromResponse($headers, $freshness, $now, $defaultStaleWhileRevalidate, $defaultStaleIfError);
 
         return new self($now, $updated->lifetime, $updated->staleWhileRevalidate, $updated->staleIfError, $updated->etag ?? $this->etag, $updated->lastModified ?? $this->lastModified);
     }
@@ -158,7 +159,7 @@ final class EntryMetadata
      */
     public function isWithinStaleIfError(int $now): bool
     {
-        return $this->staleIfError === null || $now - $this->validatedAt < $this->lifetime + $this->staleIfError;
+        return $now - $this->validatedAt < $this->lifetime + $this->staleIfError;
     }
 
     /**
@@ -184,7 +185,7 @@ final class EntryMetadata
         return $this->staleWhileRevalidate;
     }
 
-    public function getStaleIfError(): ?int
+    public function getStaleIfError(): int
     {
         return $this->staleIfError;
     }
