@@ -393,6 +393,10 @@ for s in "${stacks[@]}"; do
     fpm_log="$workdir/$s/logs/php-fpm-access.log"
     log "Warm-up: $s + PHP-FPM $php_version"
     origin_reset
+    # The rules form under test still redirects plain HTTP to https (with
+    # Apache, the rules of public/.htaccess included in the virtual host).
+    redirect="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' -H "Host: $s" "$local_base$asset")"
+    expect "$s: plain HTTP is redirected to https" "$redirect" "301 https://$s$asset"
     for url in "$asset" "$asset?v=1&zz=1"; do
         curl -fsS -o /dev/null -H "Host: $s" -H 'X-Forwarded-Proto: https' "$local_base$url" || die "$s: cannot fetch $url"
         status="$(curl -sS -o /dev/null -D - -H "Host: $s" -H 'X-Forwarded-Proto: https' "$local_base$url" |
