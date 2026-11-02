@@ -6,6 +6,7 @@ namespace Mfonte\ProxyCdn\Config;
 
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 use Mfonte\ProxyCdn\Observability\JsonLogger;
+use Mfonte\ProxyCdn\Observability\MetricsAuthenticator;
 
 /**
  * The operations keys of the configuration (PRX-9), validated and
@@ -19,6 +20,10 @@ use Mfonte\ProxyCdn\Observability\JsonLogger;
  *   Not set: logs/proxy.log of the project, as before.
  * - LOG_LEVEL: the least severe PSR-3 level that is logged. Not set:
  *   "debug" with DEBUG, "notice" otherwise, as before.
+ * - METRICS_KEYS: the keys a Prometheus scraper sends as "Authorization:
+ *   Bearer <key>" on GET /metrics, 16 or more characters, or
+ *   "sha256:<hex digest>" (MetricsAuthenticator). Not set: /metrics is
+ *   not served.
  * - METRICS_STORE: "file" (counters in one locked file of var/metrics,
  *   shared by every PHP process of the host) or "off". Default: file.
  *
@@ -32,6 +37,7 @@ final class OperationsConfig
     public const KEYS = [
         'LOG_FILE',
         'LOG_LEVEL',
+        'METRICS_KEYS',
         'METRICS_STORE',
     ];
 
@@ -52,6 +58,11 @@ final class OperationsConfig
      * @var string|null
      */
     private $logLevel;
+
+    /**
+     * @var list<string>
+     */
+    private $metricsKeys;
 
     /**
      * @var string
@@ -85,6 +96,11 @@ final class OperationsConfig
             $errors[] = 'LOG_LEVEL must be one of: debug, info, notice, warning, error, critical, alert, emergency (got: ' . var_export($logLevel, true) . ')';
         }
 
+        // The value holds secrets: the error never quotes it.
+        if (MetricsAuthenticator::parseKeys(ConfigValidator::entryList($values['METRICS_KEYS'] ?? null)) === null) {
+            $errors[] = 'METRICS_KEYS must list keys separated by commas, each ' . MetricsAuthenticator::MIN_KEY_BYTES
+                . ' or more printable ASCII characters without spaces or commas, or "sha256:" and the 64 hexadecimal digits of its SHA-256';
+        }
         $store = $values['METRICS_STORE'] ?? null;
         if ($store !== null && !in_array($store, [self::METRICS_STORE_FILE, self::METRICS_STORE_OFF], true)) {
             $errors[] = 'METRICS_STORE must be one of: file, off (got: ' . var_export($store, true) . ')';
@@ -110,6 +126,7 @@ final class OperationsConfig
         return [
             'LOG_FILE' => $value('LOG_FILE'),
             'LOG_LEVEL' => $value('LOG_LEVEL'),
+            'METRICS_KEYS' => ConfigValidator::entryList($value('METRICS_KEYS')),
             'METRICS_STORE' => (string) $value('METRICS_STORE'),
         ];
     }
@@ -127,6 +144,7 @@ final class OperationsConfig
         $settings = new self();
         $settings->logFile = self::optionalString($values, 'LOG_FILE');
         $settings->logLevel = self::optionalString($values, 'LOG_LEVEL');
+        $settings->metricsKeys = self::stringList($values, 'METRICS_KEYS');
         $settings->metricsStore = (string) self::optionalString($values, 'METRICS_STORE');
 
         if ($settings->logLevel !== null && !JsonLogger::isLevel($settings->logLevel)) {
@@ -134,6 +152,9 @@ final class OperationsConfig
         }
         if (!in_array($settings->metricsStore, [self::METRICS_STORE_FILE, self::METRICS_STORE_OFF], true)) {
             throw new InvalidConfigurationException(['METRICS_STORE has an unknown value']);
+        }
+        if (MetricsAuthenticator::parseKeys($settings->metricsKeys) === null) {
+            throw new InvalidConfigurationException(['METRICS_KEYS must be a list of keys']);
         }
 
         return $settings;
@@ -149,6 +170,7 @@ final class OperationsConfig
         return [
             'LOG_FILE' => $this->logFile,
             'LOG_LEVEL' => $this->logLevel,
+            'METRICS_KEYS' => $this->metricsKeys,
             'METRICS_STORE' => $this->metricsStore,
         ];
     }
@@ -169,6 +191,17 @@ final class OperationsConfig
     public function getLogLevel(): ?string
     {
         return $this->logLevel;
+    }
+
+    /**
+     * METRICS_KEYS: the keys (or "sha256:" digests) accepted on /metrics;
+     * empty when /metrics is not served.
+     *
+     * @return list<string>
+     */
+    public function getMetricsKeys(): array
+    {
+        return $this->metricsKeys;
     }
 
     /**
@@ -195,5 +228,29 @@ final class OperationsConfig
         }
 
         return $value;
+    }
+
+    /**
+     * @param array<mixed> $values
+     *
+     * @throws InvalidConfigurationException
+     *
+     * @return list<string>
+     */
+    private static function stringList(array $values, string $key): array
+    {
+        $value = $values[$key] ?? null;
+        if (!is_array($value) || array_values($value) !== $value) {
+            throw new InvalidConfigurationException([$key . ' must be a list of strings']);
+        }
+        $list = [];
+        foreach ($value as $item) {
+            if (!is_string($item) || $item === '') {
+                throw new InvalidConfigurationException([$key . ' must be a list of strings']);
+            }
+            $list[] = $item;
+        }
+
+        return $list;
     }
 }

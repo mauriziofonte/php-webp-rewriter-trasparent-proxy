@@ -7,6 +7,7 @@ namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 use Mfonte\ProxyCdn\Http\EdgeKernel;
 use Mfonte\ProxyCdn\Http\EdgeKernelFactory;
 use Mfonte\ProxyCdn\Http\RequestId;
+use Mfonte\ProxyCdn\Observability\Metrics;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
@@ -17,7 +18,8 @@ use Symfony\Component\HttpFoundation\Response;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
- * EdgeKernel in-process: /healthz and the request ID around ProxyKernel.
+ * EdgeKernel in-process: /healthz, /metrics and the request ID around
+ * ProxyKernel.
  *
  * @covers \Mfonte\ProxyCdn\Http\EdgeKernel
  * @covers \Mfonte\ProxyCdn\Http\EdgeKernelFactory
@@ -27,6 +29,8 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 final class EdgeKernelTest extends TestCase
 {
     private const ORIGIN = 'https://origin.example.test';
+
+    private const METRICS_KEY = 'metrics-key-0123456789';
 
     /**
      * @var TemporaryDirectory
@@ -114,6 +118,79 @@ final class EdgeKernelTest extends TestCase
     }
 
     /**
+     * Without METRICS_KEYS the path is an asset path like any other: the
+     * proxy answers it as ProxyKernel does.
+     */
+    public function testMetricsAreNotServedWithoutKeys(): void
+    {
+        $response = $this->kernel()->handle(self::request('https://cdn.example.test/metrics', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::METRICS_KEY]));
+
+        self::assertSame(404, $response->getStatusCode());
+        self::assertStringNotContainsString('proxy_cdn_', (string) $response->getContent());
+    }
+
+    public function testMetricsNeedAKey(): void
+    {
+        $kernel = $this->kernel(['METRICS_KEYS' => self::METRICS_KEY]);
+
+        $anonymous = $kernel->handle(self::request('https://cdn.example.test/metrics'));
+        $wrong = $kernel->handle(self::request('https://cdn.example.test/metrics', ['HTTP_AUTHORIZATION' => 'Bearer purge-secret-0123456789']));
+
+        self::assertSame(401, $anonymous->getStatusCode());
+        self::assertSame('Bearer realm="proxy-cdn metrics"', $anonymous->headers->get('WWW-Authenticate'));
+        self::assertSame(401, $wrong->getStatusCode());
+        self::assertStringNotContainsString('proxy_cdn_', (string) $wrong->getContent());
+    }
+
+    /**
+     * The requests and origin fetches of every PHP process are counted in
+     * the shared store and rendered for a scraper; nothing in the
+     * exposition names a path, a host or a version.
+     */
+    public function testMetricsCountTheRequestsOfEveryProcess(): void
+    {
+        $overrides = ['METRICS_KEYS' => self::METRICS_KEY];
+        $this->serveAndTerminate($overrides, 'https://cdn.example.test/js/app.js');
+        $this->serveAndTerminate($overrides, 'https://cdn.example.test/js/app.js');
+        $this->serveAndTerminate($overrides, 'https://cdn.example.test/js/missing.js');
+
+        $kernel = $this->kernel($overrides);
+        $scrape = $kernel->handle(self::request('https://cdn.example.test/metrics', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::METRICS_KEY]));
+        $text = (string) $scrape->getContent();
+
+        self::assertSame(200, $scrape->getStatusCode());
+        self::assertSame(EdgeKernel::METRICS_CONTENT_TYPE, $scrape->headers->get('Content-Type'));
+        self::assertStringContainsString("proxy_cdn_up 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_metrics_available 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_requests_total{method=\"GET\",cache=\"MISS\",status=\"200\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_requests_total{method=\"GET\",cache=\"HIT\",status=\"200\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_requests_total{method=\"GET\",cache=\"none\",status=\"404\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_origin_fetches_total{outcome=\"success\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_origin_fetches_total{outcome=\"not_found\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_request_duration_seconds_count{cache=\"MISS\"} 1\n", $text);
+        self::assertStringNotContainsString('app.js', $text);
+        self::assertStringNotContainsString('example.test', $text);
+        self::assertStringNotContainsString($this->directory->path(), $text);
+        self::assertSame(1, preg_match_all('/^# TYPE proxy_cdn_requests_total counter$/m', $text));
+    }
+
+    /**
+     * With METRICS_STORE=off nothing is written to var/metrics/, and
+     * /metrics only renders the gauges.
+     */
+    public function testMetricsCanBeTurnedOff(): void
+    {
+        $overrides = ['METRICS_KEYS' => self::METRICS_KEY, 'METRICS_STORE' => 'off'];
+        $this->serveAndTerminate($overrides, 'https://cdn.example.test/js/app.js');
+
+        $text = (string) $this->kernel($overrides)->handle(self::request('https://cdn.example.test/metrics', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::METRICS_KEY]))->getContent();
+
+        self::assertStringContainsString("proxy_cdn_up 1\n", $text);
+        self::assertStringNotContainsString('proxy_cdn_requests_total', $text);
+        self::assertDirectoryDoesNotExist($this->directory->path('var/metrics'));
+    }
+
+    /**
      * Any other request is ProxyKernel's: same status, headers and body.
      */
     public function testOtherRequestsAreAnsweredByTheProxyKernel(): void
@@ -123,6 +200,16 @@ final class EdgeKernelTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('MISS', $response->headers->get('X-Cache-Status'));
         self::assertSame('console.log(1);', self::body($response));
+    }
+
+    /**
+     * @param array<string, string|null> $overrides
+     */
+    private function serveAndTerminate(array $overrides, string $url): void
+    {
+        $kernel = $this->kernel($overrides);
+        $kernel->handle(self::request($url));
+        $kernel->terminate();
     }
 
     /**
@@ -138,7 +225,8 @@ final class EdgeKernelTest extends TestCase
             $this->directory->path('var'),
             $this->origin,
             null,
-            $this->logger
+            $this->logger,
+            Metrics::fromConfig($config, $this->directory->path('var'))
         );
     }
 

@@ -5,8 +5,8 @@ declare(strict_types=1);
 /*
  * Front controller of the standalone proxy: the web server routes here every
  * request it cannot serve from the cache (see public/.htaccess). It builds
- * the kernel with EdgeKernelFactory (ProxyKernel with /healthz and the
- * request ID) and sends its response; a host application can mount
+ * the kernel with EdgeKernelFactory (ProxyKernel with /healthz, /metrics and
+ * the request ID) and sends its response; a host application can mount
  * Mfonte\ProxyCdn\Http\ProxyKernel or EdgeKernel the same way. Every log
  * entry of the request carries its ID (LOG_FILE, LOG_LEVEL).
  */
@@ -21,6 +21,7 @@ use Mfonte\ProxyCdn\Http\RequestId;
 use Mfonte\ProxyCdn\Http\ResponseFactory;
 use Mfonte\ProxyCdn\Image\ImageConverterFactory;
 use Mfonte\ProxyCdn\Observability\JsonLogger;
+use Mfonte\ProxyCdn\Observability\Metrics;
 use Mfonte\ProxyCdn\Origin\HttpOriginFetcher;
 use Psr\Log\LogLevel;
 use Symfony\Component\HttpFoundation\Request;
@@ -69,7 +70,8 @@ try {
         $projectRoot . '/var',
         HttpOriginFetcher::fromConfig($config, $logger),
         ImageConverterFactory::create($config, $projectRoot . '/var', $logger, $storage),
-        $logger
+        $logger,
+        Metrics::fromConfig($config, $projectRoot . '/var')
     );
     $response = $kernel->handle($request);
 } catch (\Throwable $exception) {

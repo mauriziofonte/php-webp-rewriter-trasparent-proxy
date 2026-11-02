@@ -25,6 +25,7 @@ final class OperationsConfigTest extends TestCase
 
         self::assertNull($operations->getLogFile());
         self::assertNull($operations->getLogLevel());
+        self::assertSame([], $operations->getMetricsKeys());
         self::assertSame(OperationsConfig::METRICS_STORE_FILE, $operations->getMetricsStore());
     }
 
@@ -33,11 +34,13 @@ final class OperationsConfigTest extends TestCase
         $operations = TestConfig::create([
             'LOG_FILE' => '/var/log/proxy-cdn/proxy.log',
             'LOG_LEVEL' => 'warning',
+            'METRICS_KEYS' => ' metrics-key-0123456789 , sha256:' . str_repeat('AB', 32),
             'METRICS_STORE' => 'off',
         ])->getOperations();
 
         self::assertSame('/var/log/proxy-cdn/proxy.log', $operations->getLogFile());
         self::assertSame('warning', $operations->getLogLevel());
+        self::assertSame(['metrics-key-0123456789', 'sha256:' . str_repeat('AB', 32)], $operations->getMetricsKeys());
         self::assertSame('off', $operations->getMetricsStore());
     }
 
@@ -64,8 +67,22 @@ final class OperationsConfigTest extends TestCase
         return [
             'relative log file' => [['LOG_FILE' => 'logs/proxy.log'], 'LOG_FILE must be'],
             'unknown log level' => [['LOG_LEVEL' => 'verbose'], 'LOG_LEVEL must be'],
+            'short metrics key' => [['METRICS_KEYS' => 'short'], 'METRICS_KEYS must'],
+            'metrics key with space' => [['METRICS_KEYS' => 'a key with spaces inside'], 'METRICS_KEYS must'],
+            'bad digest' => [['METRICS_KEYS' => 'sha256:abc'], 'METRICS_KEYS must'],
             'unknown store' => [['METRICS_STORE' => 'apcu'], 'METRICS_STORE must'],
         ];
+    }
+
+    /**
+     * The secrets of METRICS_KEYS never appear in an error.
+     */
+    public function testAnInvalidMetricsKeyIsNotQuoted(): void
+    {
+        $validation = (new ConfigValidator())->validate(TestConfig::rawValues(['METRICS_KEYS' => 'valid-metrics-key-0001, tiny-secret']));
+
+        self::assertStringNotContainsString('tiny-secret', implode("\n", $validation->getErrors()));
+        self::assertStringNotContainsString('valid-metrics-key-0001', implode("\n", $validation->getErrors()));
     }
 
     /**
@@ -73,7 +90,9 @@ final class OperationsConfigTest extends TestCase
      */
     public function testTheValuesRoundTrip(): void
     {
-        $config = TestConfig::create(['LOG_FILE' => 'stderr', 'LOG_LEVEL' => 'info']);
+        $config = TestConfig::create([
+            'METRICS_KEYS' => 'metrics-key-0123456789',
+        ]);
 
         self::assertSame($config->getOperations()->toArray(), OperationsConfig::fromArray($config->toArray())->toArray());
         self::assertSame(OperationsConfig::KEYS, array_keys($config->getOperations()->toArray()));

@@ -8,13 +8,18 @@ use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\ImageConverter;
 use Mfonte\ProxyCdn\Observability\HealthCheck;
+use Mfonte\ProxyCdn\Observability\MeteredOriginFetcher;
+use Mfonte\ProxyCdn\Observability\Metrics;
+use Mfonte\ProxyCdn\Observability\MetricsAuthenticator;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Psr\Log\LoggerInterface;
 
 /**
  * Builds the EdgeKernel of the front controller around the ProxyKernel of
- * ProxyKernelFactory, with the same arguments: /healthz checks the cache
- * and state directories.
+ * ProxyKernelFactory, with the same arguments plus the Metrics of the
+ * request: the origin fetches are counted (MeteredOriginFetcher), /healthz
+ * checks the cache and state directories, and /metrics is served when
+ * METRICS_KEYS is set.
  */
 final class EdgeKernelFactory
 {
@@ -29,21 +34,25 @@ final class EdgeKernelFactory
         string $stateDirectory,
         OriginFetcher $origin,
         ?ImageConverter $converter,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        Metrics $metrics
     ): EdgeKernel {
         $stateDirectory = rtrim($stateDirectory, '/');
         $kernel = ProxyKernelFactory::create(
             $config,
             $publicDirectory,
             $stateDirectory,
-            $origin,
+            new MeteredOriginFetcher($origin, $metrics),
             $converter,
             $logger
         );
 
         return new EdgeKernel(
             $kernel,
-            new HealthCheck(rtrim($publicDirectory, '/') . '/' . CacheKeyResolver::CACHE_DIRECTORY, $stateDirectory)
+            new HealthCheck(rtrim($publicDirectory, '/') . '/' . CacheKeyResolver::CACHE_DIRECTORY, $stateDirectory),
+            $metrics,
+            new MetricsAuthenticator($config->getOperations()->getMetricsKeys()),
+            $logger
         );
     }
 }

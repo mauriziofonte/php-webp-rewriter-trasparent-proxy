@@ -78,6 +78,7 @@ final class ConfigLoader
         // PRX-9: OperationsConfig::KEYS, in the same order.
         'LOG_FILE',
         'LOG_LEVEL',
+        'METRICS_KEYS',
         'METRICS_STORE',
     ];
 
