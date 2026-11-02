@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Unit\Observability;
 
+use Mfonte\ProxyCdn\Cache\CacheUsage;
 use Mfonte\ProxyCdn\Observability\FileMetricsStore;
 use Mfonte\ProxyCdn\Observability\Metrics;
 use Mfonte\ProxyCdn\Observability\MetricsStore;
@@ -101,6 +102,16 @@ final class MetricsTest extends TestCase
         self::assertSame(2, substr_count($text, 'proxy_cdn_requests_total{'));
         self::assertSame(1, substr_count($text, 'proxy_cdn_origin_fetches_total{'));
         self::assertSame(1, substr_count($text, 'proxy_cdn_purges_total{'));
+    }
+
+    public function testTheCacheGaugesComeFromTheLastScan(): void
+    {
+        $text = (new Metrics(null))->render(new CacheUsage(2048, 7, 1700000001));
+
+        self::assertStringContainsString("# TYPE proxy_cdn_cache_bytes gauge\nproxy_cdn_cache_bytes 2048\n", $text);
+        self::assertStringContainsString("proxy_cdn_cache_entries 7\n", $text);
+        self::assertStringContainsString("proxy_cdn_cache_scan_timestamp_seconds 1700000001\n", $text);
+        self::assertStringNotContainsString('proxy_cdn_cache_bytes', (new Metrics(null))->render());
     }
 
     public function testWithoutStoreNothingIsCounted(): void

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Http;
 
 use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
+use Mfonte\ProxyCdn\Cache\CacheUsage;
+use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cluster\PeerNotifier;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\ImageConverter;
@@ -57,6 +59,8 @@ final class EdgeKernelFactory
             new HealthCheck(rtrim($publicDirectory, '/') . '/' . CacheKeyResolver::CACHE_DIRECTORY, $stateDirectory),
             $metrics,
             new MetricsAuthenticator($config->getOperations()->getMetricsKeys()),
+            new FilesystemStorage(),
+            $stateDirectory . '/' . CacheUsage::FILE_NAME,
             $logger,
             PeerNotifier::fromConfig($config, $logger)
         );

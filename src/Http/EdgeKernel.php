@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Http;
 
+use Mfonte\ProxyCdn\Cache\CacheStorage;
+use Mfonte\ProxyCdn\Cache\CacheUsage;
 use Mfonte\ProxyCdn\Cluster\PeerNotifier;
 use Mfonte\ProxyCdn\Observability\HealthCheck;
 use Mfonte\ProxyCdn\Observability\Metrics;
@@ -75,6 +77,16 @@ final class EdgeKernel
     private $metricsAuthenticator;
 
     /**
+     * @var CacheStorage
+     */
+    private $storage;
+
+    /**
+     * @var string
+     */
+    private $usageFile;
+
+    /**
      * @var LoggerInterface
      */
     private $logger;
@@ -93,13 +105,16 @@ final class EdgeKernel
     private $pendingFanouts = [];
 
     /**
-     * @param PeerNotifier|null $peers the peers of the cluster; null for a single instance
+     * @param string            $usageFile the CacheUsage file of the last scan of cache:evict
+     * @param PeerNotifier|null $peers     the peers of the cluster; null for a single instance
      */
     public function __construct(
         ProxyKernel $kernel,
         HealthCheck $health,
         Metrics $metrics,
         MetricsAuthenticator $metricsAuthenticator,
+        CacheStorage $storage,
+        string $usageFile,
         LoggerInterface $logger,
         ?PeerNotifier $peers = null
     ) {
@@ -107,6 +122,8 @@ final class EdgeKernel
         $this->health = $health;
         $this->metrics = $metrics;
         $this->metricsAuthenticator = $metricsAuthenticator;
+        $this->storage = $storage;
+        $this->usageFile = $usageFile;
         $this->logger = $logger;
         $this->peers = $peers;
     }
@@ -232,7 +249,7 @@ final class EdgeKernel
             ]);
         }
 
-        return self::withoutBodyForHead(new Response($this->metrics->render(), 200, [
+        return self::withoutBodyForHead(new Response($this->metrics->render(CacheUsage::read($this->storage, $this->usageFile)), 200, [
             'Content-Type' => self::METRICS_CONTENT_TYPE,
             'Cache-Control' => 'no-store',
             'X-Content-Type-Options' => 'nosniff',

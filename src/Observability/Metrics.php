@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Observability;
 
+use Mfonte\ProxyCdn\Cache\CacheUsage;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Config\OperationsConfig;
 
@@ -23,6 +24,9 @@ use Mfonte\ProxyCdn\Config\OperationsConfig;
  * | proxy_cdn_peer_purges_total             | counter   | result                 |
  * | proxy_cdn_miss_rate_limited_total       | counter   |                        |
  * | proxy_cdn_early_hints_total             | counter   |                        |
+ * | proxy_cdn_cache_bytes                   | gauge     |                        |
+ * | proxy_cdn_cache_entries                 | gauge     |                        |
+ * | proxy_cdn_cache_scan_timestamp_seconds  | gauge     |                        |
  *
  * - Only the requests that reach PHP are counted: the hits the web server
  *   serves never do (read them from its own logs or status module).
@@ -34,6 +38,8 @@ use Mfonte\ProxyCdn\Config\OperationsConfig;
  *   Every label value comes from a fixed set, never from the request, so
  *   the series cannot grow with the traffic, and no label names a host,
  *   a path, a peer or a version.
+ * - The cache gauges come from the last scan of cache:evict (CacheUsage),
+ *   and are missing until one ran.
  * - metrics_available is 0 when the store cannot be read: the counters are
  *   then missing from the scrape, not reset.
  *
@@ -209,13 +215,20 @@ final class Metrics
 
     /**
      * The text exposition of every metric.
+     *
+     * @param CacheUsage|null $usage the last scan of the cache; null when there is none
      */
-    public function render(): string
+    public function render(?CacheUsage $usage = null): string
     {
         $counters = $this->store !== null ? $this->store->read() : [];
         $lines = [];
         self::gauge($lines, 'up', 'Whether the proxy answers (always 1 in a scrape that succeeds).', '1');
         self::gauge($lines, 'metrics_available', 'Whether the counters could be read from METRICS_STORE (0 when they are missing from this scrape).', $counters === null ? '0' : '1');
+        if ($usage !== null) {
+            self::gauge($lines, 'cache_bytes', 'Bytes of the cache files at the last scan of cache:evict.', (string) $usage->getBytes());
+            self::gauge($lines, 'cache_entries', 'Cache entries, with their siblings, at the last scan of cache:evict.', (string) $usage->getEntries());
+            self::gauge($lines, 'cache_scan_timestamp_seconds', 'Unix time of the last scan of cache:evict.', (string) $usage->getScannedAt());
+        }
         if ($counters === null || $this->store === null) {
             return implode("\n", $lines) . "\n";
         }

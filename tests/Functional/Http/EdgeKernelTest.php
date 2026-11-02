@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
+use Mfonte\ProxyCdn\Cache\CacheUsage;
+use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cluster\PeerNotifier;
 use Mfonte\ProxyCdn\Http\EdgeKernel;
 use Mfonte\ProxyCdn\Http\EdgeKernelFactory;
@@ -163,6 +165,7 @@ final class EdgeKernelTest extends TestCase
         $this->serveAndTerminate($overrides, 'https://cdn.example.test/js/app.js');
         $this->serveAndTerminate($overrides, 'https://cdn.example.test/js/app.js');
         $this->serveAndTerminate($overrides, 'https://cdn.example.test/js/missing.js');
+        (new CacheUsage(12345, 3, 1700000000))->write(new FilesystemStorage(), $this->directory->path('var/' . CacheUsage::FILE_NAME));
 
         $kernel = $this->kernel($overrides);
         $scrape = $kernel->handle(self::request('https://cdn.example.test/metrics', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::METRICS_KEY]));
@@ -178,6 +181,8 @@ final class EdgeKernelTest extends TestCase
         self::assertStringContainsString("proxy_cdn_origin_fetches_total{outcome=\"success\"} 1\n", $text);
         self::assertStringContainsString("proxy_cdn_origin_fetches_total{outcome=\"not_found\"} 1\n", $text);
         self::assertStringContainsString("proxy_cdn_request_duration_seconds_count{cache=\"MISS\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_cache_bytes 12345\n", $text);
+        self::assertStringContainsString("proxy_cdn_cache_entries 3\n", $text);
         self::assertStringNotContainsString('app.js', $text);
         self::assertStringNotContainsString('example.test', $text);
         self::assertStringNotContainsString($this->directory->path(), $text);
@@ -371,6 +376,8 @@ final class EdgeKernelTest extends TestCase
             new HealthCheck($this->directory->path('public/_cache'), $this->directory->path('var')),
             $metrics,
             new MetricsAuthenticator($config->getOperations()->getMetricsKeys()),
+            new FilesystemStorage(),
+            $this->directory->path('var/' . CacheUsage::FILE_NAME),
             $this->logger,
             new PeerNotifier([self::PEER], PurgeAuthenticator::fromConfig($config), $config->getHostAllowlist(), $transport, null, $this->logger)
         );
