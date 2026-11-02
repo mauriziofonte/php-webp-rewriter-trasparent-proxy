@@ -8,8 +8,10 @@ on:
   schedule:
     - cron: '23 3 * * *'
 
+# The event is part of the group: a push to the default branch and the
+# nightly run of the same ref do not cancel each other.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
