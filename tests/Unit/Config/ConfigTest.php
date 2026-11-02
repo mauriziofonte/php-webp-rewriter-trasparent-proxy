@@ -46,6 +46,27 @@ final class ConfigTest extends TestCase
         self::assertSame(Config::CONVERSION_API, $config->getImageConversionMode());
         self::assertSame('https://api.example.test/convert', $config->getWebpApiServer());
         self::assertSame('secret', $config->getWebpApiKey());
+        self::assertSame(Config::CONVERTER_REMOTE, $config->getImageConverter());
+        self::assertSame(['avif', 'webp'], $config->getImageFormats());
+        self::assertSame(55, $config->getImageConversionTimeout());
+        self::assertSame('https://api.example.test', $config->getImageApiUrl());
+        self::assertSame('secret-key-0123456789', $config->getImageApiKey());
+        self::assertSame('/etc/ssl/api-ca.pem', $config->getImageApiCaFile());
+        self::assertTrue($config->shouldFallBackToLocalConversion());
+        self::assertSame([320, 640], $config->getResizeWidths());
+        self::assertSame('resize-key-0123456789abcdef0123456789', $config->getResizeKey());
+    }
+
+    public function testTheApiUrlLosesItsTrailingSlash(): void
+    {
+        self::assertSame('https://api.example.test/base', Config::fromArray(self::values(['IMAGE_API_URL' => 'https://api.example.test/base/']))->getImageApiUrl());
+    }
+
+    public function testRemoteConversionNeedsTheUrlAndTheKey(): void
+    {
+        $this->expectException(InvalidConfigurationException::class);
+
+        Config::fromArray(self::values(['IMAGE_API_KEY' => null]));
     }
 
     public function testToArrayRoundTrips(): void
@@ -61,6 +82,11 @@ final class ConfigTest extends TestCase
             'UPSTREAM_USER_AGENT' => null,
             'WEBP_API_SERVER' => null,
             'WEBP_API_KEY' => null,
+            'IMAGE_CONVERTER' => Config::CONVERTER_NONE,
+            'IMAGE_API_URL' => null,
+            'IMAGE_API_KEY' => null,
+            'IMAGE_API_CA_FILE' => null,
+            'RESIZE_KEY' => null,
         ]));
 
         self::assertNull($config->getSourceOriginServer());
@@ -68,6 +94,10 @@ final class ConfigTest extends TestCase
         self::assertNull($config->getUpstreamUserAgent());
         self::assertNull($config->getWebpApiServer());
         self::assertNull($config->getWebpApiKey());
+        self::assertNull($config->getImageApiUrl());
+        self::assertNull($config->getImageApiKey());
+        self::assertNull($config->getImageApiCaFile());
+        self::assertNull($config->getResizeKey());
     }
 
     public function testIsCacheableExtensionMatchesTheListExactly(): void
@@ -123,12 +153,13 @@ final class ConfigTest extends TestCase
             'empty string' => ['SOURCE_ORIGIN', '', 'SOURCE_ORIGIN must be a non-empty string'],
             'null string' => ['CHARSET', null, 'CHARSET must be a non-empty string'],
             'empty optional string' => ['TIMEZONE', '', 'TIMEZONE must be a non-empty string or null'],
-            'integer optional string' => ['WEBP_API_KEY', 1, 'WEBP_API_KEY must be a non-empty string or null'],
+            'integer optional string' => ['IMAGE_API_KEY', 1, 'IMAGE_API_KEY must be a non-empty string or null'],
             'empty list' => ['CACHEABLE_EXTENSIONS', [], 'CACHEABLE_EXTENSIONS must be a non-empty list of strings'],
             'map instead of list' => ['CACHEABLE_EXTENSIONS', ['a' => 'css'], 'CACHEABLE_EXTENSIONS must be a non-empty list of strings'],
             'empty item' => ['CACHEABLE_EXTENSIONS', ['css', ''], 'CACHEABLE_EXTENSIONS must be a non-empty list of strings'],
             'string instead of list' => ['CACHEABLE_EXTENSIONS', 'css', 'CACHEABLE_EXTENSIONS must be a non-empty list of strings'],
             'unknown mode' => ['IMAGE_CONVERSION_MODE', 'gd', 'IMAGE_CONVERSION_MODE has an unknown value'],
+            'unknown converter' => ['IMAGE_CONVERTER', 'gd', 'IMAGE_CONVERTER has an unknown value'],
             'empty allowlist item' => ['QUERY_STRING_ALLOWLIST', ['v', ''], 'QUERY_STRING_ALLOWLIST must be a list of non-empty strings'],
             'unknown query mode' => ['QUERY_STRING_MODE', 'drop', 'QUERY_STRING_MODE has an unknown value'],
             'invalid trusted proxy' => ['TRUSTED_PROXIES', ['proxy.internal'], 'TRUSTED_PROXIES must be a list of IP addresses and CIDR blocks'],
@@ -203,6 +234,15 @@ final class ConfigTest extends TestCase
             'IMAGE_CONVERSION_MODE' => Config::CONVERSION_API,
             'WEBP_API_SERVER' => 'https://api.example.test/convert',
             'WEBP_API_KEY' => 'secret',
+            'IMAGE_CONVERTER' => Config::CONVERTER_REMOTE,
+            'IMAGE_FORMATS' => ['avif', 'webp'],
+            'IMAGE_CONVERSION_TIMEOUT' => 55,
+            'IMAGE_API_URL' => 'https://api.example.test',
+            'IMAGE_API_KEY' => 'secret-key-0123456789',
+            'IMAGE_API_CA_FILE' => '/etc/ssl/api-ca.pem',
+            'IMAGE_API_FALLBACK' => true,
+            'RESIZE_WIDTHS' => [320, 640],
+            'RESIZE_KEY' => 'resize-key-0123456789abcdef0123456789',
         ], $overrides);
     }
 }

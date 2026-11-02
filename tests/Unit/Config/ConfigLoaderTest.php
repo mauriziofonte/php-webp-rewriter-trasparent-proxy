@@ -110,7 +110,7 @@ final class ConfigLoaderTest extends TestCase
             'CHARSET' => 'null',
             'LOCALE' => '',
             'CACHE_EXPIRY' => 'null',
-            'WEBP_API_KEY' => 'null',
+            'IMAGE_API_KEY' => 'null',
         ]);
 
         $config = $this->loader()->load();
@@ -139,6 +139,15 @@ final class ConfigLoaderTest extends TestCase
         self::assertSame(Config::CONVERSION_NONE, $config->getImageConversionMode());
         self::assertNull($config->getWebpApiServer());
         self::assertNull($config->getWebpApiKey());
+        self::assertSame(Config::CONVERTER_NONE, $config->getImageConverter());
+        self::assertSame(['avif', 'webp'], $config->getImageFormats());
+        self::assertSame(55, $config->getImageConversionTimeout());
+        self::assertNull($config->getImageApiUrl());
+        self::assertNull($config->getImageApiKey());
+        self::assertNull($config->getImageApiCaFile());
+        self::assertFalse($config->shouldFallBackToLocalConversion());
+        self::assertSame([], $config->getResizeWidths());
+        self::assertNull($config->getResizeKey());
     }
 
     /**
@@ -238,12 +247,12 @@ final class ConfigLoaderTest extends TestCase
         $config = $this->loader()->loadFromArray(TestConfig::rawValues([
             'SOURCE_ORIGIN' => 'https://origin.example.test///',
             'UPSTREAM_FOLLOW_REDIRECTS' => 'True',
-            'WEBP_API_KEY' => '',
+            'IMAGE_API_KEY' => '',
         ]));
 
         self::assertSame('https://origin.example.test', $config->getSourceOrigin());
         self::assertTrue($config->shouldFollowUpstreamRedirects());
-        self::assertNull($config->getWebpApiKey());
+        self::assertNull($config->getImageApiKey());
     }
 
     public function testLoadFromArrayTreatsMissingKeysAsUnset(): void

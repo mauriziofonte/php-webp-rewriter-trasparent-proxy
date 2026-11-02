@@ -64,8 +64,8 @@ final class CompiledConfigCacheTest extends TestCase
     }
 
     /**
-     * The file holds WEBP_API_KEY and PURGE_KEYS, even when they come only
-     * from the environment: only its owner may read it.
+     * The file holds IMAGE_API_KEY, RESIZE_KEY and PURGE_KEYS, even when
+     * they come only from the environment: only its owner may read it.
      */
     public function testTheFileIsReadableByItsOwnerOnly(): void
     {
@@ -119,13 +119,13 @@ final class CompiledConfigCacheTest extends TestCase
      */
     public function testValuesCannotBreakOutOfTheFile(): void
     {
-        $config = TestConfig::create(['WEBP_API_KEY' => "x'; echo 'owned'; //\n?><?php echo 1;"]);
+        $config = TestConfig::create(['IMAGE_API_KEY' => "x'; echo 'owned'; // ?><?php echo 1;"]);
 
         $this->cache->save('fingerprint', $config);
         $loaded = $this->cache->load('fingerprint');
 
         self::assertNotNull($loaded);
-        self::assertSame("x'; echo 'owned'; //\n?><?php echo 1;", $loaded->getWebpApiKey());
+        self::assertSame("x'; echo 'owned'; // ?><?php echo 1;", $loaded->getImageApiKey());
     }
 
     /**

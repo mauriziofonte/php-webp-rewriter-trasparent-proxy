@@ -31,7 +31,8 @@ final class ConfigLoader
      * QUERY_STRING_MODE, TRUSTED_PROXIES, PURGE_KEYS and
      * CIRCUIT_BREAKER_THRESHOLD (PRX-5), PROXY_HOSTS, SENDFILE, PRECOMPRESS
      * and LEGACY_WEBP_URLS (PRX-6), CACHE_REVALIDATE_BELOW and
-     * STALE_WHILE_REVALIDATE, STALE_IF_ERROR (PRX-7).
+     * STALE_WHILE_REVALIDATE, STALE_IF_ERROR (PRX-7), and the image
+     * conversion and resize keys (PRX-8).
      */
     public const KEYS = [
         'DEBUG',
@@ -65,6 +66,16 @@ final class ConfigLoader
         'SENDFILE',
         'PRECOMPRESS',
         'LEGACY_WEBP_URLS',
+        // PRX-8: image conversion and resize.
+        'IMAGE_CONVERTER',
+        'IMAGE_FORMATS',
+        'IMAGE_CONVERSION_TIMEOUT',
+        'IMAGE_API_URL',
+        'IMAGE_API_KEY',
+        'IMAGE_API_CA_FILE',
+        'IMAGE_API_FALLBACK',
+        'RESIZE_WIDTHS',
+        'RESIZE_KEY',
     ];
 
     /**
@@ -95,13 +106,17 @@ final class ConfigLoader
         'SENDFILE' => Config::SENDFILE_NONE,
         'PRECOMPRESS' => 'true',
         'LEGACY_WEBP_URLS' => 'true',
+        'IMAGE_CONVERTER' => Config::CONVERTER_NONE,
+        'IMAGE_FORMATS' => 'avif,webp',
+        'IMAGE_CONVERSION_TIMEOUT' => '55',
+        'IMAGE_API_FALLBACK' => 'false',
     ];
 
     /**
      * Changes whenever the compiled format or the normalisation changes, so
      * that files compiled by another version are recompiled.
      */
-    private const FORMAT = 'proxy-cdn-config-6';
+    private const FORMAT = 'proxy-cdn-config-7';
 
     /**
      * @var string|null
@@ -227,6 +242,15 @@ final class ConfigLoader
             'IMAGE_CONVERSION_MODE' => $value('IMAGE_CONVERSION_MODE'),
             'WEBP_API_SERVER' => $optional('WEBP_API_SERVER'),
             'WEBP_API_KEY' => $optional('WEBP_API_KEY'),
+            'IMAGE_CONVERTER' => $value('IMAGE_CONVERTER'),
+            'IMAGE_FORMATS' => ConfigValidator::formatList($value('IMAGE_FORMATS')),
+            'IMAGE_CONVERSION_TIMEOUT' => (int) $value('IMAGE_CONVERSION_TIMEOUT'),
+            'IMAGE_API_URL' => $optional('IMAGE_API_URL'),
+            'IMAGE_API_KEY' => $optional('IMAGE_API_KEY'),
+            'IMAGE_API_CA_FILE' => $optional('IMAGE_API_CA_FILE'),
+            'IMAGE_API_FALLBACK' => ConfigValidator::booleanOf($value('IMAGE_API_FALLBACK')) === true,
+            'RESIZE_WIDTHS' => ConfigValidator::widthList($optional('RESIZE_WIDTHS')),
+            'RESIZE_KEY' => $optional('RESIZE_KEY'),
         ]);
     }
 

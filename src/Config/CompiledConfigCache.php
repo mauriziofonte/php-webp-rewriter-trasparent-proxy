@@ -74,8 +74,8 @@ final class CompiledConfigCache
             . "// environment changes. Do not edit.\n\n"
             . 'return ' . var_export(['fingerprint' => $fingerprint, 'values' => $config->toArray()], true) . ";\n";
 
-        // The values include the secrets (WEBP_API_KEY, PURGE_KEYS), even
-        // those that only the environment holds: owner only.
+        // The values include the secrets (IMAGE_API_KEY, RESIZE_KEY, PURGE_KEYS),
+        // even those that only the environment holds: owner only.
         if (!$this->storage->write($this->file, $contents, 0600)) {
             return false;
         }

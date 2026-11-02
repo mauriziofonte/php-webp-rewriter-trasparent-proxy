@@ -25,6 +25,17 @@ final class Config
     public const CONVERSION_NATIVE = 'native';
     public const CONVERSION_API = 'api';
 
+    /** IMAGE_CONVERTER: no AVIF or WEBP variant and no resize is made. */
+    public const CONVERTER_NONE = 'none';
+
+    /** IMAGE_CONVERTER: the conversion library converts in this host. */
+    public const CONVERTER_LOCAL = 'local';
+
+    /** IMAGE_CONVERTER: the conversion API v2 converts (IMAGE_API_URL). */
+    public const CONVERTER_REMOTE = 'remote';
+
+    public const CONVERTERS = [self::CONVERTER_NONE, self::CONVERTER_LOCAL, self::CONVERTER_REMOTE];
+
     /** SENDFILE: PHP streams the files it serves itself. */
     public const SENDFILE_NONE = 'none';
 
@@ -179,6 +190,51 @@ final class Config
     /**
      * @var string
      */
+    private $imageConverter;
+
+    /**
+     * @var list<string>
+     */
+    private $imageFormats;
+
+    /**
+     * @var int
+     */
+    private $imageConversionTimeout;
+
+    /**
+     * @var string|null
+     */
+    private $imageApiUrl;
+
+    /**
+     * @var string|null
+     */
+    private $imageApiKey;
+
+    /**
+     * @var string|null
+     */
+    private $imageApiCaFile;
+
+    /**
+     * @var bool
+     */
+    private $imageApiFallback;
+
+    /**
+     * @var list<int>
+     */
+    private $resizeWidths;
+
+    /**
+     * @var string|null
+     */
+    private $resizeKey;
+
+    /**
+     * @var string
+     */
     private $imageConversionMode;
 
     /**
@@ -234,12 +290,29 @@ final class Config
         $config->queryStringMode = self::string($values, 'QUERY_STRING_MODE');
         $config->trustedProxies = self::rangeList($values, 'TRUSTED_PROXIES');
         $config->purgeKeys = self::stringList($values, 'PURGE_KEYS', true);
+        $config->imageConverter = self::string($values, 'IMAGE_CONVERTER');
+        $config->imageFormats = self::stringList($values, 'IMAGE_FORMATS');
+        $config->imageConversionTimeout = self::integer($values, 'IMAGE_CONVERSION_TIMEOUT');
+        $apiUrl = self::optionalString($values, 'IMAGE_API_URL');
+        $config->imageApiUrl = $apiUrl === null ? null : rtrim($apiUrl, '/');
+        $config->imageApiKey = self::optionalString($values, 'IMAGE_API_KEY');
+        $config->imageApiCaFile = self::optionalString($values, 'IMAGE_API_CA_FILE');
+        $config->imageApiFallback = self::boolean($values, 'IMAGE_API_FALLBACK');
+        $config->resizeWidths = self::integerList($values, 'RESIZE_WIDTHS');
+        $config->resizeKey = self::optionalString($values, 'RESIZE_KEY');
+
         $config->imageConversionMode = self::string($values, 'IMAGE_CONVERSION_MODE');
         $config->webpApiServer = self::optionalString($values, 'WEBP_API_SERVER');
         $config->webpApiKey = self::optionalString($values, 'WEBP_API_KEY');
 
         if (!in_array($config->imageConversionMode, [self::CONVERSION_NONE, self::CONVERSION_NATIVE, self::CONVERSION_API], true)) {
             throw new InvalidConfigurationException(['IMAGE_CONVERSION_MODE has an unknown value']);
+        }
+        if (!in_array($config->imageConverter, self::CONVERTERS, true)) {
+            throw new InvalidConfigurationException(['IMAGE_CONVERTER has an unknown value']);
+        }
+        if ($config->imageConverter === self::CONVERTER_REMOTE && ($config->imageApiUrl === null || $config->imageApiKey === null)) {
+            throw new InvalidConfigurationException(['IMAGE_API_URL and IMAGE_API_KEY must be set for IMAGE_CONVERTER "remote"']);
         }
         if (!in_array($config->sendfile, self::SENDFILE_MODES, true)) {
             throw new InvalidConfigurationException(['SENDFILE has an unknown value']);
@@ -257,7 +330,7 @@ final class Config
     /**
      * The normalised values, keyed by the names of ConfigLoader::KEYS.
      *
-     * @return array<string, bool|int|string|list<string>|null>
+     * @return array<string, bool|int|string|list<string>|list<int>|null>
      */
     public function toArray(): array
     {
@@ -293,6 +366,15 @@ final class Config
             'IMAGE_CONVERSION_MODE' => $this->imageConversionMode,
             'WEBP_API_SERVER' => $this->webpApiServer,
             'WEBP_API_KEY' => $this->webpApiKey,
+            'IMAGE_CONVERTER' => $this->imageConverter,
+            'IMAGE_FORMATS' => $this->imageFormats,
+            'IMAGE_CONVERSION_TIMEOUT' => $this->imageConversionTimeout,
+            'IMAGE_API_URL' => $this->imageApiUrl,
+            'IMAGE_API_KEY' => $this->imageApiKey,
+            'IMAGE_API_CA_FILE' => $this->imageApiCaFile,
+            'IMAGE_API_FALLBACK' => $this->imageApiFallback,
+            'RESIZE_WIDTHS' => $this->resizeWidths,
+            'RESIZE_KEY' => $this->resizeKey,
         ];
     }
 
@@ -584,6 +666,90 @@ final class Config
     }
 
     /**
+     * IMAGE_CONVERTER: who makes the AVIF and WEBP variants and the
+     * resized images, one of the CONVERTER_* constants.
+     */
+    public function getImageConverter(): string
+    {
+        return $this->imageConverter;
+    }
+
+    /**
+     * IMAGE_FORMATS: the variant formats made of each raster entry, among
+     * CacheLocation::FORMATS.
+     *
+     * @return list<string>
+     */
+    public function getImageFormats(): array
+    {
+        return $this->imageFormats;
+    }
+
+    /**
+     * IMAGE_CONVERSION_TIMEOUT: the longest time, in seconds, one
+     * conversion may take: the processing ceiling of a local conversion,
+     * the transfer timeout of a call to the conversion API.
+     */
+    public function getImageConversionTimeout(): int
+    {
+        return $this->imageConversionTimeout;
+    }
+
+    /**
+     * IMAGE_API_URL: the base URL of the conversion API v2, without
+     * trailing slash ("https://images-api.example.com"); null when not set.
+     */
+    public function getImageApiUrl(): ?string
+    {
+        return $this->imageApiUrl;
+    }
+
+    /**
+     * IMAGE_API_KEY: the key the proxy presents to the conversion API.
+     */
+    public function getImageApiKey(): ?string
+    {
+        return $this->imageApiKey;
+    }
+
+    /**
+     * IMAGE_API_CA_FILE: the PEM file of the authorities trusted for the
+     * certificate of the conversion API; null for the system bundle.
+     */
+    public function getImageApiCaFile(): ?string
+    {
+        return $this->imageApiCaFile;
+    }
+
+    /**
+     * IMAGE_API_FALLBACK: whether a conversion the API cannot make now
+     * (unavailable, refused for lack of capacity) is made locally.
+     */
+    public function shouldFallBackToLocalConversion(): bool
+    {
+        return $this->imageApiFallback;
+    }
+
+    /**
+     * RESIZE_WIDTHS: the widths, in pixels, of the signed resize URLs, in
+     * ascending order; empty when resizing is off.
+     *
+     * @return list<int>
+     */
+    public function getResizeWidths(): array
+    {
+        return $this->resizeWidths;
+    }
+
+    /**
+     * RESIZE_KEY: the secret of the signatures of the resize URLs.
+     */
+    public function getResizeKey(): ?string
+    {
+        return $this->resizeKey;
+    }
+
+    /**
      * @param array<mixed> $values
      *
      * @throws InvalidConfigurationException
@@ -664,6 +830,30 @@ final class Config
         foreach ($value as $item) {
             if (!is_string($item) || $item === '') {
                 throw self::wrongType($key, $expected);
+            }
+            $list[] = $item;
+        }
+
+        return $list;
+    }
+
+    /**
+     * @param array<mixed> $values
+     *
+     * @throws InvalidConfigurationException
+     *
+     * @return list<int>
+     */
+    private static function integerList(array $values, string $key): array
+    {
+        $value = self::value($values, $key);
+        if (!is_array($value) || array_values($value) !== $value) {
+            throw self::wrongType($key, 'a list of positive integers');
+        }
+        $list = [];
+        foreach ($value as $item) {
+            if (!is_int($item) || $item < 1) {
+                throw self::wrongType($key, 'a list of positive integers');
             }
             $list[] = $item;
         }

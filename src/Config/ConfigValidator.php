@@ -55,6 +55,17 @@ final class ConfigValidator
     private const BOOLEAN_KEYS = ['DEBUG', 'UPSTREAM_VERIFY_TLS', 'UPSTREAM_FOLLOW_REDIRECTS', 'PRECOMPRESS', 'LEGACY_WEBP_URLS'];
 
     /**
+     * The largest resize width: the largest dimension the conversion
+     * library can produce (ConversionRequest::DIMENSION_MAX).
+     */
+    public const MAX_RESIZE_WIDTH = 16383;
+
+    /**
+     * The variant formats of IMAGE_FORMATS (CacheLocation::FORMATS).
+     */
+    private const IMAGE_FORMATS = ['avif', 'webp'];
+
+    /**
      * The QUERY_STRING_ALLOWLIST value that keeps no parameter.
      */
     private const NO_PARAMETER = 'none';
@@ -225,6 +236,47 @@ final class ConfigValidator
         }
 
         return new ConfigValidation($errors, $warnings);
+    }
+
+    /**
+     * The lower-case, trimmed, non-empty formats of an IMAGE_FORMATS
+     * value, duplicates removed, in the order of preference of the web
+     * server (AVIF, then WEBP); unknown names are kept, for the validator
+     * to refuse.
+     *
+     * @return list<string>
+     */
+    public static function formatList(string $raw): array
+    {
+        $formats = array_values(array_unique(array_map('strtolower', self::entryList($raw))));
+        usort($formats, static function (string $a, string $b): int {
+            $rank = array_flip(self::IMAGE_FORMATS);
+
+            return ($rank[$a] ?? 99) <=> ($rank[$b] ?? 99);
+        });
+
+        return $formats;
+    }
+
+    /**
+     * The widths of a RESIZE_WIDTHS value that are integers from 1 to
+     * MAX_RESIZE_WIDTH written in decimal digits, in ascending order,
+     * duplicates removed; [] for null.
+     *
+     * @return list<int>
+     */
+    public static function widthList(?string $raw): array
+    {
+        $widths = [];
+        foreach (self::entryList($raw) as $entry) {
+            if (preg_match('/\A[1-9][0-9]{0,4}\z/', $entry) === 1 && (int) $entry <= self::MAX_RESIZE_WIDTH) {
+                $widths[] = (int) $entry;
+            }
+        }
+        $widths = array_values(array_unique($widths));
+        sort($widths);
+
+        return $widths;
     }
 
     /**
