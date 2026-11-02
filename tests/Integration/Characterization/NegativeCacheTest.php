@@ -83,13 +83,35 @@ final class NegativeCacheTest extends CharacterizationTestCase
     {
         $before = self::tree($this->publicPath(''));
 
+        // The markers live in 4096 slots named by the SHA-256 of the cache
+        // file, whose path holds the random project directory: the second
+        // URL is one whose slot differs from the first, so that both are
+        // expected, and only them.
+        $first = self::markerOf($this->cachePath('no/such/directory/file.png'));
+        $second = null;
+        for ($i = 0; $second === null || $second[1] === $first; ++$i) {
+            $second = ['/no/such/other/file' . $i . '.png?v=1', self::markerOf($this->cachePath('.q/v=1/no/such/other/file' . $i . '.png'))];
+        }
+
         $response = $this->get('/no/such/directory/file.png');
-        $this->get('/no/such/other/file.png?v=1');
+        $this->get($second[0]);
 
         self::assertSame(404, $response->getStatus());
         self::assertDirectoryDoesNotExist($this->cachePath('no'));
         self::assertSame($before, self::tree($this->publicPath('')));
-        self::assertCount(2, $this->negativeMarkers());
+        $markers = array_map('basename', $this->negativeMarkers());
+        sort($markers);
+        $expected = [$first, $second[1]];
+        sort($expected);
+        self::assertSame($expected, $markers);
+    }
+
+    /**
+     * The name of the slot file of the negative cache for $cacheFile.
+     */
+    private static function markerOf(string $cacheFile): string
+    {
+        return substr(hash('sha256', $cacheFile), 0, 3) . '.neg';
     }
 
     /**
