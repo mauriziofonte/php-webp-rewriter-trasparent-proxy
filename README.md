@@ -347,7 +347,25 @@ find /srv/sites/cdn/public \( -name '*.404' -o -name '*.netfail' \) -type f -del
 ### Health and metrics
 
 - `GET /healthz` (any host) answers `200 {"status":"ok"}`, or `503` with `{"status":"unavailable","checks":{"cache":"unwritable","state":"ok"}}` when `public/_cache` or `var/` cannot be written. It names no path, version or setting.
-- `GET /metrics` is served only when `METRICS_KEYS` is set, to `Authorization: Bearer <key>` (401 otherwise), in the Prometheus text format: `proxy_cdn_requests_total{method,cache,status}`, `proxy_cdn_request_duration_seconds{cache}`, `proxy_cdn_origin_fetches_total{outcome}`, `proxy_cdn_purges_total{result}`, `proxy_cdn_peer_purges_total{result}`, `proxy_cdn_miss_rate_limited_total`, `proxy_cdn_miss_rate_limit_unavailable_total`, `proxy_cdn_early_hints_total`, and the `proxy_cdn_cache_bytes` / `_entries` of the last `cache:evict`. Every label has a fixed set of values; no host, path or client is a label. Counters live in `var/metrics/` and count the requests PHP answers: the hits nginx or Apache serve alone are not seen (read them from the web server). The keys are not the purge keys, so a scraper cannot purge.
+- `GET /metrics` is served only when `METRICS_KEYS` is set, to `Authorization: Bearer <key>` (401 otherwise), in the Prometheus text format: `proxy_cdn_requests_total{method,cache,status}`, `proxy_cdn_request_duration_seconds{cache}`, `proxy_cdn_origin_fetches_total{outcome}`, `proxy_cdn_purges_total{result}`, `proxy_cdn_peer_purges_total{result}`, `proxy_cdn_miss_rate_limited_total`, `proxy_cdn_miss_rate_limit_unavailable_total`, `proxy_cdn_early_hints_total`, and the `proxy_cdn_cache_bytes` / `_entries` of the last `cache:evict`. Every label has a fixed set of values; no host, path or client is a label. Counters live in `var/metrics/` and count the requests PHP answers: the hits nginx or Apache serve alone are not seen (see *Counting the hits of the web server* below). The keys are not the purge keys, so a scraper cannot purge.
+
+**Counting the hits of the web server.** Most hits never reach PHP, so `/metrics` cannot count them: log them with their `X-Cache-Status` and count the log lines (`cache=HIT`, `cache=MISS`, `cache=-` for an error). The official configurations hold the format, commented out:
+
+``` nginx
+# config/nginx/proxy-cdn.conf (http context, then access_log in the server block)
+log_format proxycdn '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" "$http_user_agent" '
+                    'cache=$sent_http_x_cache_status rt=$request_time';
+access_log /var/log/nginx/proxy-cdn.access.log proxycdn;
+```
+
+``` apache
+# config/apache/proxy-cdn.conf (in the VirtualHost)
+LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\" cache=%{X-Cache-Status}o %D" proxycdn
+CustomLog ${APACHE_LOG_DIR}/proxy-cdn.access.log proxycdn
+```
+
+nginx's `stub_status` and Apache's `mod_status` give totals only (connections, requests), never hits apart from misses.
 
 ### Configuration
 
