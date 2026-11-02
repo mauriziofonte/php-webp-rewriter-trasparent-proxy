@@ -7,10 +7,13 @@ declare(strict_types=1);
  * Command line of the proxy (symfony/console). Commands:
  *
  *   check-env [--informational]   validate the configuration and the host
+ *   cache:purge <url>...          purge URLs here and on CLUSTER_PEERS
  */
 
 use Mfonte\ProxyCdn\Config\ConfigLoader;
+use Mfonte\ProxyCdn\Console\CachePurgeCommand;
 use Mfonte\ProxyCdn\Console\CheckEnvCommand;
+use Mfonte\ProxyCdn\Console\Installation;
 use Symfony\Component\Console\Application;
 
 $projectRoot = dirname(__DIR__);
@@ -44,8 +47,10 @@ if (class_exists(\Composer\InstalledVersions::class)) {
 }
 
 $application = new Application('proxy-cdn', $version);
+$installation = new Installation(new ConfigLoader($projectRoot . '/.env'), $projectRoot);
 $application->addCommands([
     new CheckEnvCommand(new ConfigLoader($projectRoot . '/.env'), null, null, null, $projectRoot),
+    new CachePurgeCommand($installation),
 ]);
 
 exit($application->run());

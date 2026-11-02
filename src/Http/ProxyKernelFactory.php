@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Http;
 
 use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
+use Mfonte\ProxyCdn\Cache\CacheStorage;
 use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
@@ -66,7 +67,7 @@ final class ProxyKernelFactory
         $responses = ResponseFactory::fromConfig($config);
         $cacheDirectory = rtrim($publicDirectory, '/') . '/' . CacheKeyResolver::CACHE_DIRECTORY;
         $variants = $converter === null ? null : ImageConverterFactory::variants($config, $converter, $cacheDirectory, $stateDirectory, $storage, $logger);
-        $coalescer = new RequestCoalescer(self::lock($stateDirectory . '/locks', $logger), self::coalescingTimeout($config, $converter !== null), $logger, $storage, $stateDirectory . '/coalescing', self::outcomeWindow($config));
+        $coalescer = self::coalescer($config, $stateDirectory, $converter !== null, $logger, $storage);
 
         return new ProxyKernel(
             $config,
@@ -89,6 +90,21 @@ final class ProxyKernelFactory
             $converter === null ? null : SignedUrlVerifier::fromConfig($config),
             $guard
         );
+    }
+
+    /**
+     * The request coalescer of the kernel, over the lock and outcome
+     * directories of $stateDirectory; also what cache:purge gives its
+     * Purger, so that a purge from the command line forgets the outcomes
+     * the requests share, as a PURGE does.
+     *
+     * @param bool $converts whether a converter is configured (coalescingTimeout())
+     */
+    public static function coalescer(Config $config, string $stateDirectory, bool $converts, LoggerInterface $logger, CacheStorage $storage): RequestCoalescer
+    {
+        $stateDirectory = rtrim($stateDirectory, '/');
+
+        return new RequestCoalescer(self::lock($stateDirectory . '/locks', $logger), self::coalescingTimeout($config, $converts), $logger, $storage, $stateDirectory . '/coalescing', self::outcomeWindow($config));
     }
 
     /**
