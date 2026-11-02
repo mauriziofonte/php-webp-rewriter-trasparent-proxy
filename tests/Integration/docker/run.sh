@@ -405,6 +405,18 @@ smoke() {
     cmp -s "$workdir/$s/plain.body" "$fixture" || die "$s: the plain hit differs from the origin file"
     fpm_quiet "$s: variants served" "$fpm_log" "$lines"
 
+    # A legacy "X.webp" URL of 2.x is a hit PHP serves, by design (see
+    # LEGACY_WEBP_URLS in the README): the WEBP variant of the raster
+    # entry, without fetching anything from the origin.
+    legacy="${asset%.*}.webp"
+    expect "$s: legacy WEBP URL" "$(fetch "$base$legacy" "$workdir/$s/legacy")" 200
+    expect "$s: legacy WEBP URL body" "$(cat "$workdir/$s/legacy.body")" "webp variant"
+    expect "$s: legacy WEBP URL type" "$(header_of Content-Type "$workdir/$s/legacy.headers")" image/webp
+    expect "$s: legacy WEBP URL is a hit" "$(cache_status "$workdir/$s/legacy.headers")" HIT
+    wait_for "$s: legacy WEBP URL went through PHP-FPM" 10 has_lines "$fpm_log" $((lines + 1))
+    expect "$s: legacy WEBP URL fetched nothing" "$(origin_count "$legacy")" 0
+    expect "$s: legacy WEBP URL fetched no raster" "$(origin_count "$asset")" 1
+
     # Query string: the canonical one is a directory the web server finds.
     expect "$s: query string, first request" "$(fetch "$base$asset?v=3" "$workdir/$s/query1")" 200
     expect "$s: query string, first request is a miss" "$(cache_status "$workdir/$s/query1.headers")" MISS

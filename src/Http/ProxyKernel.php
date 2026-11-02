@@ -843,6 +843,12 @@ final class ProxyKernel
     /**
      * Whether a request for $location is for "X.webp" that the cache does
      * not hold, to be resolved from a raster sibling (LEGACY_WEBP_URLS).
+     *
+     * Such a request reaches PHP even when the sibling is cached, by
+     * design: the web server knows neither the setting nor the order of
+     * the siblings, nor that a raster without WEBP variant is answered as
+     * its own type, and it cannot convert one. The URLs exist only for
+     * the clients that cached a 301 of 2.x.
      */
     private function isLegacyWebpRequest(string $extension, CacheLocation $location): bool
     {
