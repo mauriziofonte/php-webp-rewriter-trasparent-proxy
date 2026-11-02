@@ -233,3 +233,61 @@ jobs:
             ${{ runner.temp }}/laravel/app/storage/logs/
           if-no-files-found: ignore
           retention-days: 7
+
+  # PRX-8: the proxy against the real conversion API v2 (its hardened image
+  # behind nginx, over TLS). The API is checked out at a pinned commit;
+  # at the release gate the pin moves to the API's v2.0.0 tag.
+  contract:
+    name: Contract with the conversion API (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.2', '8.5']
+    env:
+      CONVERSION_API_REPOSITORY: mauriziofonte/php-image-to-webp-conversion-api
+      CONVERSION_API_REF: 97571a0060132bdf706df6991e14e24af28e0399
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the conversion API
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.CONVERSION_API_REPOSITORY }}
+          ref: ${{ env.CONVERSION_API_REF }}
+          path: conversion-api
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+
+      # PHPUnit runs in a php:<version>-cli container with this vendor/.
+      - name: Install dependencies (highest)
+        run: composer update --no-progress
+
+      # The API image is built from its docker/Dockerfile; the job token
+      # reaches Composer in the build as a BuildKit secret only.
+      - name: Contract tests against the API behind nginx
+        env:
+          CONTRACT_PHP: ${{ matrix.php }}
+          CONTRACT_WORKDIR: ${{ runner.temp }}/contract
+          COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ github.token }}"}}'
+        run: tests/Contract/run.sh --api conversion-api --php "$CONTRACT_PHP"
+
+      - name: Upload the contract logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: contract-logs-php-${{ matrix.php }}
+          path: |
+            ${{ runner.temp }}/contract/*.log
+          if-no-files-found: ignore
+          retention-days: 7
