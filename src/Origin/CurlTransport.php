@@ -372,6 +372,9 @@ final class CurlTransport implements HttpClient
         } else {
             $options[CURLOPT_HTTPGET] = true;
         }
+        // A PURGE is a GET without body under another name; null resets a
+        // handle that sent one before.
+        $options[CURLOPT_CUSTOMREQUEST] = $request->getMethod() === HttpRequest::METHOD_PURGE ? HttpRequest::METHOD_PURGE : null;
         $connectTo = [];
         if ($this->connectTo !== null) {
             // Pinned on the host and port of the first URL: libcurl ignores

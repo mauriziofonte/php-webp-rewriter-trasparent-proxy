@@ -33,6 +33,11 @@ final class HttpRequestTest extends TestCase
         self::assertSame('HEAD', (new HttpRequest('http://origin.example.test/', [], HttpRequest::METHOD_HEAD))->getMethod());
     }
 
+    public function testAPurge(): void
+    {
+        self::assertSame('PURGE', (new HttpRequest('https://peer.example.test/a.css', [], HttpRequest::METHOD_PURGE))->getMethod());
+    }
+
     public function testWithHeaderReplacesCaseInsensitivelyAndKeepsTheOriginal(): void
     {
         $request = new HttpRequest('http://origin.example.test/', ['Accept' => 'text/css']);

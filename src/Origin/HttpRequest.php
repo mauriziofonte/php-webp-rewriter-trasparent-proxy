@@ -8,7 +8,8 @@ use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
 
 /**
  * A GET or HEAD request sent by an HttpClient: an absolute http or https URL
- * and the request header fields. Immutable.
+ * and the request header fields; or a PURGE without body, which the cluster
+ * sends to its peers (PRX-9). Immutable.
  *
  * Header names are kept in lower case, the form HTTP/2 requires and HTTP/1.1
  * accepts. Names must be HTTP tokens and values must not contain CR, LF or
@@ -20,6 +21,11 @@ final class HttpRequest
     public const METHOD_GET = 'GET';
 
     public const METHOD_HEAD = 'HEAD';
+
+    /**
+     * The purge a peer of the cluster receives (Cluster\PeerNotifier).
+     */
+    public const METHOD_PURGE = 'PURGE';
 
     /**
      * The characters a URL must not contain, which could end or alter the
@@ -47,14 +53,14 @@ final class HttpRequest
     /**
      * @param string                $url     absolute http or https URL
      * @param array<string, string> $headers header values keyed by header name, in any case
-     * @param string                $method  METHOD_GET or METHOD_HEAD
+     * @param string                $method  METHOD_GET, METHOD_HEAD or METHOD_PURGE
      *
      * @throws InvalidArgumentException when the URL, the method or a header is invalid
      */
     public function __construct(string $url, array $headers = [], string $method = self::METHOD_GET)
     {
-        if ($method !== self::METHOD_GET && $method !== self::METHOD_HEAD) {
-            throw new InvalidArgumentException('The method must be GET or HEAD, got ' . $method);
+        if (!in_array($method, [self::METHOD_GET, self::METHOD_HEAD, self::METHOD_PURGE], true)) {
+            throw new InvalidArgumentException('The method must be GET, HEAD or PURGE, got ' . $method);
         }
 
         $this->method = $method;
@@ -88,7 +94,7 @@ final class HttpRequest
     }
 
     /**
-     * METHOD_GET or METHOD_HEAD.
+     * METHOD_GET, METHOD_HEAD or METHOD_PURGE.
      */
     public function getMethod(): string
     {

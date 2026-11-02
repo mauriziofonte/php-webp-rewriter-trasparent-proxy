@@ -162,6 +162,26 @@ abstract class TransportContractTestCase extends TestCase
     }
 
     /**
+     * The PURGE of the cluster fan-out (PRX-9) goes out under its name,
+     * with its header fields, and a reused handle sends a GET again.
+     */
+    public function testAPurgeIsSentUnderItsName(): void
+    {
+        $client = $this->createClient($this->options());
+
+        $purge = $client->send(new HttpRequest($this->url('/echo?x=1'), ['Host' => 'cdn.example.test', 'X-Purge-Fanout' => '1'], HttpRequest::METHOD_PURGE));
+        $get = $client->send(new HttpRequest($this->url('/echo')));
+
+        self::assertSame(200, $purge->getStatus());
+        $echo = self::json($purge);
+        self::assertSame('PURGE', $echo['method']);
+        self::assertSame('/echo?x=1', $echo['target']);
+        self::assertSame('cdn.example.test', $echo['headers']['host'] ?? null);
+        self::assertSame('1', $echo['headers']['x-purge-fanout'] ?? null);
+        self::assertSame('GET', self::json($get)['method']);
+    }
+
+    /**
      * 3xx, 403, 404, 410 and the other statuses are distinct outcomes, with
      * no body (finding P-13, transport part).
      *
