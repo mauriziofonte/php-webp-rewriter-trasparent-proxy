@@ -46,6 +46,7 @@ The one thing this project does that is genuinely cumbersome to replicate with o
 - [Cache maintenance](#cache-maintenance)
 - [Operations](#operations)
 - [Rewriting origin references to the CDN](#rewriting-origin-references-to-the-cdn)
+- [Performance](#performance)
 - [Security considerations](#security-considerations)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -71,7 +72,7 @@ The one thing this project does that is genuinely cumbersome to replicate with o
 1. Clone this repo onto a LAMP/LEMP server and point a VirtualHost's `DocumentRoot` (nginx: `root`) at `./public`.
 2. Configure the web server (see *Web server configuration*). Apache: `sudo a2enmod rewrite headers setenvif env deflate mime`.
 3. Make sure `curl` is available in your PHP build (`php -m | grep -i curl`).
-4. Install dependencies with `composer install`. The `post-install` hook runs `bin/proxy-cdn check-env --informational`, which validates every configuration key (including URL format, numeric ranges and suspicious extensions); `composer check-env` runs the same check and fails on any error.
+4. Install dependencies with `composer install` (in production `composer install --no-dev --classmap-authoritative`, see *Performance*). The `post-install` hook runs `bin/proxy-cdn check-env --informational`, which validates every configuration key (including URL format, numeric ranges and suspicious extensions); `composer check-env` runs the same check and fails on any error.
 5. Copy `.env.example` to `.env` and adjust it. The defaults are safe for production (`DEBUG=false`, and the origin TLS certificate is verified; an origin with a self-signed certificate on a trusted network needs `UPSTREAM_VERIFY_TLS=false`).
 6. To make AVIF and WEBP variants, set `IMAGE_CONVERTER` (see *Image conversion*): `local` needs a conversion backend in this host, `remote` the [conversion API v2](https://github.com/mauriziofonte/php-image-to-webp-conversion-api).
 
@@ -416,6 +417,30 @@ ob_start(function ($html) {
     );
 });
 ```
+
+## Performance
+
+**Production install.** `composer install --no-dev --classmap-authoritative`: the autoloader finds every class in its class map and never searches the filesystem. Development and the tests keep plain PSR-4 (`composer install`).
+
+**PHP settings.** [config/php/proxy-cdn.ini](config/php/proxy-cdn.ini) holds the php.ini lines of the PHP-FPM pool: OPcache on, and on PHP 7.4 and later preloading with [config/php/preload.php](config/php/preload.php), which compiles and links the classes of a request once, when PHP-FPM starts (PHP 7.2 and 7.3 ignore it). With preloading, restart PHP-FPM after each deployment or `composer install`; one PHP-FPM master preloads for all its pools, so do not enable it next to applications that use other versions of the same packages.
+
+**Apache.** Include `public/.htaccess` in the virtual host with `AllowOverride None`, as [config/apache/proxy-cdn.conf](config/apache/proxy-cdn.conf) does: with `AllowOverride All` Apache parses the file on every request.
+
+**Latency suite.** `tests/Performance/run.sh --php 8.5` (Docker; `vendor/` installed for that PHP version as above) starts both stacks of the integration harness with the settings above and measures the targets of the 3.0 plan with k6: a hit the web server serves against a static file of the same server, a hit PHP serves (server-side, from the PHP-FPM access log), a cold miss against an origin with a fixed latency (minus the latency of the same requests sent to the origin directly), and the thundering herd. It prints a table, writes `summary.json`, and fails when a hit regresses against the static file beyond the given ratio (`--max-ratio`, `--max-p99-ratio`); `--strict` makes the absolute targets fail it too. CI runs it on PHP 7.2 and 8.5.
+
+**Measured** (2026-11-02, `tests/Performance/run.sh`, defaults: 3 rounds of 10 s, 300 misses against an origin answering after 50 ms, 500 requests in the herd). Machine: a shared 4-vCPU Xeon 2.8 GHz container running other workloads at the same time, with the servers and k6 on the same cores: it is **not** the reference machine, and the ratios move by about 0.1 from one run to the next.
+
+| Path | Metric | Target | Apache, PHP 7.2 | nginx, PHP 7.2 | Apache, PHP 8.5 | nginx, PHP 8.5 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Hit served by the web server | p50 / static file | at most 1.10 | 1.18 | 1.13 | 1.22 | 1.10 |
+| | p99 / static file | at most 1.10 | 1.19 | 1.02 | 1.24 | 1.30 |
+| | requests per second / static file | at least 0.90 | 0.81 | 0.90 | 0.87 | 0.95 |
+| Hit served by PHP | server-side p50 | under 2 ms | 1.80 ms | 1.61 ms | 1.67 ms | 1.28 ms |
+| | server-side p99 | under 10 ms | 4.57 ms | 6.13 ms | 7.02 ms | 3.28 ms |
+| Cold miss | p50 minus origin time | under 5 ms | 6.95 ms | 4.86 ms | 5.46 ms | 5.03 ms |
+| Thundering herd | origin fetches | exactly 1 | 1 | 1 | 1 | 1 |
+
+In absolute terms a hit of nginx cost 0.02 to 0.08 ms more than the static file at p50 (for example 0.39 against 0.37 ms, at 1000 requests per second), mostly the four negotiation lookups before the file. With `AllowOverride All` instead of the Include, Apache hits measured 1.79 (p50) and 0.56 (requests per second) times the static file on PHP 8.5. Preloading lowers the server-side p50 of a hit PHP serves from 1.70 to 1.28 ms (nginx, PHP 8.5). The compiled configuration loads in 47 µs against 137 µs for parsing and validating `.env` (microbenchmark in the same run). PHP 7.x opens a new connection to the origin, and resolves its name, on every miss; PHP 8.5 keeps them between requests (`curl_share_init_persistent`).
 
 ## Security considerations
 
