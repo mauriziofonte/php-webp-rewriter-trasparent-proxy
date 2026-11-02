@@ -36,7 +36,8 @@
   "suggest": {
     "ext-curl": "Preferred transport for origin fetches (HTTP/2, connection reuse, parallel warm-up)",
     "ext-openssl": "Needed for https origins when ext-curl is missing (StreamTransport)",
-    "ext-zlib": "Lets origins send gzip bodies, which are then asked for and inflated"
+    "ext-zlib": "Lets origins send gzip bodies, which are then asked for and inflated",
+    "ext-posix": "IMAGE_CONVERTER=local: process isolation of the conversions, and the private cache of what the conversion library detects (var/converter-cache)"
   },
   "autoload": {
     "psr-4": {
