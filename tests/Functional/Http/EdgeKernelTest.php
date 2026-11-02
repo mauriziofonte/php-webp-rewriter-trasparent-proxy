@@ -4,10 +4,16 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
+use Mfonte\ProxyCdn\Cluster\PeerNotifier;
 use Mfonte\ProxyCdn\Http\EdgeKernel;
 use Mfonte\ProxyCdn\Http\EdgeKernelFactory;
+use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
 use Mfonte\ProxyCdn\Http\RequestId;
+use Mfonte\ProxyCdn\Observability\HealthCheck;
 use Mfonte\ProxyCdn\Observability\Metrics;
+use Mfonte\ProxyCdn\Observability\MetricsAuthenticator;
+use Mfonte\ProxyCdn\Origin\MockTransport;
+use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
@@ -31,6 +37,10 @@ final class EdgeKernelTest extends TestCase
     private const ORIGIN = 'https://origin.example.test';
 
     private const METRICS_KEY = 'metrics-key-0123456789';
+
+    private const PURGE_SECRET = 'purge-secret-0123456789';
+
+    private const PEER = 'https://peer.example.test';
 
     /**
      * @var TemporaryDirectory
@@ -231,6 +241,182 @@ final class EdgeKernelTest extends TestCase
         $text = (string) $this->kernel($overrides)->handle(self::request('https://cdn.example.test/metrics', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::METRICS_KEY]))->getContent();
         self::assertStringContainsString("proxy_cdn_miss_rate_limited_total 1\n", $text);
         self::assertStringContainsString("proxy_cdn_requests_total{method=\"GET\",cache=\"none\",status=\"429\"} 1\n", $text);
+    }
+
+    /**
+     * The "done when" of PRX-9: with CLUSTER_PEERS empty the edge behaves
+     * like a single box. The same requests get the same statuses, bodies
+     * and headers (but the request ID) as from ProxyKernel alone, leave the
+     * same cache behind, fetch the same origin URLs, and no peer is known
+     * to send anything to.
+     */
+    public function testWithoutPeersTheEdgeBehavesLikeASingleBox(): void
+    {
+        $overrides = ['PURGE_KEYS' => 'origin.example.test=' . self::PURGE_SECRET];
+        $config = TestConfig::create($overrides);
+        self::assertNull(PeerNotifier::fromConfig($config, $this->logger));
+        $requests = static function (): array {
+            return [
+                self::request('https://cdn.example.test/js/app.js'),
+                self::request('https://cdn.example.test/js/app.js'),
+                self::request('https://cdn.example.test/js/app.js', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET], 'PURGE'),
+                self::request('https://cdn.example.test/js/app.js', ['HTTP_AUTHORIZATION' => 'Bearer wrong-secret-0123456789'], 'PURGE'),
+                self::request('https://cdn.example.test/js/app.js', [], 'HEAD'),
+                self::request('https://cdn.example.test/js/missing.js'),
+                self::request('https://unknown.example.test/js/app.js'),
+            ];
+        };
+
+        $edgeOrigin = $this->origin;
+        $singleOrigin = new FakeOriginFetcher();
+        $singleOrigin->serve(self::ORIGIN . '/js/app.js', 'console.log(1);', ['content-type' => 'text/javascript']);
+        $edge = EdgeKernelFactory::create(
+            $config,
+            $this->directory->path('edge/public'),
+            $this->directory->path('edge/var'),
+            $edgeOrigin,
+            null,
+            $this->logger,
+            Metrics::fromConfig($config, $this->directory->path('edge/var'))
+        );
+        $single = ProxyKernelFactory::create($config, $this->directory->path('single/public'), $this->directory->path('single/var'), $singleOrigin, null, $this->logger);
+        $edgeAnswers = [];
+        $singleAnswers = [];
+        // One request to each in turn, so that both see the same clock.
+        foreach ($requests() as $index => $request) {
+            $edgeAnswers[] = self::comparable($edge->handle($request));
+            $singleAnswers[] = self::comparable($single->handle($requests()[$index]));
+        }
+        $edge->terminate();
+        $single->terminate();
+
+        self::assertSame($singleAnswers, $edgeAnswers);
+        self::assertSame([200, 200, 200, 401, 200, 404, 421], array_column($edgeAnswers, 0));
+        self::assertSame($singleOrigin->getRequestedUrls(), $edgeOrigin->getRequestedUrls());
+        self::assertNotSame([], self::tree($this->directory->path('edge/public')));
+        self::assertSame(self::tree($this->directory->path('single/public')), self::tree($this->directory->path('edge/public')));
+        self::assertSame([], $this->logger->recordsWithMessage('peer purge failed'));
+    }
+
+    /**
+     * An accepted purge reaches every peer once the response is sent
+     * (terminate()); a refused purge and a purge that came from a peer are
+     * not sent on, so purges cannot loop.
+     */
+    public function testAnAcceptedPurgeIsFannedOutAfterTheResponse(): void
+    {
+        $overrides = ['PURGE_KEYS' => 'origin.example.test=' . self::PURGE_SECRET, 'METRICS_KEYS' => self::METRICS_KEY];
+        $transport = new MockTransport();
+        $transport->respond(self::PEER . '/js/app.js', 200);
+        $kernel = $this->kernelWithPeers($overrides, $transport);
+        $timestamp = (string) time();
+        $fromPeer = self::request('https://cdn.example.test/js/app.js', [
+            'HTTP_X_PURGE_FANOUT' => '1',
+            'HTTP_X_PURGE_TIMESTAMP' => $timestamp,
+            'HTTP_X_PURGE_SIGNATURE' => hash_hmac('sha256', PurgeAuthenticator::fanoutMessage('cdn.example.test', '/js/app.js', $timestamp, ''), self::PURGE_SECRET),
+        ], 'PURGE');
+
+        $accepted = $kernel->handle(self::request('https://cdn.example.test/js/app.js', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET, 'HTTP_X_REQUEST_ID' => 'purge-1'], 'PURGE'));
+        $refused = $kernel->handle(self::request('https://cdn.example.test/js/app.js', ['HTTP_AUTHORIZATION' => 'Bearer wrong-secret-0123456789'], 'PURGE'));
+        $fannedIn = $kernel->handle($fromPeer);
+        $sentBeforeTerminate = $transport->getRequests();
+        $kernel->terminate();
+        $sent = $transport->getRequests();
+
+        self::assertSame([200, 401, 200], [$accepted->getStatusCode(), $refused->getStatusCode(), $fannedIn->getStatusCode()]);
+        self::assertCount(1, $sent);
+        self::assertSame('PURGE', $sent[0]->getMethod());
+        self::assertSame(self::PEER . '/js/app.js', $sent[0]->getUrl());
+        self::assertSame('purge-1', $sent[0]->getHeader('x-request-id'));
+        $text = (string) $this->kernel($overrides)->handle(self::request('https://cdn.example.test/metrics', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::METRICS_KEY]))->getContent();
+        self::assertStringContainsString("proxy_cdn_purges_total{result=\"purged\"} 2\n", $text);
+        self::assertStringContainsString("proxy_cdn_purges_total{result=\"refused\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_peer_purges_total{result=\"ok\"} 1\n", $text);
+        self::assertSame([], $sentBeforeTerminate);
+    }
+
+    /**
+     * A peer that fails is logged and counted; the local purge stands.
+     */
+    public function testAFailingPeerDoesNotUndoTheLocalPurge(): void
+    {
+        $overrides = ['PURGE_KEYS' => 'origin.example.test=' . self::PURGE_SECRET, 'METRICS_KEYS' => self::METRICS_KEY];
+        $transport = new MockTransport();
+        $transport->respond(self::PEER . '/js/app.js', 503);
+        $kernel = $this->kernelWithPeers($overrides, $transport);
+        $kernel->handle(self::request('https://cdn.example.test/js/app.js'));
+
+        $purge = $kernel->handle(self::request('https://cdn.example.test/js/app.js', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET], 'PURGE'));
+        $kernel->terminate();
+        $after = $kernel->handle(self::request('https://cdn.example.test/js/app.js'));
+
+        self::assertSame(200, $purge->getStatusCode());
+        self::assertStringContainsString('"removed":', (string) $purge->getContent());
+        self::assertSame('MISS', $after->headers->get('X-Cache-Status'));
+        self::assertCount(1, $this->logger->recordsWithMessage('peer purge failed'));
+        $text = (string) $this->kernel($overrides)->handle(self::request('https://cdn.example.test/metrics', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::METRICS_KEY]))->getContent();
+        self::assertStringContainsString("proxy_cdn_peer_purges_total{result=\"failed\"} 1\n", $text);
+    }
+
+    /**
+     * @param array<string, string|null> $overrides
+     */
+    private function kernelWithPeers(array $overrides, MockTransport $transport): EdgeKernel
+    {
+        $config = TestConfig::create($overrides);
+        $metrics = Metrics::fromConfig($config, $this->directory->path('var'));
+
+        return new EdgeKernel(
+            ProxyKernelFactory::create($config, $this->directory->path('public'), $this->directory->path('var'), $this->origin, null, $this->logger),
+            new HealthCheck($this->directory->path('public/_cache'), $this->directory->path('var')),
+            $metrics,
+            new MetricsAuthenticator($config->getOperations()->getMetricsKeys()),
+            $this->logger,
+            new PeerNotifier([self::PEER], PurgeAuthenticator::fromConfig($config), $config->getHostAllowlist(), $transport, null, $this->logger)
+        );
+    }
+
+    /**
+     * Status, body and headers of a response, without the headers that
+     * differ from one run to the next. The headers are only compared,
+     * never read, so their type is that of HeaderBag::all() in every
+     * supported symfony/http-foundation version.
+     *
+     * @return array{int, string, array<mixed>}
+     */
+    private static function comparable(Response $response): array
+    {
+        $headers = $response->headers->all();
+        unset($headers['date'], $headers['x-request-id']);
+        ksort($headers);
+        $body = self::body($response);
+        // The Ray ID of an error without path is random.
+        $body = (string) preg_replace('/Ray ID: [0-9a-f]{32}/', 'Ray ID: x', $body);
+
+        return [$response->getStatusCode(), $body, $headers];
+    }
+
+    /**
+     * The relative paths and contents of the files under $root.
+     *
+     * @return array<string, string>
+     */
+    private static function tree(string $root): array
+    {
+        $files = [];
+        if (!is_dir($root)) {
+            return $files;
+        }
+        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $file) {
+            if ($file instanceof \SplFileInfo && $file->isFile()) {
+                // The time of validation of the metadata is the only content that depends on the clock.
+                $files[substr($file->getPathname(), strlen($root))] = (string) preg_replace('/"validated_at":[0-9]+/', '"validated_at":0', (string) file_get_contents($file->getPathname()));
+            }
+        }
+        ksort($files);
+
+        return $files;
     }
 
     /**

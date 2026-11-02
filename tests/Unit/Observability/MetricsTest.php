@@ -44,6 +44,8 @@ final class MetricsTest extends TestCase
         $metrics->recordRequest('GET', 'MISS', 200, 0.2);
         $metrics->recordRequest('PURGE', null, 401, 0.0005);
         $metrics->recordOriginFetch('success');
+        $metrics->recordPurge(Metrics::RESULT_REFUSED);
+        $metrics->recordPeerPurge(false);
         $metrics->recordRateLimited();
         $metrics->recordEarlyHints();
         self::assertTrue($metrics->flush());
@@ -68,6 +70,8 @@ final class MetricsTest extends TestCase
         self::assertStringContainsString("proxy_cdn_request_duration_seconds_sum{cache=\"MISS\"} 0.203\n", $text);
         self::assertStringContainsString("proxy_cdn_request_duration_seconds_count{cache=\"MISS\"} 2\n", $text);
         self::assertStringContainsString("proxy_cdn_origin_fetches_total{outcome=\"success\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_purges_total{result=\"refused\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_peer_purges_total{result=\"failed\"} 1\n", $text);
         self::assertStringContainsString("# TYPE proxy_cdn_miss_rate_limited_total counter\nproxy_cdn_miss_rate_limited_total 1\n", $text);
         self::assertStringContainsString("proxy_cdn_early_hints_total 1\n", $text);
         self::assertStringEndsWith("\n", $text);
@@ -83,6 +87,7 @@ final class MetricsTest extends TestCase
         for ($i = 0; $i < 50; ++$i) {
             $metrics->recordRequest('M' . $i, 'X-' . $i, 1000 + $i, 0.0);
             $metrics->recordOriginFetch('reason-' . $i);
+            $metrics->recordPurge('result-' . $i);
         }
         $metrics->recordRequest('GET', 'HIT', 99, NAN);
         $metrics->flush();
@@ -92,8 +97,10 @@ final class MetricsTest extends TestCase
         self::assertStringContainsString("proxy_cdn_requests_total{method=\"other\",cache=\"none\",status=\"other\"} 50\n", $text);
         self::assertStringContainsString("proxy_cdn_requests_total{method=\"GET\",cache=\"HIT\",status=\"other\"} 1\n", $text);
         self::assertStringContainsString("proxy_cdn_origin_fetches_total{outcome=\"other\"} 50\n", $text);
+        self::assertStringContainsString("proxy_cdn_purges_total{result=\"other\"} 50\n", $text);
         self::assertSame(2, substr_count($text, 'proxy_cdn_requests_total{'));
         self::assertSame(1, substr_count($text, 'proxy_cdn_origin_fetches_total{'));
+        self::assertSame(1, substr_count($text, 'proxy_cdn_purges_total{'));
     }
 
     public function testWithoutStoreNothingIsCounted(): void

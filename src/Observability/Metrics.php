@@ -19,6 +19,8 @@ use Mfonte\ProxyCdn\Config\OperationsConfig;
  * | proxy_cdn_requests_total                | counter   | method, cache, status  |
  * | proxy_cdn_request_duration_seconds      | histogram | cache                  |
  * | proxy_cdn_origin_fetches_total          | counter   | outcome                |
+ * | proxy_cdn_purges_total                  | counter   | result                 |
+ * | proxy_cdn_peer_purges_total             | counter   | result                 |
  * | proxy_cdn_miss_rate_limited_total       | counter   |                        |
  * | proxy_cdn_early_hints_total             | counter   |                        |
  *
@@ -28,7 +30,7 @@ use Mfonte\ProxyCdn\Config\OperationsConfig;
  *   X-Cache-Status of the response (HIT, MISS, STALE, REVALIDATED,
  *   BYPASS) or "none"; status: the HTTP status, or "other" outside
  *   100-599; outcome: "success", "not_modified" or the failure reason of
- *   the origin fetch (OriginResponse::FAILURE_*).
+ *   the origin fetch (OriginResponse::FAILURE_*); result: a fixed word.
  *   Every label value comes from a fixed set, never from the request, so
  *   the series cannot grow with the traffic, and no label names a host,
  *   a path, a peer or a version.
@@ -54,6 +56,14 @@ final class Metrics
      */
     public const OTHER = 'other';
 
+    public const RESULT_PURGED = 'purged';
+
+    public const RESULT_REFUSED = 'refused';
+
+    public const RESULT_OK = 'ok';
+
+    public const RESULT_FAILED = 'failed';
+
     /**
      * Upper bounds of the histogram buckets, in seconds: hits served by PHP
      * take about a millisecond, misses up to UPSTREAM_TIMEOUT.
@@ -73,10 +83,14 @@ final class Metrics
         'too_large', 'timeout', 'dns', 'connect', 'tls', 'network', 'other',
     ];
 
+    private const RESULTS = [self::RESULT_PURGED, self::RESULT_REFUSED, self::RESULT_OK, self::RESULT_FAILED];
+
     private const FAMILIES = [
         'requests_total' => ['counter', 'Requests answered by PHP, by method, X-Cache-Status and HTTP status.'],
         'request_duration_seconds' => ['histogram', 'Time PHP took to build the response, by X-Cache-Status.'],
         'origin_fetches_total' => ['counter', 'Requests sent to the origins, by outcome.'],
+        'purges_total' => ['counter', 'PURGE requests, by result (purged or refused).'],
+        'peer_purges_total' => ['counter', 'Purges sent to CLUSTER_PEERS, by result (ok or failed).'],
         'miss_rate_limited_total' => ['counter', 'Misses refused with 429 by MISS_RATE_LIMIT.'],
         'early_hints_total' => ['counter', '103 Early Hints responses sent before an origin fetch.'],
     ];
@@ -141,6 +155,24 @@ final class Metrics
     public function recordOriginFetch(string $outcome): void
     {
         $this->increment('origin_fetches_total', ['outcome' => in_array($outcome, self::OUTCOMES, true) ? $outcome : self::OTHER]);
+    }
+
+    /**
+     * Counts a PURGE request.
+     *
+     * @param string $result RESULT_PURGED or RESULT_REFUSED
+     */
+    public function recordPurge(string $result): void
+    {
+        $this->increment('purges_total', ['result' => in_array($result, self::RESULTS, true) ? $result : self::OTHER]);
+    }
+
+    /**
+     * Counts a purge sent to a peer.
+     */
+    public function recordPeerPurge(bool $succeeded): void
+    {
+        $this->increment('peer_purges_total', ['result' => $succeeded ? self::RESULT_OK : self::RESULT_FAILED]);
     }
 
     /**

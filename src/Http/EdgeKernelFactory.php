@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Http;
 
 use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
+use Mfonte\ProxyCdn\Cluster\PeerNotifier;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\ImageConverter;
 use Mfonte\ProxyCdn\Observability\HealthCheck;
@@ -19,8 +20,10 @@ use Psr\Log\LoggerInterface;
  * ProxyKernelFactory, with the same arguments plus the Metrics of the
  * request: the origin fetches are counted (MeteredOriginFetcher), the
  * misses go through the miss rate limit and the Early Hints of the
- * configuration (OriginFetchGuards), /healthz checks the cache and state
- * directories, and /metrics is served when METRICS_KEYS is set.
+ * configuration (OriginFetchGuards), /healthz
+ * checks the cache and state directories, /metrics is served when
+ * METRICS_KEYS is set, and accepted purges are fanned out to CLUSTER_PEERS
+ * (none when it is empty).
  */
 final class EdgeKernelFactory
 {
@@ -54,7 +57,8 @@ final class EdgeKernelFactory
             new HealthCheck(rtrim($publicDirectory, '/') . '/' . CacheKeyResolver::CACHE_DIRECTORY, $stateDirectory),
             $metrics,
             new MetricsAuthenticator($config->getOperations()->getMetricsKeys()),
-            $logger
+            $logger,
+            PeerNotifier::fromConfig($config, $logger)
         );
     }
 }
