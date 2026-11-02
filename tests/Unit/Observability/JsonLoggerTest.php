@@ -52,7 +52,8 @@ final class JsonLoggerTest extends TestCase
 
         $entries = $this->entries();
         self::assertCount(2, $entries);
-        self::assertSame(['timestamp', 'level', 'channel', 'message', 'context'], array_keys($entries[0]));
+        self::assertSame(['timestamp', 'level', 'channel', 'request_id', 'message', 'context'], array_keys($entries[0]));
+        self::assertNull($entries[0]['request_id']);
         self::assertSame('error', $entries[0]['level']);
         self::assertSame('proxy-cdn', $entries[0]['channel']);
         self::assertSame('upstream non-200', $entries[0]['message']);
@@ -186,7 +187,8 @@ final class JsonLoggerTest extends TestCase
         self::assertIsArray($context);
         self::assertSame('conversion_timeout', $context['conversion_error_code'] ?? null);
         self::assertIsArray($context['exception']);
-        self::assertSame('conversion_timeout', $context['exception']['error_code'] ?? null);
+        self::assertSame('conversion_timeout', $context['exception']['conversion_error_code'] ?? null);
+        self::assertArrayNotHasKey('error_code', $context);
         self::assertSame(ConversionTimeoutException::class, $context['exception']['class'] ?? null);
         self::assertSame('/a.png', $context['url'] ?? null);
     }
@@ -214,6 +216,7 @@ final class JsonLoggerTest extends TestCase
         $context = $this->entries()[0]['context'];
         self::assertIsArray($context);
         self::assertArrayNotHasKey('conversion_error_code', $context);
+        self::assertSame('own_code', $context['error_code'] ?? null, 'copied under the key of the API error codes');
         self::assertIsArray($context['exception']);
         self::assertSame('own_code', $context['exception']['error_code'] ?? null);
         self::assertIsArray($context['previous']);
@@ -275,6 +278,166 @@ final class JsonLoggerTest extends TestCase
         $entry = $this->entries()[0];
         self::assertSame("bad \u{FFFD} byte", $entry['message']);
         self::assertSame(['url' => "/\u{FFFD}.png"], $entry['context']);
+    }
+
+    public function testTheRequestIdIsInEveryEntry(): void
+    {
+        $logger = new JsonLogger($this->file, LogLevel::DEBUG, JsonLogger::DEFAULT_CHANNEL, 'abc-123');
+
+        $logger->info('one');
+        $logger->withRequestId('def-456')->info('two');
+        $logger->withRequestId(null)->info('three');
+
+        self::assertSame(['abc-123', 'def-456', null], array_column($this->entries(), 'request_id'));
+    }
+
+    /**
+     * A non-string level is refused with a message that names it, without
+     * a warning from a cast.
+     *
+     * @dataProvider provideInvalidLevels
+     *
+     * @param mixed $level
+     */
+    #[DataProvider('provideInvalidLevels')]
+    public function testANonStringLevelIsRejected($level, string $named): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Unknown log level: ' . $named);
+
+        (new JsonLogger($this->file))->log($level, 'message');
+    }
+
+    /**
+     * @return array<string, array{mixed, string}>
+     */
+    public static function provideInvalidLevels(): array
+    {
+        return [
+            'integer' => [3, '3'],
+            'boolean' => [true, 'true'],
+            'NAN' => [NAN, 'NAN'],
+            'array' => [['error'], 'array'],
+            'null' => [null, 'NULL'],
+        ];
+    }
+
+    /**
+     * NAN and the infinities have no JSON form and must not be cast (PHP
+     * 8.5 warns when NAN is cast): they are written by name, in the
+     * context and in the message.
+     */
+    public function testNonFiniteFloatsAreWrittenByName(): void
+    {
+        (new JsonLogger($this->file))->info('ratio {nan} {inf} {minus}', ['nan' => NAN, 'inf' => INF, 'minus' => -INF, 'list' => [NAN]]);
+
+        $entry = $this->entries()[0];
+        self::assertSame('ratio NAN INF -INF', $entry['message']);
+        self::assertSame(['nan' => 'NAN', 'inf' => 'INF', 'minus' => '-INF', 'list' => ['NAN']], $entry['context']);
+    }
+
+    public function testAnErrorCodeGivenByTheCallerIsKept(): void
+    {
+        $exception = new class ('api') extends \RuntimeException {
+            public function getErrorCode(): string
+            {
+                return 'unsupported_format';
+            }
+        };
+
+        (new JsonLogger($this->file))->error('failed', ['exception' => $exception, JsonLogger::ERROR_CODE => 'set_by_caller']);
+
+        $context = $this->entries()[0]['context'];
+        self::assertIsArray($context);
+        self::assertSame('set_by_caller', $context[JsonLogger::ERROR_CODE] ?? null);
+    }
+
+    /**
+     * The file and its directory are created without write access for
+     * other users, whatever the umask.
+     */
+    public function testTheFileAndItsDirectoryAreNotWritableByOthers(): void
+    {
+        $umask = umask(0);
+        try {
+            (new JsonLogger($this->file))->error('first');
+            (new JsonLogger($this->file))->error('second');
+        } finally {
+            umask($umask);
+        }
+
+        clearstatcache();
+        self::assertSame(JsonLogger::FILE_MODE, fileperms($this->file) & 0777);
+        self::assertSame(JsonLogger::DIRECTORY_MODE, fileperms(dirname($this->file)) & 0777);
+        self::assertCount(2, $this->entries());
+    }
+
+    /**
+     * An existing file keeps the mode the operator gave it.
+     */
+    public function testAnExistingFileKeepsItsMode(): void
+    {
+        $this->directory->write('logs/proxy.log', '');
+        chmod($this->file, 0600);
+
+        (new JsonLogger($this->file))->error('entry');
+
+        clearstatcache();
+        self::assertSame(0600, fileperms($this->file) & 0777);
+        self::assertCount(1, $this->entries());
+    }
+
+    /**
+     * LOG_FILE=error_log writes through error_log(), to the error_log ini
+     * setting.
+     */
+    public function testTheErrorLogDestination(): void
+    {
+        $target = $this->directory->path('php-error.log');
+        $previous = ini_set('error_log', $target);
+        try {
+            (new JsonLogger(JsonLogger::DESTINATION_ERROR_LOG, LogLevel::DEBUG, JsonLogger::DEFAULT_CHANNEL, 'rid'))->warning('to the error log');
+        } finally {
+            ini_set('error_log', $previous === false ? '' : $previous);
+        }
+
+        $contents = (string) file_get_contents($target);
+        self::assertStringContainsString('"message":"to the error log"', $contents);
+        self::assertStringContainsString('"request_id":"rid"', $contents);
+        self::assertFileDoesNotExist($this->file);
+    }
+
+    /**
+     * LOG_FILE=stderr writes to the standard error stream of the process.
+     */
+    public function testTheStderrDestination(): void
+    {
+        $script = '<?php require ' . var_export(dirname(__DIR__, 3) . '/vendor/autoload.php', true) . ';'
+            . ' (new ' . JsonLogger::class . '("stderr"))->error("to stderr");';
+        $file = $this->directory->write('stderr.php', $script);
+        // A command string: proc_open() takes an array from PHP 7.4 only.
+        $process = proc_open(
+            escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($file),
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes
+        );
+        self::assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        proc_close($process);
+
+        self::assertSame('', $stdout);
+        $entry = json_decode(trim((string) $stderr), true);
+        self::assertIsArray($entry, (string) $stderr);
+        self::assertSame('to stderr', $entry['message']);
+    }
+
+    public function testIsLevel(): void
+    {
+        self::assertTrue(JsonLogger::isLevel(LogLevel::NOTICE));
+        self::assertFalse(JsonLogger::isLevel('verbose'));
     }
 
     public function testAnUnwritableFileIsIgnored(): void
