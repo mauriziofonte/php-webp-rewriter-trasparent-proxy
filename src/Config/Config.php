@@ -21,10 +21,6 @@ use Mfonte\ProxyCdn\Security\HostAllowlist;
  */
 final class Config
 {
-    public const CONVERSION_NONE = 'none';
-    public const CONVERSION_NATIVE = 'native';
-    public const CONVERSION_API = 'api';
-
     /** IMAGE_CONVERTER: no AVIF or WEBP variant and no resize is made. */
     public const CONVERTER_NONE = 'none';
 
@@ -232,21 +228,6 @@ final class Config
      */
     private $resizeKey;
 
-    /**
-     * @var string
-     */
-    private $imageConversionMode;
-
-    /**
-     * @var string|null
-     */
-    private $webpApiServer;
-
-    /**
-     * @var string|null
-     */
-    private $webpApiKey;
-
     private function __construct()
     {
     }
@@ -301,13 +282,6 @@ final class Config
         $config->resizeWidths = self::integerList($values, 'RESIZE_WIDTHS');
         $config->resizeKey = self::optionalString($values, 'RESIZE_KEY');
 
-        $config->imageConversionMode = self::string($values, 'IMAGE_CONVERSION_MODE');
-        $config->webpApiServer = self::optionalString($values, 'WEBP_API_SERVER');
-        $config->webpApiKey = self::optionalString($values, 'WEBP_API_KEY');
-
-        if (!in_array($config->imageConversionMode, [self::CONVERSION_NONE, self::CONVERSION_NATIVE, self::CONVERSION_API], true)) {
-            throw new InvalidConfigurationException(['IMAGE_CONVERSION_MODE has an unknown value']);
-        }
         if (!in_array($config->imageConverter, self::CONVERTERS, true)) {
             throw new InvalidConfigurationException(['IMAGE_CONVERTER has an unknown value']);
         }
@@ -363,9 +337,6 @@ final class Config
             'QUERY_STRING_MODE' => $this->queryStringMode,
             'TRUSTED_PROXIES' => array_map('strval', $this->trustedProxies),
             'PURGE_KEYS' => $this->purgeKeys,
-            'IMAGE_CONVERSION_MODE' => $this->imageConversionMode,
-            'WEBP_API_SERVER' => $this->webpApiServer,
-            'WEBP_API_KEY' => $this->webpApiKey,
             'IMAGE_CONVERTER' => $this->imageConverter,
             'IMAGE_FORMATS' => $this->imageFormats,
             'IMAGE_CONVERSION_TIMEOUT' => $this->imageConversionTimeout,
@@ -639,30 +610,6 @@ final class Config
     public function getPurgeKeys(): array
     {
         return $this->purgeKeys;
-    }
-
-    /**
-     * IMAGE_CONVERSION_MODE: one of the CONVERSION_* constants.
-     */
-    public function getImageConversionMode(): string
-    {
-        return $this->imageConversionMode;
-    }
-
-    /**
-     * WEBP_API_SERVER: URL of the 1.x conversion API, used in "api" mode.
-     */
-    public function getWebpApiServer(): ?string
-    {
-        return $this->webpApiServer;
-    }
-
-    /**
-     * WEBP_API_KEY: key of the 1.x conversion API, used in "api" mode.
-     */
-    public function getWebpApiKey(): ?string
-    {
-        return $this->webpApiKey;
     }
 
     /**

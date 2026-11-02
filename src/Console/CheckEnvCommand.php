@@ -18,8 +18,8 @@ use Symfony\Component\Console\Output\OutputInterface;
 /**
  * "check-env": validates the configuration with the rules the proxy applies
  * at boot (ConfigValidator), plus the host requirements: the curl extension
- * and, in native conversion mode, the cwebp binary. Prints the 2.x messages
- * and exits with 1 on any error.
+ * and, in local conversion mode, a conversion backend and ext-posix (as
+ * warnings). Prints the 2.x messages and exits with 1 on any error.
  *
  * With --informational, used by the Composer install hooks, it always exits
  * with 0, so that installing the dependencies never fails because the proxy
@@ -35,6 +35,14 @@ final class CheckEnvCommand extends Command
      * max-age is written there, and must equal CACHE_EXPIRY.
      */
     public const WEB_SERVER_CONFIGS = ['public/.htaccess', 'config/nginx/proxy-cdn-headers.conf'];
+
+    /**
+     * The PHP extensions and the binaries of the conversion backends of the
+     * library, one of which local conversion needs.
+     */
+    private const LOCAL_BACKEND_EXTENSIONS = ['gd', 'imagick'];
+
+    private const LOCAL_BACKEND_BINARIES = ['cwebp', 'avifenc', 'vips'];
 
     /**
      * @var ConfigLoader
@@ -158,8 +166,8 @@ final class CheckEnvCommand extends Command
         if (!($this->extensionLoaded)('curl')) {
             $validation = $validation->withError('cURL extension is not installed');
         }
-        if (($values['IMAGE_CONVERSION_MODE'] ?? null) === Config::CONVERSION_NATIVE && !($this->binaryExists)('cwebp')) {
-            $validation = $validation->withError('cwebp binary not found in PATH (required when IMAGE_CONVERSION_MODE = "native")');
+        if (in_array($values['IMAGE_CONVERTER'] ?? null, [Config::CONVERTER_LOCAL, Config::CONVERTER_REMOTE], true)) {
+            $validation = $this->checkLocalConversion($validation, $values);
         }
         if ($this->projectRoot !== null && $validation->isValid()) {
             try {
@@ -176,6 +184,39 @@ final class CheckEnvCommand extends Command
                     );
                 }
             }
+        }
+
+        return $validation;
+    }
+
+    /**
+     * The warnings of local conversion (IMAGE_CONVERTER="local", or the
+     * fallback of the API): no conversion backend, or no ext-posix.
+     *
+     * @param array<string, string|null> $values
+     */
+    private function checkLocalConversion(ConfigValidation $validation, array $values): ConfigValidation
+    {
+        $local = ($values['IMAGE_CONVERTER'] ?? null) === Config::CONVERTER_LOCAL
+            || ConfigValidator::booleanOf((string) ($values['IMAGE_API_FALLBACK'] ?? '')) === true;
+        if (!$local) {
+            return $validation;
+        }
+        $backends = array_merge(
+            array_filter(self::LOCAL_BACKEND_EXTENSIONS, $this->extensionLoaded),
+            array_filter(self::LOCAL_BACKEND_BINARIES, $this->binaryExists)
+        );
+        if ($backends === []) {
+            $validation = $validation->withWarning(
+                'WARNING: local image conversion has no backend: install the gd or imagick extension,' . "\n"
+                . 'or cwebp, avifenc or vips in PATH. The originals are served meanwhile.'
+            );
+        }
+        if (!($this->extensionLoaded)('posix')) {
+            $validation = $validation->withWarning(
+                'WARNING: the posix extension is not loaded: local image conversion runs without' . "\n"
+                . 'process isolation, and the library does not cache what it detects.'
+            );
         }
 
         return $validation;

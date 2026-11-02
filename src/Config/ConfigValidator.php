@@ -19,8 +19,8 @@ use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
  *
  * Raw values are strings, or null for a key that is not set; the empty
  * string and the literal "null" have already been turned into null by
- * ConfigLoader::normalise(). Host checks such as the presence of the cwebp
- * binary are not configuration and stay in check-env.
+ * ConfigLoader::normalise(). Host checks such as the presence of the curl
+ * extension are not configuration and stay in check-env.
  */
 final class ConfigValidator
 {
@@ -87,8 +87,6 @@ final class ConfigValidator
      * The QUERY_STRING_ALLOWLIST value that keeps no parameter.
      */
     private const NO_PARAMETER = 'none';
-
-    private const CONVERSION_MODES = [Config::CONVERSION_NATIVE, Config::CONVERSION_API, Config::CONVERSION_NONE];
 
     /**
      * @param array<string, string|null> $values raw values keyed by the names of ConfigLoader::KEYS
@@ -184,19 +182,6 @@ final class ConfigValidator
         if (PurgeAuthenticator::parseKeys(self::entryList($values['PURGE_KEYS'] ?? null)) === null) {
             $errors[] = 'PURGE_KEYS must list "scope=secret" pairs separated by commas: the scope is the host name of an origin or "*", '
                 . 'the secret ' . PurgeAuthenticator::MIN_SECRET_BYTES . ' or more printable ASCII characters without spaces or commas';
-        }
-
-        $mode = $values['IMAGE_CONVERSION_MODE'] ?? Config::CONVERSION_NONE;
-        if (!in_array($mode, self::CONVERSION_MODES, true)) {
-            $errors[] = 'IMAGE_CONVERSION_MODE must be one of: native, api, none (got: ' . var_export($mode, true) . ')';
-        }
-        if ($mode === Config::CONVERSION_API) {
-            if (($values['WEBP_API_SERVER'] ?? null) === null) {
-                $errors[] = 'WEBP_API_SERVER must be set for API mode';
-            }
-            if (($values['WEBP_API_KEY'] ?? null) === null) {
-                $errors[] = 'WEBP_API_KEY must be set for API mode';
-            }
         }
 
         list($conversionErrors, $conversionWarnings) = self::validateConversion($values);

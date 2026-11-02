@@ -8,7 +8,6 @@ use Mfonte\ProxyCdn\Config\ConfigLoader;
 use Mfonte\ProxyCdn\Console\CheckEnvCommand;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Console\Tester\CommandTester;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -33,9 +32,16 @@ final class CheckEnvCommandTest extends TestCase
     private $environment = [];
 
     /**
+     * The binaries in PATH.
+     *
+     * @var list<string>
+     */
+    private $binaries = [];
+
+    /**
      * @var bool
      */
-    private $cwebpInstalled = true;
+    private $posixLoaded = true;
 
     /**
      * @var bool
@@ -47,7 +53,8 @@ final class CheckEnvCommandTest extends TestCase
         parent::set_up();
         $this->directory = new TemporaryDirectory();
         $this->environment = [];
-        $this->cwebpInstalled = true;
+        $this->binaries = [];
+        $this->posixLoaded = true;
         $this->curlLoaded = true;
     }
 
@@ -174,33 +181,28 @@ final class CheckEnvCommandTest extends TestCase
         );
     }
 
-    /**
-     * @dataProvider provideModes
-     */
-    #[DataProvider('provideModes')]
-    public function testCwebpIsRequiredInNativeModeOnly(string $mode, int $expectedExitCode): void
+    public function testLocalConversionWithoutBackendOrPosixIsWarnedAbout(): void
     {
-        $this->directory->write('.env', self::VALID_ENV . 'IMAGE_CONVERSION_MODE="' . $mode . "\"\nWEBP_API_SERVER=\"https://api.example.test\"\nWEBP_API_KEY=\"key\"\n");
-        $this->cwebpInstalled = false;
+        $this->directory->write('.env', self::VALID_ENV . "IMAGE_CONVERTER=\"local\"\n");
+        $this->posixLoaded = false;
 
         list($exitCode, $display) = $this->runCommand([]);
 
-        self::assertSame($expectedExitCode, $exitCode, $display);
-        if ($expectedExitCode === 1) {
-            self::assertStringContainsString('    • cwebp binary not found in PATH (required when IMAGE_CONVERSION_MODE = "native")', $display);
-        }
+        self::assertSame(0, $exitCode, $display);
+        self::assertStringContainsString('! WARNING: local image conversion has no backend', $display);
+        self::assertStringContainsString('! WARNING: the posix extension is not loaded', $display);
     }
 
-    /**
-     * @return array<string, array{string, int}>
-     */
-    public static function provideModes(): array
+    public function testLocalConversionWithABackendIsNotWarnedAbout(): void
     {
-        return [
-            'native' => ['native', 1],
-            'api' => ['api', 0],
-            'none' => ['none', 0],
-        ];
+        $this->directory->write('.env', self::VALID_ENV . "IMAGE_CONVERTER=\"local\"\n");
+        $this->binaries = ['avifenc'];
+
+        list($exitCode, $display) = $this->runCommand([]);
+
+        self::assertSame(0, $exitCode, $display);
+        self::assertStringNotContainsString('image conversion', $display);
+        self::assertStringNotContainsString('posix', $display);
     }
 
     public function testTheCurlExtensionIsRequired(): void
@@ -258,10 +260,10 @@ final class CheckEnvCommandTest extends TestCase
             new ConfigLoader($this->directory->path('.env'), null, $this->environmentReader()),
             null,
             function (string $binary): bool {
-                return $binary === 'cwebp' && $this->cwebpInstalled;
+                return in_array($binary, $this->binaries, true);
             },
             function (string $extension): bool {
-                return $extension === 'curl' && $this->curlLoaded;
+                return ($extension === 'curl' && $this->curlLoaded) || ($extension === 'posix' && $this->posixLoaded);
             },
             $this->directory->path()
         );

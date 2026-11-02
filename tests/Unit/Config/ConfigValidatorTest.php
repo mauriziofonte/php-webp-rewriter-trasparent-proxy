@@ -79,14 +79,6 @@ final class ConfigValidatorTest extends TestCase
                 ['CACHEABLE_EXTENSIONS' => ' , ,'],
                 'CACHEABLE_EXTENSIONS must be set (comma-separated list of file extensions)',
             ],
-            'unknown mode' => [
-                ['IMAGE_CONVERSION_MODE' => 'gd'],
-                "IMAGE_CONVERSION_MODE must be one of: native, api, none (got: 'gd')",
-            ],
-            'api without server' => [
-                ['IMAGE_CONVERSION_MODE' => 'api', 'WEBP_API_KEY' => 'key'],
-                'WEBP_API_SERVER must be set for API mode',
-            ],
             'unknown converter' => [
                 ['IMAGE_CONVERTER' => 'gd'],
                 "IMAGE_CONVERTER must be one of: none, local, remote (got: 'gd')",
@@ -289,7 +281,6 @@ final class ConfigValidatorTest extends TestCase
         return [
             'origin with upper-case scheme' => [['SOURCE_ORIGIN' => 'HTTPS://origin.example.test']],
             'origin with path' => [['SOURCE_ORIGIN' => 'https://origin.example.test/assets/']],
-            'native mode' => [['IMAGE_CONVERSION_MODE' => 'native']],
             'local converter' => [['IMAGE_CONVERTER' => 'local', 'IMAGE_FORMATS' => 'WEBP']],
             'remote converter' => [[
                 'IMAGE_CONVERTER' => 'remote',

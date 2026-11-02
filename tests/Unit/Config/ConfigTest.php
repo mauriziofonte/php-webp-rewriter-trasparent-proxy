@@ -43,9 +43,6 @@ final class ConfigTest extends TestCase
         self::assertSame('agent/1.0', $config->getUpstreamUserAgent());
         self::assertSame(['v', 'lang'], $config->getQueryStringAllowlist());
         self::assertSame('reject', $config->getQueryStringMode());
-        self::assertSame(Config::CONVERSION_API, $config->getImageConversionMode());
-        self::assertSame('https://api.example.test/convert', $config->getWebpApiServer());
-        self::assertSame('secret', $config->getWebpApiKey());
         self::assertSame(Config::CONVERTER_REMOTE, $config->getImageConverter());
         self::assertSame(['avif', 'webp'], $config->getImageFormats());
         self::assertSame(55, $config->getImageConversionTimeout());
@@ -80,8 +77,6 @@ final class ConfigTest extends TestCase
             'SOURCE_ORIGIN_SERVER' => null,
             'TIMEZONE' => null,
             'UPSTREAM_USER_AGENT' => null,
-            'WEBP_API_SERVER' => null,
-            'WEBP_API_KEY' => null,
             'IMAGE_CONVERTER' => Config::CONVERTER_NONE,
             'IMAGE_API_URL' => null,
             'IMAGE_API_KEY' => null,
@@ -92,8 +87,6 @@ final class ConfigTest extends TestCase
         self::assertNull($config->getSourceOriginServer());
         self::assertNull($config->getTimezone());
         self::assertNull($config->getUpstreamUserAgent());
-        self::assertNull($config->getWebpApiServer());
-        self::assertNull($config->getWebpApiKey());
         self::assertNull($config->getImageApiUrl());
         self::assertNull($config->getImageApiKey());
         self::assertNull($config->getImageApiCaFile());
@@ -158,7 +151,6 @@ final class ConfigTest extends TestCase
             'map instead of list' => ['CACHEABLE_EXTENSIONS', ['a' => 'css'], 'CACHEABLE_EXTENSIONS must be a non-empty list of strings'],
             'empty item' => ['CACHEABLE_EXTENSIONS', ['css', ''], 'CACHEABLE_EXTENSIONS must be a non-empty list of strings'],
             'string instead of list' => ['CACHEABLE_EXTENSIONS', 'css', 'CACHEABLE_EXTENSIONS must be a non-empty list of strings'],
-            'unknown mode' => ['IMAGE_CONVERSION_MODE', 'gd', 'IMAGE_CONVERSION_MODE has an unknown value'],
             'unknown converter' => ['IMAGE_CONVERTER', 'gd', 'IMAGE_CONVERTER has an unknown value'],
             'empty allowlist item' => ['QUERY_STRING_ALLOWLIST', ['v', ''], 'QUERY_STRING_ALLOWLIST must be a list of non-empty strings'],
             'unknown query mode' => ['QUERY_STRING_MODE', 'drop', 'QUERY_STRING_MODE has an unknown value'],
@@ -231,9 +223,6 @@ final class ConfigTest extends TestCase
             'QUERY_STRING_MODE' => 'reject',
             'TRUSTED_PROXIES' => ['192.0.2.0/24', '2001:db8::/32'],
             'PURGE_KEYS' => ['origin.example.test=0123456789abcdef'],
-            'IMAGE_CONVERSION_MODE' => Config::CONVERSION_API,
-            'WEBP_API_SERVER' => 'https://api.example.test/convert',
-            'WEBP_API_KEY' => 'secret',
             'IMAGE_CONVERTER' => Config::CONVERTER_REMOTE,
             'IMAGE_FORMATS' => ['avif', 'webp'],
             'IMAGE_CONVERSION_TIMEOUT' => 55,

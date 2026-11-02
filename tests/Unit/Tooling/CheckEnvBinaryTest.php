@@ -125,7 +125,7 @@ final class CheckEnvBinaryTest extends TestCase
         $this->writeEnv(
             "SOURCE_ORIGIN=\"https://origin.example.test\"\nPROXY_HOSTS=\"cdn.example.test\"\n"
             . "CACHEABLE_EXTENSIONS=\"css,js,png\"\n"
-            . "IMAGE_CONVERSION_MODE=\"none\"\n"
+            . "IMAGE_CONVERTER=\"none\"\n"
             . "UPSTREAM_VERIFY_TLS=true\n"
         );
 

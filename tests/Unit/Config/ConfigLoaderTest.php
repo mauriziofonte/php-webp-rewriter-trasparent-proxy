@@ -136,9 +136,6 @@ final class ConfigLoaderTest extends TestCase
         self::assertSame(['v', 'ver', 'version', 'id'], $config->getQueryStringAllowlist());
         self::assertSame('ignore', $config->getQueryStringMode());
         self::assertSame([], $config->getTrustedProxies());
-        self::assertSame(Config::CONVERSION_NONE, $config->getImageConversionMode());
-        self::assertNull($config->getWebpApiServer());
-        self::assertNull($config->getWebpApiKey());
         self::assertSame(Config::CONVERTER_NONE, $config->getImageConverter());
         self::assertSame(['avif', 'webp'], $config->getImageFormats());
         self::assertSame(55, $config->getImageConversionTimeout());
