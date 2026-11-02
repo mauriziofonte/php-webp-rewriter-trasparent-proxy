@@ -188,6 +188,42 @@ final class VariantConverterTest extends TestCase
         self::assertSame([], $this->converter->getCalls());
     }
 
+    public function testAResizedEntryIsStoredWithItsVariants(): void
+    {
+        $resized = (new CacheKeyResolver($this->directory->path('_cache')))->resolve('cdn.example.test', '/_resize/320/' . str_repeat('a', 32) . '/images/a.png', '');
+
+        $outcome = $this->variants()->resizeEntry($resized, self::FIXTURES . 'image.png', 320, 'req-2');
+
+        self::assertSame(VariantConverter::RESIZED, $outcome);
+        self::assertFileEquals(self::FIXTURES . 'resized.png', $resized->getFile());
+        self::assertFileExists($resized->getVariantFile('webp'));
+        self::assertFileExists($resized->getVariantFile('avif'));
+        $calls = $this->converter->getCalls();
+        self::assertSame(['original', 320, 'req-2'], [$calls[0][0], $calls[0][2], $calls[0][3]]);
+        // The variants are made from the resized image.
+        self::assertSame((string) file_get_contents(self::FIXTURES . 'resized.png'), $calls[1][1]);
+    }
+
+    public function testAnImageOfNoKnownFormatIsNotResized(): void
+    {
+        $outcome = $this->variants()->resizeEntry($this->location, $this->directory->write('source.png', 'PNG-BYTES'), 320, null);
+
+        self::assertSame(VariantConverter::REJECTED, $outcome);
+        self::assertFileDoesNotExist($this->location->getFile());
+        self::assertSame([], $this->converter->getCalls());
+    }
+
+    public function testAResizeTheConverterCannotMakeNowIsUnavailable(): void
+    {
+        $this->converter->setUnavailable(true);
+
+        $outcome = $this->variants()->resizeEntry($this->location, self::FIXTURES . 'image.png', 320, null);
+
+        self::assertSame(VariantConverter::UNAVAILABLE, $outcome);
+        self::assertFileDoesNotExist($this->location->getFile());
+        self::assertSame('concurrency_unavailable', $this->logger->recordsWithMessage('image resize failed')[0]['context']['error_code'] ?? null);
+    }
+
     private function variants(): VariantConverter
     {
         return new VariantConverter($this->converter, new FormatNegotiator(['avif', 'webp']), $this->failures(), new FilesystemStorage(), $this->directory->path('_cache/.work'), 30, 1048576, $this->logger);

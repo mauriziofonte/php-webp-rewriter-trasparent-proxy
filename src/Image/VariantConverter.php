@@ -17,9 +17,9 @@ use Mfonte\SecureImageConverter\Validation\Limits;
 use Psr\Log\LoggerInterface;
 
 /**
- * Makes the AVIF and WEBP variants of the raster entries with an
- * ImageConverter, and stores only what it verified (finding C-11: 2.x
- * stored whatever the API sent).
+ * Makes the AVIF and WEBP variants of the raster entries, and the resized
+ * images of the signed resize URLs, with an ImageConverter, and stores
+ * only what it verified (finding C-11: 2.x stored whatever the API sent).
  *
  * Each conversion writes to a private directory (mode 0700) of the work
  * directory, which lives in the cache root so that the result is moved
@@ -47,6 +47,22 @@ final class VariantConverter
      * again on a hit.
      */
     public const PERMANENT_RETRY = 86400;
+
+    /**
+     * resize(): the resized image is at the target.
+     */
+    public const RESIZED = 'resized';
+
+    /**
+     * resize(): the image cannot be resized as asked; trying again would
+     * fail the same way.
+     */
+    public const REJECTED = 'rejected';
+
+    /**
+     * resize(): the converter cannot resize now.
+     */
+    public const UNAVAILABLE = 'unavailable';
 
     /**
      * The formats the outputs are parsed as by the verification.
@@ -168,6 +184,70 @@ final class VariantConverter
         $this->make($location, $format, $location->getFile(), $requestId);
 
         return $this->storage->isFile($variant);
+    }
+
+    /**
+     * Stores $source resized to $width pixels wide (at most: a smaller
+     * image is not enlarged), in its own format, as the entry of
+     * $location, the entry of a resize URL, with its variants: the
+     * resized image is made and verified in a private directory, its
+     * variants are made from it, and it is moved into place last, so that
+     * the web server never serves it without its variants. One of
+     * RESIZED, REJECTED and UNAVAILABLE; nothing is stored unless RESIZED.
+     *
+     * @param string|null $requestId the ID of the client request, for the API
+     */
+    public function resizeEntry(CacheLocation $location, string $source, int $width, ?string $requestId): string
+    {
+        $logPath = SignedUrlVerifier::mask('/' . $location->getRelativePath());
+        $directory = $this->privateDirectory();
+        if ($directory === null) {
+            $this->logger->warning('image resize failed', ['path' => $logPath, 'width' => $width, ConversionFailure::LOG_ERROR_CODE => 'work_directory', 'reason' => 'The work directory of the conversions cannot be created']);
+
+            return self::UNAVAILABLE;
+        }
+        $resized = $directory . '/resized';
+        try {
+            $outcome = $this->resize($source, $resized, $width, $logPath, $requestId);
+            if ($outcome !== self::RESIZED) {
+                return $outcome;
+            }
+            $this->convertAll($location, $resized, $requestId);
+            if (!$this->storage->ensureDirectory($location->getDirectory()) || !@rename($resized, $location->getFile())) {
+                $this->logger->warning('image resize failed', ['path' => $logPath, 'width' => $width, ConversionFailure::LOG_ERROR_CODE => 'cache_write', 'reason' => 'The resized image cannot be moved into the cache']);
+
+                return self::UNAVAILABLE;
+            }
+
+            return self::RESIZED;
+        } finally {
+            if (is_file($resized)) {
+                @unlink($resized);
+            }
+            @rmdir($directory);
+        }
+    }
+
+    /**
+     * Writes $source resized to $width pixels wide to $target. One of
+     * RESIZED, REJECTED and UNAVAILABLE.
+     */
+    private function resize(string $source, string $target, int $width, string $logPath, ?string $requestId): string
+    {
+        $format = self::formatOf($source);
+        if ($format === null) {
+            $this->logger->warning('image resize failed', ['path' => $logPath, 'width' => $width, ConversionFailure::LOG_ERROR_CODE => ErrorCode::UNSUPPORTED_FORMAT, 'reason' => 'The image is of no known format']);
+
+            return self::REJECTED;
+        }
+        $request = (new ConversionRequest(ConversionRequest::FORMAT_ORIGINAL))->withWidth($width);
+        $failure = $this->run($source, $target, $request, $format, $requestId);
+        if ($failure === null) {
+            return self::RESIZED;
+        }
+        $this->logger->warning('image resize failed', ['path' => $logPath, 'width' => $width] + $failure->logContext());
+
+        return $failure->isTransient() ? self::UNAVAILABLE : self::REJECTED;
     }
 
     /**
