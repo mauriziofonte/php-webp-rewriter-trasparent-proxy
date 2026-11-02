@@ -1,0 +1,99 @@
+# Example: two proxy-cdn instances behind a load balancer, each with its
+# own cache, that send every accepted PURGE to each other (CLUSTER_PEERS)
+# over TLS with a private CA. Run ./setup.sh once (certificates, data
+# directories), then "docker compose up". See "Running several instances"
+# in the README of the project.
+#
+#   lb       nginx, published on 127.0.0.1:8080, round robin to the nodes
+#   node-a   nginx (hits) + PHP-FPM (misses, PURGE), cache in data/node-a
+#   node-b   the same, cache in data/node-b
+#   origin   a stand-in origin serving ./origin
+#
+# The project root is mounted read-only at /app (vendor/ must be installed
+# with Composer); each node mounts its own public/_cache, var/ and logs/.
+# The configuration is node.env plus CLUSTER_PEERS per node; a key that
+# node.env does not set is read from the .env of the project, if any.
+
+name: proxy-cdn-cluster
+
+x-php: &php
+  image: php:${PHP_VERSION:-8.5}-fpm
+  # The owner of data/, so that PHP can write the cache and its state.
+  user: ${CLUSTER_UID:?run ./setup.sh}:${CLUSTER_GID:?run ./setup.sh}
+  env_file: node.env
+  networks: [cluster]
+
+x-web: &web
+  image: nginx:1.29.8
+  networks: [cluster]
+
+services:
+  origin:
+    <<: *web
+    volumes:
+      - ./origin:/usr/share/nginx/html:ro
+
+  node-a-php:
+    <<: *php
+    environment:
+      CLUSTER_PEERS: https://node-b:8443
+    volumes:
+      - ../..:/app:ro
+      - ./data/node-a/cache:/app/public/_cache
+      - ./data/node-a/var:/app/var
+      - ./data/node-a/logs:/app/logs
+      - ./php-fpm.conf:/usr/local/etc/php-fpm.d/zz-proxy-cdn.conf:ro
+      - ./tls/ca.pem:/etc/proxy-cdn/ca.pem:ro
+
+  node-a:
+    <<: *web
+    environment:
+      NODE_NAME: node-a
+    volumes:
+      - ./node-nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ../../config/nginx:/etc/nginx/proxy-cdn:ro
+      - ../..:/app:ro
+      - ./data/node-a/cache:/app/public/_cache:ro
+      - ./tls:/etc/proxy-cdn/tls:ro
+    depends_on: [node-a-php]
+
+  node-b-php:
+    <<: *php
+    environment:
+      CLUSTER_PEERS: https://node-a:8443
+    volumes:
+      - ../..:/app:ro
+      - ./data/node-b/cache:/app/public/_cache
+      - ./data/node-b/var:/app/var
+      - ./data/node-b/logs:/app/logs
+      - ./php-fpm.conf:/usr/local/etc/php-fpm.d/zz-proxy-cdn.conf:ro
+      - ./tls/ca.pem:/etc/proxy-cdn/ca.pem:ro
+
+  node-b:
+    <<: *web
+    environment:
+      NODE_NAME: node-b
+    volumes:
+      - ./node-nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ../../config/nginx:/etc/nginx/proxy-cdn:ro
+      - ../..:/app:ro
+      - ./data/node-b/cache:/app/public/_cache:ro
+      - ./tls:/etc/proxy-cdn/tls:ro
+    depends_on: [node-b-php]
+
+  lb:
+    <<: *web
+    volumes:
+      - ./lb-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - 127.0.0.1:${CLUSTER_PORT:-8080}:80
+    networks:
+      cluster:
+        ipv4_address: 172.30.99.10
+    depends_on: [node-a, node-b]
+
+networks:
+  cluster:
+    ipam:
+      config:
+        - subnet: 172.30.99.0/24
