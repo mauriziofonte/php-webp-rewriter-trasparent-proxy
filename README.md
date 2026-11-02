@@ -21,7 +21,7 @@ This is a **small, hobbyist-to-small-production** project. It is appropriate for
 
 - You need **production-grade CDN semantics**: Cloudflare's free tier (Polish for WEBP, cache, WAF, DDoS protection, anycast) does all of this, properly, for zero euros and five minutes of DNS work. Use that instead.
 - You expect **hundreds of requests per second or more**, or traffic spikes from bots/scanners. PHP-FPM worker pools cap concurrency well below what `nginx proxy_cache` or Varnish deliver with a tenth of the memory.
-- You need **horizontal scaling** behind a load balancer. The on-disk cache is per-instance; purges and warm-up do not propagate. Building shared state on top of this project is more work than starting from nginx/Varnish.
+- You need **horizontal scaling** behind a load balancer. The on-disk cache is per-instance; purges propagate to the other instances (`CLUSTER_PEERS`, see *Operations*), but warm-up, eviction and everything else stay per instance. Building shared state on top of this project is more work than starting from nginx/Varnish.
 - You need **features this project deliberately does not implement** yet: size-capped or LRU cache eviction, metrics/observability endpoints, HTTP/2 push, HTTP/3. (Range and conditional requests, Brotli and gzip negotiation, revalidation with the origin and request coalescing are covered: see *Origin cache semantics*.)
 - You need an **audited security posture**. This repository has no automated test suite and has not undergone a formal security review. The codebase has been manually hardened (atomic writes, circuit breaker, query-string caching, whitelist header mirroring, structured logging) but manual hardening is not the same as a track record in the wild.
 
@@ -44,6 +44,7 @@ The one thing this project does that is genuinely cumbersome to replicate with o
 - [Content negotiation (Accept: image/avif, image/webp)](#content-negotiation-accept-imageavif-imagewebp)
 - [Logging](#logging)
 - [Cache maintenance](#cache-maintenance)
+- [Operations](#operations)
 - [Rewriting origin references to the CDN](#rewriting-origin-references-to-the-cdn)
 - [Security considerations](#security-considerations)
 - [Troubleshooting](#troubleshooting)
@@ -277,14 +278,14 @@ Text, SVG, icon and font entries get the same treatment for `Accept-Encoding`: t
 
 Errors and relevant events are written to `logs/proxy.log` (created lazily, `0755`, outside the DocumentRoot, which must be `public/`).
 
-Log format: one JSON object per line (JSON Lines), with the fields `timestamp` (RFC 3339 with microseconds), `level` (PSR-3 level), `channel` (`proxy-cdn`), `message` and `context`.
+Log format: one JSON object per line (JSON Lines), with the fields `timestamp` (RFC 3339 with microseconds), `level` (PSR-3 level), `channel` (`proxy-cdn`), `request_id`, `message` and `context`. `request_id` is the `X-Request-Id` of the request (a client value of 1 to 128 characters of `A-Z a-z 0-9 . _ : / + = @ -`, as the conversion API accepts it, otherwise 32 new hex digits), sent back on every response PHP answers; the log lines of a command share one per run. `LOG_FILE` sends the lines elsewhere (an absolute path, `stderr` or `error_log`) and `LOG_LEVEL` sets the least severe level written (see *Operations*). A new log file is created `0640`, its directory `0755`.
 
 Levels:
 
 - **error** - upstream fetch failures (with `reason`, `response_code`, and for a transport failure `transport_error_code` and `transport_error`: the libcurl error number, which the stream transport reports too for the same failure, and the message), conversion failures, an invalid configuration.
 - **info** - upstream 404s. Only written when `DEBUG=true`.
 
-An exception in the context is written as an object (`class`, `message`, `code`, `file`, `previous`, and `error_code` when the exception has a `getErrorCode()` method). When the `exception` of an entry comes from the conversion library, its error code is also copied to the context as `conversion_error_code`, the key the conversion API uses for the same codes.
+An exception in the context is written as an object (`class`, `message`, `code`, `file`, `previous`). The error code of an exception of the conversion library is written as `conversion_error_code`, the key the conversion API uses for the same codes; that of any other exception with a `getErrorCode()` method (an error the API answered) as `error_code`. Either is written in the exception object and copied to the context. `NAN`, `INF` and `-INF` are written as strings.
 
 Example entry:
 
@@ -317,11 +318,58 @@ The proxy does not auto-clean stale negative markers or old cached files. Run ma
 # while its lock is held) and var/breaker/ (one file per origin), and
 # needs no cleaning.
 find /srv/sites/cdn/public \( -name '*.404' -o -name '*.netfail' \) -type f -delete
+# (bin/proxy-cdn cache:migrate-2x does this and moves the 2.x entries.)
 
 # Every week: garbage-collect the query-string directories not touched in
 # the last 30 days (one level below .q/ and .qh/ of each host).
 15 3 * * 0 find /srv/sites/cdn/public/_cache/*/.q /srv/sites/cdn/public/_cache/*/.qh -mindepth 1 -maxdepth 1 -type d -atime +30 -exec rm -rf {} +
 ```
+
+## Operations
+
+### Commands
+
+`bin/proxy-cdn` (run it as the PHP-FPM user, from the project root):
+
+| Command | What it does |
+|---|---|
+| `check-env` | Validates the configuration and the host. Also warns when the conversion library would refuse `var/locks` (request coalescing is then silently off), `var/metrics` or `var/ratelimit` (a parent writable by others, another owner), when the log file cannot be written, when a deprecated key is still set, and about what 2.x left (`.cached.env.php`, files in `public/`). |
+| `cache:purge <url>...` | Purges URLs of a proxy host as an authenticated `PURGE` would, then on `CLUSTER_PEERS` (`--local`: here only). Exit code 2 when a peer did not confirm. `--all --host=<host>` empties one host on this instance only. |
+| `cache:evict` | Brings `public/_cache` down to `CACHE_MAX_SIZE` (or `--max-size=2G`), least recently used first: `--by=atime` (default; the last read of the entry or of any of its variants and encodings) or `--by=mtime` (for a file system mounted `noatime`, where atime never moves). An entry always goes with its variants, encodings and metadata, siblings first. Symbolic links are never followed. Writes the size to `var/cache-usage.json` for `/metrics`; without a cap it only measures. `--dry-run` lists. |
+| `cache:warmup <sitemap or list>` | Requests the `<loc>` and `<image:loc>` of a sitemap (local file, or URL on an origin; an index is followed one level) or the URLs of a text file through the proxy, `--concurrency=4` at a time (at most 32). Origin URLs are mapped to their proxy host; other hosts, refused paths, extensions that are not cacheable and refused query strings are skipped. `--via=127.0.0.1:8080 --scheme=http` sends the requests to one instance; `--accept` (repeatable) warms the variants. |
+| `cache:migrate-2x` | Moves the 2.x cache of `public/` to `public/_cache/<host>/` (the host of `SOURCE_ORIGIN`, or `--host`): an `X.webp` next to its raster becomes its WEBP variant; `_qs/`, `.404`, `.netfail` and `.cached.env.php` are deleted; other files stay. Prints the plan; `--force` applies it, `--wipe --force` deletes instead of moving. |
+
+``` bash
+# cron: keep the cache under CACHE_MAX_SIZE, and the size metric fresh
+*/30 * * * * www-data cd /srv/sites/cdn && php bin/proxy-cdn cache:evict --quiet
+```
+
+### Health and metrics
+
+- `GET /healthz` (any host) answers `200 {"status":"ok"}`, or `503` with `{"status":"unavailable","checks":{"cache":"unwritable","state":"ok"}}` when `public/_cache` or `var/` cannot be written. It names no path, version or setting.
+- `GET /metrics` is served only when `METRICS_KEYS` is set, to `Authorization: Bearer <key>` (401 otherwise), in the Prometheus text format: `proxy_cdn_requests_total{method,cache,status}`, `proxy_cdn_request_duration_seconds{cache}`, `proxy_cdn_origin_fetches_total{outcome}`, `proxy_cdn_purges_total{result}`, `proxy_cdn_peer_purges_total{result}`, `proxy_cdn_miss_rate_limited_total`, `proxy_cdn_early_hints_total`, and the `proxy_cdn_cache_bytes` / `_entries` of the last `cache:evict`. Every label has a fixed set of values; no host, path or client is a label. Counters live in `var/metrics/` and count the requests PHP answers: the hits nginx or Apache serve alone are not seen (read them from the web server). The keys are not the purge keys, so a scraper cannot purge.
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_FILE` | `logs/proxy.log` | An absolute path, `stderr` or `error_log`. |
+| `LOG_LEVEL` | `notice` (`debug` with `DEBUG=true`) | The least severe PSR-3 level written. |
+| `METRICS_KEYS` | *empty* | Comma-separated keys of 16+ characters, or `sha256:<hex digest>` of a key. Empty: no `/metrics`. |
+| `METRICS_STORE` | `file` | `file` or `off`. |
+| `MISS_RATE_LIMIT` | `0` (off) | Origin fetches per minute one client may cause; above it, `429` with `Retry-After`. Hits are never limited. The client is read through `TRUSTED_PROXIES` (an IPv6 client is its `/64`): set them behind a load balancer, or every client shares its limit. If `var/ratelimit` cannot be used, misses are let through. |
+| `MISS_RATE_LIMIT_BURST` | `60` | The misses one client may cause at once. |
+| `EARLY_HINTS` | *empty* | A `Link` value (`</app.css>; rel=preload; as=style`) sent as `103 Early Hints` before a miss is fetched. Only FrankenPHP can send a 103 from PHP (PHP-FPM and mod_php cannot), and browsers use it for navigations only. |
+| `CLUSTER_PEERS` | *empty* | The `https://host[:port]` of the other instances; see below. |
+| `CLUSTER_CA_FILE` | system CAs | The CA that signed the certificates of the peers. |
+| `CLUSTER_TIMEOUT` | `2` | Seconds a peer has to confirm a purge (1 to 30). |
+| `CACHE_MAX_SIZE` | `0` (none) | The cap of `cache:evict`, in bytes or with `K`, `M`, `G`, `T`. |
+
+### Running several instances
+
+With `CLUSTER_PEERS` set, a `PURGE` an instance accepts is sent, after its own response, to every peer: `PURGE https://<peer><path and query>` with the original `Host`, the request ID, `X-Purge-Fanout: 1` and an HMAC (as in *Cache purge*, followed by `\nfanout\n` and the SHA-256 of the empty body) under the purge key of the origin. Every instance must therefore hold the same `PURGE_KEYS`. A peer accepts that request with the HMAC only and never sends it on, so purges cannot loop. Peers are reached over HTTPS, their certificate always verified (`CLUSTER_CA_FILE` for a private CA), without redirects, all at once, within `CLUSTER_TIMEOUT`; a peer that fails is logged (`peer purge failed`) and counted, and the local purge stands. Expose the peer port to the other instances only. With `CLUSTER_PEERS` empty nothing is sent and an instance behaves as before.
+
+[docker/cluster/](docker/cluster/) is a working example: two instances behind a load balancer, with a private CA for the fan-out (`./setup.sh`, then `docker compose up`).
 
 ## Rewriting origin references to the CDN
 
