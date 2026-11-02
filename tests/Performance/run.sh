@@ -27,7 +27,8 @@
 #                          (AllowOverride All) instead of including it in
 #                          the virtual host, as config/apache/proxy-cdn.conf
 #                          recommends
-#   --rounds <n>           rounds of the hit and baseline measurements (default 3)
+#   --rounds <n>           rounds of the hit and baseline measurements (default 3);
+#                          the gate takes the best one
 #   --duration <time>      duration of each of those measurements (default 10s)
 #   --rate <n>             requests per second of the latency measurements (default 1000)
 #   --vus <n>              clients of the throughput measurements (default 16)
@@ -36,12 +37,14 @@
 #   --origin-delay <ms>    fixed latency of the origin for the misses (default 50)
 #   --herd <n>             concurrent requests of the herd (default 500)
 #   --max-ratio [<stack>=]<x>
-#                          gate: the hit may be at most x times the baseline for
-#                          p50, and reach at least (2 - x) times its requests per
-#                          second; repeat it with a stack name (apache=1.50) to
-#                          set one stack (default 1.10, the target)
+#                          gate: in its best round, the p50 of the hit may be at
+#                          most x times the baseline; repeat it with a stack name
+#                          (apache=1.50) to set one stack (default 1.10, the target)
 #   --max-p99-ratio [<stack>=]<x>
 #                          gate: the same for p99 (default 1.10)
+#   --min-rps-ratio [<stack>=]<x>
+#                          gate: in its best round, the hit reaches at least x times
+#                          the requests per second of the baseline (default 0.90)
 #   --strict               the absolute targets (PHP hit, cold miss) gate too
 #   --results <dir>        keep the results there (default: inside the work dir)
 #   --keep                 leave the containers and the work dir in place
@@ -87,7 +90,7 @@ die() {
     printf 'FAILED: %s\n' "$*" >&2
     exit 1
 }
-usage() { sed -n '18,48p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '18,50p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -103,7 +106,7 @@ while [ $# -gt 0 ]; do
         --misses) misses="${2:-}"; shift 2 || die "--misses needs a value" ;;
         --origin-delay) origin_delay="${2:-}"; shift 2 || die "--origin-delay needs a value" ;;
         --herd) herd="${2:-}"; shift 2 || die "--herd needs a value" ;;
-        --max-ratio | --max-p99-ratio)
+        --max-ratio | --max-p99-ratio | --min-rps-ratio)
             [[ "${2:-}" =~ ^([a-z]+=)?[0-9]+(\.[0-9]+)?$ ]] || die "$1 expects a ratio such as 1.25 or apache=1.50"
             report_options+=("$1" "$2")
             shift 2

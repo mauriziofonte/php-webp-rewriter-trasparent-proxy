@@ -7,10 +7,11 @@ declare(strict_types=1);
  * summary.json and summary.md of the results directory (and to the step
  * summary of GitHub Actions), and exits 1 when the gate fails.
  *
- * Usage: php report.php <results directory> [--max-ratio [<stack>=]x]... [--max-p99-ratio [<stack>=]x]... [--strict]
+ * Usage: php report.php <results directory> [--max-ratio [<stack>=]x]... [--max-p99-ratio [<stack>=]x]... [--min-rps-ratio [<stack>=]x]... [--strict]
  *
- * A limit without a stack name applies to every stack without one of its
- * own; the default of each is the target, 1.10.
+ * The limits apply to the best round (see LatencyReport). A limit without a
+ * stack name applies to every stack without one of its own; the defaults
+ * are the target: 1.10 for p50 and p99, 0.90 for requests per second.
  *
  * It needs no vendor/: the performance job installs no development
  * dependencies, so the class is loaded by path.
@@ -25,13 +26,13 @@ foreach (is_array($_SERVER['argv'] ?? null) ? array_slice($_SERVER['argv'], 1) :
     $arguments[] = is_string($argument) ? $argument : '';
 }
 $directory = null;
-$limits = ['--max-ratio' => [], '--max-p99-ratio' => []];
+$limits = ['--max-ratio' => [], '--max-p99-ratio' => [], '--min-rps-ratio' => []];
 $strict = false;
 for ($index = 0; $index < count($arguments); ++$index) {
     $argument = $arguments[$index];
     if ($argument === '--strict') {
         $strict = true;
-    } elseif ($argument === '--max-ratio' || $argument === '--max-p99-ratio') {
+    } elseif (isset($limits[$argument])) {
         $value = $arguments[++$index] ?? '';
         if (preg_match('/^(?:([a-z]+)=)?([0-9]+(?:\.[0-9]+)?)$/', $value, $match) !== 1) {
             fwrite(STDERR, $argument . ' needs a ratio such as 1.25 or apache=1.50' . PHP_EOL);
@@ -46,12 +47,12 @@ for ($index = 0; $index < count($arguments); ++$index) {
     }
 }
 if ($directory === null) {
-    fwrite(STDERR, 'Usage: php report.php <results directory> [--max-ratio [<stack>=]x]... [--max-p99-ratio [<stack>=]x]... [--strict]' . PHP_EOL);
+    fwrite(STDERR, 'Usage: php report.php <results directory> [--max-ratio [<stack>=]x]... [--max-p99-ratio [<stack>=]x]... [--min-rps-ratio [<stack>=]x]... [--strict]' . PHP_EOL);
     exit(2);
 }
 
 try {
-    $report = new LatencyReport($directory, $limits['--max-ratio'], $limits['--max-p99-ratio'], $strict);
+    $report = new LatencyReport($directory, $limits['--max-ratio'], $limits['--max-p99-ratio'], $limits['--min-rps-ratio'], $strict);
 } catch (\RuntimeException $exception) {
     fwrite(STDERR, 'Incomplete results: ' . $exception->getMessage() . PHP_EOL);
     exit(1);

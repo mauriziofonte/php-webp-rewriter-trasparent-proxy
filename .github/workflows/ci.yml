@@ -304,8 +304,12 @@ jobs:
   # by PHP, cold misses against an origin with a fixed latency, and the
   # thundering herd, on the lowest and the highest PHP. Runners are noisy, so
   # the gate compares each hit with the static file measured in the same
-  # job, with margins above the 10% target (apache: see the README); the
-  # absolute targets are reported in the job summary.
+  # job, takes the best of 5 rounds, and has margins above the 10% target,
+  # set between the runs of the current rules and those of a known
+  # regression (Apache reading .htaccess on every request): best-round p50
+  # ratio at most 1.17 against at least 1.61, requests per second ratio at
+  # least 0.89 against at most 0.61, p99 ratio at most 1.68 (see the README).
+  # The absolute targets are reported in the job summary.
   performance:
     name: Performance (PHP ${{ matrix.php }})
     runs-on: ubuntu-24.04
@@ -339,7 +343,7 @@ jobs:
           HARNESS_WORKDIR: ${{ runner.temp }}/harness
         run: >-
           tests/Performance/run.sh --php "$BENCH_PHP" --results "$BENCH_RESULTS"
-          --max-ratio 1.25 --max-ratio apache=1.40 --max-p99-ratio 2.00
+          --rounds 5 --max-ratio 1.40 --max-p99-ratio 2.00 --min-rps-ratio 0.75
 
       - name: Upload the results
         if: always()
