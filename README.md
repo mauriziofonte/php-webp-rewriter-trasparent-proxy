@@ -260,7 +260,7 @@ Text, SVG, icon and font entries get the same treatment for `Accept-Encoding`: t
 
 ## Logging
 
-Errors and relevant events are written to `logs/proxy.log` (created lazily, `0755`, outside the DocumentRoot and also blocked by an `.htaccess` 403 in case the VirtualHost is mispointed).
+Errors and relevant events are written to `logs/proxy.log` (created lazily, `0755`, outside the DocumentRoot, which must be `public/`).
 
 Log format: one JSON object per line (JSON Lines), with the fields `timestamp` (RFC 3339 with microseconds), `level` (PSR-3 level), `channel` (`proxy-cdn`), `message` and `context`.
 
@@ -351,7 +351,7 @@ Read these before putting the proxy on the public Internet.
 - **Methods.** Only `GET`, `HEAD` and `OPTIONS` reach the cache (a valid CORS preflight, without credentials); `PURGE` is authenticated; every other method is a `405`, and `X-HTTP-Method-Override` is ignored.
 - **SVG** responses carry `Content-Security-Policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox`, so an SVG opened from the CDN origin runs no script. Every asset is sent with `X-Content-Type-Options: nosniff` and the media type of its extension, a miss included, whatever `Content-Type` the origin sent.
 - **Paths** are decoded once and refused (`400`) when they could name another file: encoded `/` or `\`, `..` and dot segments, control characters, invalid UTF-8, or the reserved `_cache` and `_qs` prefixes.
-- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, project-internal directories (`vendor/`, `src/`, `bin/`, `logs/`, `.git/`) should the document root be mispointed at the project, the cache directory read directly (`_cache/`) and the buckets of 2.x (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and the negative-cache markers of 2.x (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply.
+- **`public/.htaccess` denies** direct access to dot-files, `composer.*`, `README.md`, `LICENSE`, the cache directory read directly (`_cache/`) and the buckets of 2.x (`_qs/`), atomicWrite tmp files (`.mftpcdn.*`), and the negative-cache markers of 2.x (`.404`, `.netfail`). Make sure `AllowOverride All` is in effect on the VirtualHost, otherwise none of those rules apply. Paths such as `/vendor/...` are proxied like any other (an origin may serve `/vendor/livewire/livewire.js`): the document root must be `public/`, where the project directories do not exist, and neither web server configuration refuses their names.
 - **HSTS** is enabled with `max-age=31536000` only by default. The wider `includeSubDomains` / `preload` variants are commented out in `.htaccess` because they affect sibling hostnames on the same eTLD+1. Enable them only when you understand the blast radius.
 
 ## Troubleshooting

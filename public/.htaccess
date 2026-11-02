@@ -64,13 +64,10 @@ ErrorDocument 403 "Access Forbidden"
     # Entry point must always reach PHP.
     RewriteRule ^index\.php$ - [L]
 
-    # Defensive 403s: never expose project internals even if somebody
-    # mispoints the DocumentRoot at the project root instead of ./public.
-    RewriteRule ^(.*/)?\.git(/.*)?$     - [R=403,L]
-    RewriteRule ^(.*/)?vendor(/.*)?$    - [R=403,L]
-    RewriteRule ^(.*/)?src(/.*)?$       - [R=403,L]
-    RewriteRule ^(.*/)?bin(/.*)?$       - [R=403,L]
-    RewriteRule ^(.*/)?logs(/.*)?$      - [R=403,L]
+    # No rule refuses "vendor/", "src/", "bin/" or "logs/": this file
+    # applies below public/ only, where none of them exists, and an
+    # origin may well serve "/vendor/livewire/livewire.js". The
+    # DocumentRoot must be public/ (see config/apache/proxy-cdn.conf).
 
     # The cache is read through the rules below only, which apply the host
     # allowlist and the negotiation; the buckets of 2.x are never served.

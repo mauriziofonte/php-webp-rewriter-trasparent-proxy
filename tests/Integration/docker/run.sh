@@ -359,7 +359,14 @@ smoke() {
         *) die "$s: plain HTTP is redirected to https: got '$redirect'" ;;
     esac
     expect "$s: X-Forwarded-Proto of an untrusted client is ignored" "$(untrusted_https "$s")" 301
-    expect "$s: vendor/ is refused" "$(status_of -H 'X-Forwarded-Proto: https' "$base/vendor/autoload.php")" 403
+    # The names of the project directories are paths like any other: the
+    # document root is public/, where none of them exists.
+    expect "$s: /vendor/ of the origin is proxied" "$(fetch "$base/vendor/livewire/livewire.js" "$workdir/$s/vendor")" 200
+    cmp -s "$workdir/$s/vendor.body" "$root/tests/Fixtures/origin/vendor/livewire/livewire.js" ||
+        die "$s: /vendor/livewire/livewire.js differs from the origin file"
+    expect "$s: /vendor/ of the origin is cached" "$(fetch "$base/vendor/livewire/livewire.js" "$workdir/$s/vendor2")" 200
+    expect "$s: /vendor/ hit" "$(cache_status "$workdir/$s/vendor2.headers")" HIT
+    expect "$s: dot files stay refused" "$(status_of -H 'X-Forwarded-Proto: https' "$base/.git/config")" 403
 
     lines="$(lines_of "$fpm_log")"
     expect "$s: first request" "$(fetch "$base$asset" "$workdir/$s/first")" 200
