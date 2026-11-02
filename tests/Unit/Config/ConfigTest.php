@@ -232,6 +232,8 @@ final class ConfigTest extends TestCase
             'IMAGE_API_FALLBACK' => true,
             'RESIZE_WIDTHS' => [320, 640],
             'RESIZE_KEY' => 'resize-key-0123456789abcdef0123456789',
+            'LOG_FILE' => 'stderr',
+            'LOG_LEVEL' => 'info',
         ], $overrides);
     }
 }

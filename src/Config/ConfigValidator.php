@@ -242,7 +242,9 @@ final class ConfigValidator
                 . 'networks only.';
         }
 
-        return new ConfigValidation($errors, $warnings);
+        list($operationErrors, $operationWarnings) = OperationsConfig::validate($values);
+
+        return new ConfigValidation(array_merge($errors, $operationErrors), array_merge($warnings, $operationWarnings));
     }
 
     /**

@@ -228,6 +228,11 @@ final class Config
      */
     private $resizeKey;
 
+    /**
+     * @var OperationsConfig the keys of OperationsConfig::KEYS (PRX-9)
+     */
+    private $operations;
+
     private function __construct()
     {
     }
@@ -297,6 +302,7 @@ final class Config
         if (!in_array($config->queryStringMode, [QueryStringPolicy::MODE_IGNORE, QueryStringPolicy::MODE_REJECT], true)) {
             throw new InvalidConfigurationException(['QUERY_STRING_MODE has an unknown value']);
         }
+        $config->operations = OperationsConfig::fromArray($values);
 
         return $config;
     }
@@ -346,7 +352,15 @@ final class Config
             'IMAGE_API_FALLBACK' => $this->imageApiFallback,
             'RESIZE_WIDTHS' => $this->resizeWidths,
             'RESIZE_KEY' => $this->resizeKey,
-        ];
+        ] + $this->operations->toArray();
+    }
+
+    /**
+     * The operations keys (see OperationsConfig).
+     */
+    public function getOperations(): OperationsConfig
+    {
+        return $this->operations;
     }
 
     /**

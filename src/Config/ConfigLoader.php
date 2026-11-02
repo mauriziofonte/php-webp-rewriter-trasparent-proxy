@@ -31,9 +31,10 @@ final class ConfigLoader
      * QUERY_STRING_MODE, TRUSTED_PROXIES, PURGE_KEYS and
      * CIRCUIT_BREAKER_THRESHOLD (PRX-5), PROXY_HOSTS, SENDFILE, PRECOMPRESS
      * and LEGACY_WEBP_URLS (PRX-6), CACHE_REVALIDATE_BELOW and
-     * STALE_WHILE_REVALIDATE, STALE_IF_ERROR (PRX-7), and the image
+     * STALE_WHILE_REVALIDATE, STALE_IF_ERROR (PRX-7), the image
      * conversion and resize keys (PRX-8), which replace the removed 2.x
-     * keys of REMOVED_KEYS.
+     * keys of REMOVED_KEYS, and the operations keys of OperationsConfig
+     * (PRX-9), which also owns their defaults.
      */
     public const KEYS = [
         'DEBUG',
@@ -74,6 +75,9 @@ final class ConfigLoader
         'IMAGE_API_FALLBACK',
         'RESIZE_WIDTHS',
         'RESIZE_KEY',
+        // PRX-9: OperationsConfig::KEYS, in the same order.
+        'LOG_FILE',
+        'LOG_LEVEL',
     ];
 
     /**
@@ -257,7 +261,7 @@ final class ConfigLoader
             'IMAGE_API_FALLBACK' => ConfigValidator::booleanOf($value('IMAGE_API_FALLBACK')) === true,
             'RESIZE_WIDTHS' => ConfigValidator::widthList($optional('RESIZE_WIDTHS')),
             'RESIZE_KEY' => $optional('RESIZE_KEY'),
-        ]);
+        ] + OperationsConfig::normalise($raw));
     }
 
     /**

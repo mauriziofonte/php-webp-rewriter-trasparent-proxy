@@ -7,6 +7,7 @@ declare(strict_types=1);
  * request it cannot serve from the cache (see public/.htaccess). It builds
  * the kernel with ProxyKernelFactory and sends its response; a host
  * application can mount Mfonte\ProxyCdn\Http\ProxyKernel the same way.
+ * Every log entry of the request carries its ID (LOG_FILE, LOG_LEVEL).
  */
 
 use Mfonte\ProxyCdn\Cache\FilesystemStorage;
@@ -15,6 +16,7 @@ use Mfonte\ProxyCdn\Config\ConfigLoader;
 use Mfonte\ProxyCdn\Config\RuntimeSettings;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
+use Mfonte\ProxyCdn\Http\RequestId;
 use Mfonte\ProxyCdn\Http\ResponseFactory;
 use Mfonte\ProxyCdn\Image\ImageConverterFactory;
 use Mfonte\ProxyCdn\Observability\JsonLogger;
@@ -32,6 +34,8 @@ require $projectRoot . '/vendor/autoload.php';
 
 $storage = new FilesystemStorage();
 $logFile = $projectRoot . '/logs/proxy.log';
+$request = Request::createFromGlobals();
+$requestId = RequestId::of($request);
 
 try {
     $config = (new ConfigLoader(
@@ -39,15 +43,23 @@ try {
         new CompiledConfigCache($projectRoot . '/.config.cache.php', $storage)
     ))->load();
 } catch (InvalidConfigurationException $exception) {
-    (new JsonLogger($logFile, LogLevel::ERROR))->error('invalid configuration', ['errors' => $exception->getErrors()]);
-    ResponseFactory::configurationError()->send();
+    (new JsonLogger($logFile, LogLevel::ERROR, JsonLogger::DEFAULT_CHANNEL, $requestId))->error('invalid configuration', ['errors' => $exception->getErrors()]);
+    $response = ResponseFactory::configurationError();
+    $response->headers->set(RequestId::HEADER, $requestId);
+    $response->send();
 
     return;
 }
 
 (new RuntimeSettings())->apply($config);
 
-$logger = new JsonLogger($logFile, $config->isDebug() ? LogLevel::DEBUG : LogLevel::NOTICE);
+$operations = $config->getOperations();
+$logger = new JsonLogger(
+    $operations->getLogFile() ?? $logFile,
+    $operations->getLogLevel() ?? ($config->isDebug() ? LogLevel::DEBUG : LogLevel::NOTICE),
+    JsonLogger::DEFAULT_CHANNEL,
+    $requestId
+);
 $kernel = null;
 try {
     $kernel = ProxyKernelFactory::create(
@@ -58,11 +70,12 @@ try {
         ImageConverterFactory::create($config, $projectRoot . '/var', $logger, $storage),
         $logger
     );
-    $response = $kernel->handle(Request::createFromGlobals());
+    $response = $kernel->handle($request);
 } catch (\Throwable $exception) {
     // Finding P-21: an internal error is a 5xx, never an asset or a 404.
     $logger->error('unhandled exception', ['exception' => $exception]);
     $response = ResponseFactory::unexpectedError('Unexpected error');
+    $response->headers->set(RequestId::HEADER, $requestId);
 }
 $response->send();
 
