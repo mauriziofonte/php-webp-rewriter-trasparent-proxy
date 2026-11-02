@@ -32,7 +32,8 @@ final class ConfigLoader
      * CIRCUIT_BREAKER_THRESHOLD (PRX-5), PROXY_HOSTS, SENDFILE, PRECOMPRESS
      * and LEGACY_WEBP_URLS (PRX-6), CACHE_REVALIDATE_BELOW and
      * STALE_WHILE_REVALIDATE, STALE_IF_ERROR (PRX-7), and the image
-     * conversion and resize keys (PRX-8).
+     * conversion and resize keys (PRX-8), which replace the removed 2.x
+     * keys of REMOVED_KEYS.
      */
     public const KEYS = [
         'DEBUG',
@@ -73,6 +74,18 @@ final class ConfigLoader
         'IMAGE_API_FALLBACK',
         'RESIZE_WIDTHS',
         'RESIZE_KEY',
+    ];
+
+    /**
+     * The 2.x keys that 3.0 no longer reads, each with what replaces it:
+     * the check-env command reports the ones still set as deprecated (risk
+     * L-5). The 2.x converters they configured, with their unverified TLS
+     * and their "-x-api-key" header, are gone (finding P-6).
+     */
+    public const REMOVED_KEYS = [
+        'IMAGE_CONVERSION_MODE' => 'IMAGE_CONVERTER',
+        'WEBP_API_SERVER' => 'IMAGE_API_URL',
+        'WEBP_API_KEY' => 'IMAGE_API_KEY',
     ];
 
     /**
@@ -284,6 +297,29 @@ final class ConfigLoader
         }
 
         return $values;
+    }
+
+    /**
+     * The keys of REMOVED_KEYS that are still set, in the environment or
+     * in .env, in the order of REMOVED_KEYS: for check-env, which reports
+     * them as deprecated.
+     *
+     * @throws InvalidConfigurationException when .env exists but cannot be parsed
+     *
+     * @return list<string>
+     */
+    public function readRemovedKeys(): array
+    {
+        $fromFile = $this->readEnvFile();
+        $set = [];
+        foreach (array_keys(self::REMOVED_KEYS) as $key) {
+            $value = ($this->environment)($key) ?? $fromFile[$key] ?? null;
+            if (self::normalise($value) !== null) {
+                $set[] = $key;
+            }
+        }
+
+        return $set;
     }
 
     /**

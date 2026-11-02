@@ -181,6 +181,25 @@ final class CheckEnvCommandTest extends TestCase
         );
     }
 
+    /**
+     * Risk L-5: the 2.x conversion keys are ignored, and reported.
+     */
+    public function testTheRemovedKeysAreReportedAsDeprecated(): void
+    {
+        $this->directory->write('.env', self::VALID_ENV . "IMAGE_CONVERSION_MODE=\"native\"\nWEBP_API_KEY=\"key\"\n");
+
+        list($exitCode, $display) = $this->runCommand([]);
+
+        self::assertSame(0, $exitCode, $display);
+        self::assertStringContainsString(
+            "! WARNING: IMAGE_CONVERSION_MODE is deprecated: it was removed in 3.0 and is ignored.\n"
+            . "    Use IMAGE_CONVERTER instead (see the Image conversion section of the README).\n",
+            $display
+        );
+        self::assertStringContainsString('! WARNING: WEBP_API_KEY is deprecated', $display);
+        self::assertStringContainsString('    Use IMAGE_API_KEY instead', $display);
+    }
+
     public function testLocalConversionWithoutBackendOrPosixIsWarnedAbout(): void
     {
         $this->directory->write('.env', self::VALID_ENV . "IMAGE_CONVERTER=\"local\"\n");

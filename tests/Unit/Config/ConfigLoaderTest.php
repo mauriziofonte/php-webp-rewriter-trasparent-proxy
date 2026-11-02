@@ -148,6 +148,27 @@ final class ConfigLoaderTest extends TestCase
     }
 
     /**
+     * The 2.x conversion keys are no longer read; check-env reports the
+     * ones still set (risk L-5).
+     */
+    public function testTheRemovedKeysAreReportedNotRead(): void
+    {
+        $this->writeEnvFile([
+            'SOURCE_ORIGIN' => 'https://origin.example.test',
+            'CACHEABLE_EXTENSIONS' => 'png',
+            'IMAGE_CONVERSION_MODE' => 'api',
+            'WEBP_API_SERVER' => 'https://api.example.test',
+            'WEBP_API_KEY' => '',
+        ]);
+
+        $loader = $this->loader();
+
+        self::assertSame(Config::CONVERTER_NONE, $loader->load()->getImageConverter());
+        self::assertSame(['IMAGE_CONVERSION_MODE', 'WEBP_API_SERVER'], $loader->readRemovedKeys());
+        self::assertArrayNotHasKey('WEBP_API_SERVER', $loader->readValues());
+    }
+
+    /**
      * The origin certificate is verified unless UPSTREAM_VERIFY_TLS says
      * otherwise; 2.x did not verify by default (risk L-6).
      *
