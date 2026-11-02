@@ -7,6 +7,7 @@ namespace Mfonte\ProxyCdn\Config;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 use Mfonte\ProxyCdn\Observability\JsonLogger;
 use Mfonte\ProxyCdn\Observability\MetricsAuthenticator;
+use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 
 /**
  * The operations keys of the configuration (PRX-9), validated and
@@ -34,6 +35,12 @@ use Mfonte\ProxyCdn\Observability\MetricsAuthenticator;
  * - EARLY_HINTS: a Link header value sent as a 103 Early Hints response
  *   before a miss is fetched, where the server API can send one. Not set:
  *   none.
+ * - CLUSTER_PEERS: the https base URLs of the other instances, which
+ *   receive every purge of this one, signed (Cluster\PeerNotifier). Not
+ *   set: a single instance.
+ * - CLUSTER_CA_FILE: a CA bundle that verifies the certificates of the
+ *   peers, for a private CA. Not set: the system CA store.
+ * - CLUSTER_TIMEOUT: seconds a peer has to answer a purge. Default: 2.
  *
  * Immutable.
  */
@@ -50,6 +57,9 @@ final class OperationsConfig
         'MISS_RATE_LIMIT',
         'MISS_RATE_LIMIT_BURST',
         'EARLY_HINTS',
+        'CLUSTER_PEERS',
+        'CLUSTER_CA_FILE',
+        'CLUSTER_TIMEOUT',
     ];
 
     public const METRICS_STORE_FILE = 'file';
@@ -60,6 +70,7 @@ final class OperationsConfig
         'METRICS_STORE' => self::METRICS_STORE_FILE,
         'MISS_RATE_LIMIT' => '0',
         'MISS_RATE_LIMIT_BURST' => '60',
+        'CLUSTER_TIMEOUT' => '2',
     ];
 
     /**
@@ -68,6 +79,7 @@ final class OperationsConfig
     private const INTEGER_RANGES = [
         'MISS_RATE_LIMIT' => [0, 1000000],
         'MISS_RATE_LIMIT_BURST' => [1, 100000],
+        'CLUSTER_TIMEOUT' => [1, 30],
     ];
 
     /**
@@ -110,6 +122,21 @@ final class OperationsConfig
      * @var string|null
      */
     private $earlyHints;
+
+    /**
+     * @var list<string>
+     */
+    private $clusterPeers;
+
+    /**
+     * @var string|null
+     */
+    private $clusterCaFile;
+
+    /**
+     * @var int
+     */
+    private $clusterTimeout;
 
     private function __construct()
     {
@@ -174,6 +201,21 @@ final class OperationsConfig
                 . 'Browsers use 103 on documents only, not on images or scripts.';
         }
 
+        $peers = ConfigValidator::entryList($values['CLUSTER_PEERS'] ?? null);
+        foreach ($peers as $peer) {
+            if (self::peerBase($peer) === null) {
+                $errors[] = 'CLUSTER_PEERS must list https:// base URLs separated by commas, without user, path, query or fragment (got: '
+                    . var_export($peer, true) . ')';
+            }
+        }
+        if ($peers !== [] && PurgeAuthenticator::parseKeys(ConfigValidator::entryList($values['PURGE_KEYS'] ?? null)) === []) {
+            $errors[] = 'CLUSTER_PEERS needs PURGE_KEYS: the purges sent to the peers are signed with the purge key of their origin';
+        }
+        $caFile = $values['CLUSTER_CA_FILE'] ?? null;
+        if ($caFile !== null && ($caFile[0] !== '/' || strpos($caFile, "\0") !== false)) {
+            $errors[] = 'CLUSTER_CA_FILE must be an absolute path (got: ' . var_export($caFile, true) . ')';
+        }
+
         return [$errors, $warnings];
     }
 
@@ -190,6 +232,13 @@ final class OperationsConfig
         $value = static function (string $key) use ($values): ?string {
             return $values[$key] ?? self::DEFAULTS[$key] ?? null;
         };
+        $peers = [];
+        foreach (ConfigValidator::entryList($value('CLUSTER_PEERS')) as $peer) {
+            $base = self::peerBase($peer);
+            if ($base !== null && !in_array($base, $peers, true)) {
+                $peers[] = $base;
+            }
+        }
 
         return [
             'LOG_FILE' => $value('LOG_FILE'),
@@ -199,6 +248,9 @@ final class OperationsConfig
             'MISS_RATE_LIMIT' => (int) $value('MISS_RATE_LIMIT'),
             'MISS_RATE_LIMIT_BURST' => (int) $value('MISS_RATE_LIMIT_BURST'),
             'EARLY_HINTS' => $value('EARLY_HINTS') === null ? null : trim((string) $value('EARLY_HINTS')),
+            'CLUSTER_PEERS' => $peers,
+            'CLUSTER_CA_FILE' => $value('CLUSTER_CA_FILE'),
+            'CLUSTER_TIMEOUT' => (int) $value('CLUSTER_TIMEOUT'),
         ];
     }
 
@@ -220,6 +272,9 @@ final class OperationsConfig
         $settings->missRateLimit = self::integer($values, 'MISS_RATE_LIMIT');
         $settings->missRateLimitBurst = self::integer($values, 'MISS_RATE_LIMIT_BURST');
         $settings->earlyHints = self::optionalString($values, 'EARLY_HINTS');
+        $settings->clusterPeers = self::stringList($values, 'CLUSTER_PEERS');
+        $settings->clusterCaFile = self::optionalString($values, 'CLUSTER_CA_FILE');
+        $settings->clusterTimeout = self::integer($values, 'CLUSTER_TIMEOUT');
 
         if ($settings->logLevel !== null && !JsonLogger::isLevel($settings->logLevel)) {
             throw new InvalidConfigurationException(['LOG_LEVEL has an unknown value']);
@@ -230,8 +285,8 @@ final class OperationsConfig
         if (MetricsAuthenticator::parseKeys($settings->metricsKeys) === null) {
             throw new InvalidConfigurationException(['METRICS_KEYS must be a list of keys']);
         }
-        if ($settings->missRateLimitBurst < 1) {
-            throw new InvalidConfigurationException(['MISS_RATE_LIMIT_BURST must be at least 1']);
+        if ($settings->missRateLimitBurst < 1 || $settings->clusterTimeout < 1) {
+            throw new InvalidConfigurationException(['MISS_RATE_LIMIT_BURST and CLUSTER_TIMEOUT must be at least 1']);
         }
 
         return $settings;
@@ -252,6 +307,9 @@ final class OperationsConfig
             'MISS_RATE_LIMIT' => $this->missRateLimit,
             'MISS_RATE_LIMIT_BURST' => $this->missRateLimitBurst,
             'EARLY_HINTS' => $this->earlyHints,
+            'CLUSTER_PEERS' => $this->clusterPeers,
+            'CLUSTER_CA_FILE' => $this->clusterCaFile,
+            'CLUSTER_TIMEOUT' => $this->clusterTimeout,
         ];
     }
 
@@ -316,6 +374,59 @@ final class OperationsConfig
     public function getEarlyHints(): ?string
     {
         return $this->earlyHints;
+    }
+
+    /**
+     * CLUSTER_PEERS: the base URLs of the peers ("https://host[:port]"),
+     * without duplicates; empty for a single instance.
+     *
+     * @return list<string>
+     */
+    public function getClusterPeers(): array
+    {
+        return $this->clusterPeers;
+    }
+
+    /**
+     * CLUSTER_CA_FILE: the CA bundle of the peers' certificates; null for
+     * the system store.
+     */
+    public function getClusterCaFile(): ?string
+    {
+        return $this->clusterCaFile;
+    }
+
+    /**
+     * CLUSTER_TIMEOUT: seconds a peer has to answer a purge, connection
+     * included.
+     */
+    public function getClusterTimeout(): int
+    {
+        return $this->clusterTimeout;
+    }
+
+    /**
+     * The normalised base URL of a CLUSTER_PEERS entry, "https://host" or
+     * "https://host:port" with the host in lower case; null when the entry
+     * is not an https URL without user, path (but "/"), query or fragment.
+     */
+    public static function peerBase(string $entry): ?string
+    {
+        if (preg_match('#\A[A-Za-z][A-Za-z0-9+.-]*://[^\x00-\x20\x7F]+\z#', $entry) !== 1) {
+            return null;
+        }
+        $parts = parse_url($entry);
+        if (!is_array($parts) || strtolower($parts['scheme'] ?? '') !== 'https' || !isset($parts['host']) || $parts['host'] === ''
+            || isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])
+            || !in_array($parts['path'] ?? '', ['', '/'], true)) {
+            return null;
+        }
+        $host = strtolower($parts['host']);
+        if (preg_match('/\A(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[[0-9a-f:.]+\])\z/', $host) !== 1) {
+            return null;
+        }
+
+        return 'https://' . $host . (isset($parts['port']) ? ':' . $parts['port'] : '');
     }
 
     /**

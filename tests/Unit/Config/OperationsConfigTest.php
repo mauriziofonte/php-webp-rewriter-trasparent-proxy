@@ -30,6 +30,9 @@ final class OperationsConfigTest extends TestCase
         self::assertSame(0, $operations->getMissRateLimit());
         self::assertSame(60, $operations->getMissRateLimitBurst());
         self::assertNull($operations->getEarlyHints());
+        self::assertSame([], $operations->getClusterPeers());
+        self::assertNull($operations->getClusterCaFile());
+        self::assertSame(2, $operations->getClusterTimeout());
     }
 
     public function testTheValuesAreNormalised(): void
@@ -43,6 +46,10 @@ final class OperationsConfigTest extends TestCase
             'MISS_RATE_LIMIT_BURST' => '100',
             'TRUSTED_PROXIES' => '10.0.0.0/8',
             'EARLY_HINTS' => ' </css/app.css>; rel=preload; as=style, <https://fonts.example.test>; rel=preconnect ',
+            'PURGE_KEYS' => '*=purge-secret-0123456789',
+            'CLUSTER_PEERS' => 'https://Peer-1.internal:8443/, https://peer-2.internal, https://peer-1.internal:8443',
+            'CLUSTER_CA_FILE' => '/etc/proxy-cdn/peers-ca.pem',
+            'CLUSTER_TIMEOUT' => '5',
         ])->getOperations();
 
         self::assertSame('/var/log/proxy-cdn/proxy.log', $operations->getLogFile());
@@ -52,6 +59,9 @@ final class OperationsConfigTest extends TestCase
         self::assertSame(600, $operations->getMissRateLimit());
         self::assertSame(100, $operations->getMissRateLimitBurst());
         self::assertSame('</css/app.css>; rel=preload; as=style, <https://fonts.example.test>; rel=preconnect', $operations->getEarlyHints());
+        self::assertSame(['https://peer-1.internal:8443', 'https://peer-2.internal'], $operations->getClusterPeers());
+        self::assertSame('/etc/proxy-cdn/peers-ca.pem', $operations->getClusterCaFile());
+        self::assertSame(5, $operations->getClusterTimeout());
     }
 
     /**
@@ -86,6 +96,14 @@ final class OperationsConfigTest extends TestCase
             'zero burst' => [['MISS_RATE_LIMIT_BURST' => '0'], 'MISS_RATE_LIMIT_BURST must'],
             'hints without brackets' => [['EARLY_HINTS' => '/css/app.css; rel=preload'], 'EARLY_HINTS must'],
             'hints with a line break' => [['EARLY_HINTS' => "</a.css>; rel=preload\r\nX: y"], 'EARLY_HINTS must'],
+            'http peer' => [['CLUSTER_PEERS' => 'http://peer.internal', 'PURGE_KEYS' => '*=purge-secret-0123456789'], 'CLUSTER_PEERS must'],
+            'peer with a path' => [['CLUSTER_PEERS' => 'https://peer.internal/proxy', 'PURGE_KEYS' => '*=purge-secret-0123456789'], 'CLUSTER_PEERS must'],
+            'peer with a user' => [['CLUSTER_PEERS' => 'https://user:pass@peer.internal', 'PURGE_KEYS' => '*=purge-secret-0123456789'], 'CLUSTER_PEERS must'],
+            'peer with a query' => [['CLUSTER_PEERS' => 'https://peer.internal?x=1', 'PURGE_KEYS' => '*=purge-secret-0123456789'], 'CLUSTER_PEERS must'],
+            'peers without purge keys' => [['CLUSTER_PEERS' => 'https://peer.internal'], 'CLUSTER_PEERS needs PURGE_KEYS'],
+            'relative CA file' => [['CLUSTER_CA_FILE' => 'ca.pem'], 'CLUSTER_CA_FILE must'],
+            'zero timeout' => [['CLUSTER_TIMEOUT' => '0'], 'CLUSTER_TIMEOUT must'],
+            'long timeout' => [['CLUSTER_TIMEOUT' => '31'], 'CLUSTER_TIMEOUT must'],
         ];
     }
 
@@ -151,6 +169,8 @@ final class OperationsConfigTest extends TestCase
     {
         $config = TestConfig::create([
             'METRICS_KEYS' => 'metrics-key-0123456789',
+            'CLUSTER_PEERS' => 'https://peer.internal',
+            'PURGE_KEYS' => '*=purge-secret-0123456789',
         ]);
 
         self::assertSame($config->getOperations()->toArray(), OperationsConfig::fromArray($config->toArray())->toArray());
@@ -171,7 +191,7 @@ final class OperationsConfigTest extends TestCase
     public function testAWrongTypeIsRejected(): void
     {
         $values = TestConfig::create()->getOperations()->toArray();
-        $values['LOG_FILE'] = 42;
+        $values['CLUSTER_PEERS'] = 'https://peer.internal';
 
         $this->expectException(InvalidConfigurationException::class);
 

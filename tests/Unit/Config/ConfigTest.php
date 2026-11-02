@@ -239,6 +239,9 @@ final class ConfigTest extends TestCase
             'MISS_RATE_LIMIT' => 120,
             'MISS_RATE_LIMIT_BURST' => 20,
             'EARLY_HINTS' => '</a.css>; rel=preload; as=style',
+            'CLUSTER_PEERS' => ['https://peer.example.test'],
+            'CLUSTER_CA_FILE' => null,
+            'CLUSTER_TIMEOUT' => 2,
         ], $overrides);
     }
 }

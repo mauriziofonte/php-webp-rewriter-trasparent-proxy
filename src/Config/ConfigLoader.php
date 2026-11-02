@@ -83,6 +83,9 @@ final class ConfigLoader
         'MISS_RATE_LIMIT',
         'MISS_RATE_LIMIT_BURST',
         'EARLY_HINTS',
+        'CLUSTER_PEERS',
+        'CLUSTER_CA_FILE',
+        'CLUSTER_TIMEOUT',
     ];
 
     /**
