@@ -356,7 +356,8 @@ final class Config
     }
 
     /**
-     * The operations keys (see OperationsConfig).
+     * The operations keys: logging, metrics, miss rate limit, Early Hints,
+     * cluster and cache size (see OperationsConfig).
      */
     public function getOperations(): OperationsConfig
     {

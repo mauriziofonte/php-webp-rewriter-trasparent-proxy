@@ -41,6 +41,9 @@ use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
  * - CLUSTER_CA_FILE: a CA bundle that verifies the certificates of the
  *   peers, for a private CA. Not set: the system CA store.
  * - CLUSTER_TIMEOUT: seconds a peer has to answer a purge. Default: 2.
+ * - CACHE_MAX_SIZE: the size cache:evict brings the cache down to, in
+ *   bytes, or with a K, M, G or T suffix (powers of 1024); 0 for none.
+ *   Default: 0.
  *
  * Immutable.
  */
@@ -60,6 +63,7 @@ final class OperationsConfig
         'CLUSTER_PEERS',
         'CLUSTER_CA_FILE',
         'CLUSTER_TIMEOUT',
+        'CACHE_MAX_SIZE',
     ];
 
     public const METRICS_STORE_FILE = 'file';
@@ -71,6 +75,7 @@ final class OperationsConfig
         'MISS_RATE_LIMIT' => '0',
         'MISS_RATE_LIMIT_BURST' => '60',
         'CLUSTER_TIMEOUT' => '2',
+        'CACHE_MAX_SIZE' => '0',
     ];
 
     /**
@@ -81,6 +86,11 @@ final class OperationsConfig
         'MISS_RATE_LIMIT_BURST' => [1, 100000],
         'CLUSTER_TIMEOUT' => [1, 30],
     ];
+
+    /**
+     * Multipliers of the suffixes of CACHE_MAX_SIZE.
+     */
+    private const SIZE_SUFFIXES = ['' => 1, 'K' => 1024, 'M' => 1048576, 'G' => 1073741824, 'T' => 1099511627776];
 
     /**
      * One link of a Link header value: "<URI-reference>" and its
@@ -137,6 +147,11 @@ final class OperationsConfig
      * @var int
      */
     private $clusterTimeout;
+
+    /**
+     * @var int
+     */
+    private $cacheMaxSize;
 
     private function __construct()
     {
@@ -216,6 +231,11 @@ final class OperationsConfig
             $errors[] = 'CLUSTER_CA_FILE must be an absolute path (got: ' . var_export($caFile, true) . ')';
         }
 
+        $maxSize = $values['CACHE_MAX_SIZE'] ?? null;
+        if ($maxSize !== null && self::parseSize($maxSize) === null) {
+            $errors[] = 'CACHE_MAX_SIZE must be a size in bytes, or with a K, M, G or T suffix (got: ' . var_export($maxSize, true) . ')';
+        }
+
         return [$errors, $warnings];
     }
 
@@ -251,6 +271,7 @@ final class OperationsConfig
             'CLUSTER_PEERS' => $peers,
             'CLUSTER_CA_FILE' => $value('CLUSTER_CA_FILE'),
             'CLUSTER_TIMEOUT' => (int) $value('CLUSTER_TIMEOUT'),
+            'CACHE_MAX_SIZE' => self::parseSize((string) $value('CACHE_MAX_SIZE')) ?? 0,
         ];
     }
 
@@ -275,6 +296,7 @@ final class OperationsConfig
         $settings->clusterPeers = self::stringList($values, 'CLUSTER_PEERS');
         $settings->clusterCaFile = self::optionalString($values, 'CLUSTER_CA_FILE');
         $settings->clusterTimeout = self::integer($values, 'CLUSTER_TIMEOUT');
+        $settings->cacheMaxSize = self::integer($values, 'CACHE_MAX_SIZE');
 
         if ($settings->logLevel !== null && !JsonLogger::isLevel($settings->logLevel)) {
             throw new InvalidConfigurationException(['LOG_LEVEL has an unknown value']);
@@ -310,6 +332,7 @@ final class OperationsConfig
             'CLUSTER_PEERS' => $this->clusterPeers,
             'CLUSTER_CA_FILE' => $this->clusterCaFile,
             'CLUSTER_TIMEOUT' => $this->clusterTimeout,
+            'CACHE_MAX_SIZE' => $this->cacheMaxSize,
         ];
     }
 
@@ -403,6 +426,35 @@ final class OperationsConfig
     public function getClusterTimeout(): int
     {
         return $this->clusterTimeout;
+    }
+
+    /**
+     * CACHE_MAX_SIZE: the size, in bytes, cache:evict brings the cache
+     * down to; 0 for none.
+     */
+    public function getCacheMaxSize(): int
+    {
+        return $this->cacheMaxSize;
+    }
+
+    /**
+     * Bytes of a size written as digits with an optional K, M, G or T
+     * suffix (powers of 1024, any case, an optional "B" or "iB" after
+     * it); null when the value is not such a size or does not fit an
+     * integer.
+     */
+    public static function parseSize(string $raw): ?int
+    {
+        if (preg_match('/\A([0-9]{1,15})[ \t]*([KMGT]?)(?:I?B)?\z/i', trim($raw), $match) !== 1) {
+            return null;
+        }
+        $suffix = strtoupper($match[2]);
+        $bytes = (float) $match[1] * self::SIZE_SUFFIXES[$suffix];
+        if ($bytes > (float) PHP_INT_MAX) {
+            return null;
+        }
+
+        return (int) $match[1] * self::SIZE_SUFFIXES[$suffix];
     }
 
     /**

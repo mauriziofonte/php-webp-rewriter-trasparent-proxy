@@ -33,6 +33,7 @@ final class OperationsConfigTest extends TestCase
         self::assertSame([], $operations->getClusterPeers());
         self::assertNull($operations->getClusterCaFile());
         self::assertSame(2, $operations->getClusterTimeout());
+        self::assertSame(0, $operations->getCacheMaxSize());
     }
 
     public function testTheValuesAreNormalised(): void
@@ -50,6 +51,7 @@ final class OperationsConfigTest extends TestCase
             'CLUSTER_PEERS' => 'https://Peer-1.internal:8443/, https://peer-2.internal, https://peer-1.internal:8443',
             'CLUSTER_CA_FILE' => '/etc/proxy-cdn/peers-ca.pem',
             'CLUSTER_TIMEOUT' => '5',
+            'CACHE_MAX_SIZE' => '10G',
         ])->getOperations();
 
         self::assertSame('/var/log/proxy-cdn/proxy.log', $operations->getLogFile());
@@ -62,6 +64,7 @@ final class OperationsConfigTest extends TestCase
         self::assertSame(['https://peer-1.internal:8443', 'https://peer-2.internal'], $operations->getClusterPeers());
         self::assertSame('/etc/proxy-cdn/peers-ca.pem', $operations->getClusterCaFile());
         self::assertSame(5, $operations->getClusterTimeout());
+        self::assertSame(10737418240, $operations->getCacheMaxSize());
     }
 
     /**
@@ -104,6 +107,8 @@ final class OperationsConfigTest extends TestCase
             'relative CA file' => [['CLUSTER_CA_FILE' => 'ca.pem'], 'CLUSTER_CA_FILE must'],
             'zero timeout' => [['CLUSTER_TIMEOUT' => '0'], 'CLUSTER_TIMEOUT must'],
             'long timeout' => [['CLUSTER_TIMEOUT' => '31'], 'CLUSTER_TIMEOUT must'],
+            'size with a unit' => [['CACHE_MAX_SIZE' => '10 apples'], 'CACHE_MAX_SIZE must'],
+            'negative size' => [['CACHE_MAX_SIZE' => '-5G'], 'CACHE_MAX_SIZE must'],
         ];
     }
 
@@ -134,6 +139,35 @@ final class OperationsConfigTest extends TestCase
 
         self::assertTrue($validation->isValid());
         self::assertStringContainsString('EARLY_HINTS is sent as a 103 only where PHP can send', implode("\n", $validation->getWarnings()));
+    }
+
+    /**
+     * @dataProvider provideSizes
+     */
+    #[DataProvider('provideSizes')]
+    public function testParseSize(string $raw, ?int $bytes): void
+    {
+        self::assertSame($bytes, OperationsConfig::parseSize($raw));
+    }
+
+    /**
+     * @return array<string, array{string, int|null}>
+     */
+    public static function provideSizes(): array
+    {
+        return [
+            'bytes' => ['1000', 1000],
+            'zero' => ['0', 0],
+            'kibibytes' => ['4K', 4096],
+            'mebibytes with B' => ['2MB', 2097152],
+            'gibibytes with iB' => ['3GiB', 3221225472],
+            'lower case' => ['1t', 1099511627776],
+            'space before unit' => ['5 G', 5368709120],
+            'fraction' => ['1.5G', null],
+            'unknown unit' => ['1P', null],
+            'empty' => ['', null],
+            'too large' => ['999999999999999T', null],
+        ];
     }
 
     /**
@@ -171,6 +205,7 @@ final class OperationsConfigTest extends TestCase
             'METRICS_KEYS' => 'metrics-key-0123456789',
             'CLUSTER_PEERS' => 'https://peer.internal',
             'PURGE_KEYS' => '*=purge-secret-0123456789',
+            'CACHE_MAX_SIZE' => '1M',
         ]);
 
         self::assertSame($config->getOperations()->toArray(), OperationsConfig::fromArray($config->toArray())->toArray());

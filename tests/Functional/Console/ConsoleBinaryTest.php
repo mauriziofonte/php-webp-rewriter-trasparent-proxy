@@ -29,7 +29,7 @@ final class ConsoleBinaryTest extends TestCase
         fclose($pipes[2]);
         self::assertSame(0, proc_close($process), $output);
 
-        foreach (['check-env', 'cache:purge'] as $command) {
+        foreach (['check-env', 'cache:purge', 'cache:evict'] as $command) {
             self::assertMatchesRegularExpression('/^' . preg_quote($command, '/') . '\s/m', $output);
         }
     }

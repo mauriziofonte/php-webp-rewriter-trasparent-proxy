@@ -242,6 +242,7 @@ final class ConfigTest extends TestCase
             'CLUSTER_PEERS' => ['https://peer.example.test'],
             'CLUSTER_CA_FILE' => null,
             'CLUSTER_TIMEOUT' => 2,
+            'CACHE_MAX_SIZE' => 1048576,
         ], $overrides);
     }
 }

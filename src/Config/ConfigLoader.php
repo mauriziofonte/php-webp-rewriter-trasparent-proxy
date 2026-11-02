@@ -86,6 +86,7 @@ final class ConfigLoader
         'CLUSTER_PEERS',
         'CLUSTER_CA_FILE',
         'CLUSTER_TIMEOUT',
+        'CACHE_MAX_SIZE',
     ];
 
     /**
