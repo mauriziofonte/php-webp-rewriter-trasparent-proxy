@@ -345,7 +345,7 @@ untrusted_https() {
 }
 
 smoke() {
-    local s="$1" base fpm_log lines app css svg redirect
+    local s="$1" base fpm_log lines app css svg redirect size
     base="http://127.0.0.1:$(port_of "$s")"
     fpm_log="$workdir/$s/logs/php-fpm-access.log"
     app="$workdir/$s/app/public/_cache/127.0.0.1"
@@ -426,6 +426,16 @@ smoke() {
     expect "$s: PHP-path hit is a hit" "$(cache_status "$workdir/$s/phphit.headers")" HIT
     wait_for "$s: PHP-path hit went through PHP-FPM" 10 has_lines "$fpm_log" $((lines + 1))
     hit_headers "$s: PHP-path hit" "$workdir/$s/phphit.headers"
+    # The length of a file PHP serves reaches the client, on GET and HEAD
+    # (Apache drops it unless public/.htaccess trusts it).
+    size="$(wc -c <"$fixture" | tr -d ' ')"
+    expect "$s: PHP-path hit Content-Length" "$(header_of Content-Length "$workdir/$s/phphit.headers")" "$size"
+    expect "$s: HEAD of a PHP-path hit" "$(fetch "$base$asset?v=3&zz=1" "$workdir/$s/phphead" -I)" 200
+    expect "$s: HEAD of a PHP-path hit Content-Length" "$(header_of Content-Length "$workdir/$s/phphead.headers")" "$size"
+    expect "$s: HEAD of a miss" "$(fetch "$base/css/site.css?v=9&zz=2" "$workdir/$s/headmiss" -I)" 200
+    expect "$s: HEAD of a miss is a miss" "$(cache_status "$workdir/$s/headmiss.headers")" MISS
+    expect "$s: HEAD of a miss Content-Length" "$(header_of Content-Length "$workdir/$s/headmiss.headers")" \
+        "$(wc -c <"$root/tests/Fixtures/origin/css/site.css" | tr -d ' ')"
     expect "$s: PHP-path hit has the Cache-Control of a web-server hit" \
         "$(cache_directives "$workdir/$s/phphit.headers")" "$(cache_directives "$workdir/$s/second.headers")"
 

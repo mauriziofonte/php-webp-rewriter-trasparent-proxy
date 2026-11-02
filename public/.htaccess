@@ -147,6 +147,11 @@ ErrorDocument 403 "Access Forbidden"
     SetEnvIf Request_URI "\.(?i:jpe?g|png|gif|bmp)(\.avif|\.webp)?$" PCDN_RASTER
     SetEnvIf Request_URI "\.(?i:css|js|mjs|json|map|svg|txt|xml|ico|ttf|ttc|otf|eot)$" PCDN_TEXT
     SetEnvIf Request_URI "\.(?i:svg)$" PCDN_SVG
+    # mod_proxy_fcgi drops the Content-Length of PHP and sends the body
+    # chunked, and a HEAD without length, unless this variable trusts it
+    # (httpd 2.4.59 and later; earlier versions keep it anyway). PHP sends
+    # the exact length of every file it serves, HEAD included.
+    SetEnvIf Request_URI "^" ap_trust_cgilike_cl=1
 </IfModule>
 
 <IfModule mod_headers.c>
