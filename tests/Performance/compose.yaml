@@ -1,0 +1,44 @@
+# Performance suite: an override of the integration harness
+# (tests/Integration/docker/compose.yaml), started by run.sh with both files.
+# Compose resolves the relative paths of every file from the directory of
+# the first one, so the paths below start from tests/Integration/docker.
+#
+# It adds, to each stack:
+#   - for Apache, the rules of public/.htaccess in the virtual host
+#     (HARNESS_WORKDIR/apache/rules.conf, see apache/httpd.conf);
+#   - the OPcache settings of config/php/proxy-cdn.ini, preloading included
+#     (written by run.sh to HARNESS_WORKDIR/php/proxy-cdn.ini);
+#   - a second virtual host on port 8080 of the same web server that serves
+#     tests/Fixtures/origin as plain static files: the baseline of the hits;
+#   - trust in X-Forwarded-Proto from every address of the compose network,
+#     so that the load generator, a container, is not redirected to https;
+# and the load generator itself (k6), which run.sh starts per measurement.
+
+services:
+  fpm-apache:
+    volumes:
+      - ${HARNESS_WORKDIR:?set by run.sh}/php/proxy-cdn.ini:/usr/local/etc/php/conf.d/zz-proxy-cdn.ini:ro
+
+  apache:
+    volumes:
+      - ../../Performance/apache/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
+      - ./apache/httpd.conf:/usr/local/apache2/conf/harness.conf:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/apache/rules.conf:/usr/local/apache2/conf/rules.conf:ro
+      - ../../Fixtures/origin:/static:ro
+
+  fpm-nginx:
+    volumes:
+      - ${HARNESS_WORKDIR:?set by run.sh}/php/proxy-cdn.ini:/usr/local/etc/php/conf.d/zz-proxy-cdn.ini:ro
+
+  nginx:
+    volumes:
+      - ../../Performance/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../../Fixtures/origin:/static:ro
+
+  k6:
+    image: grafana/k6:${BENCH_K6_VERSION:?set by run.sh}
+    profiles: [load]
+    user: ${HARNESS_UID:?set by run.sh}:${HARNESS_GID:?set by run.sh}
+    volumes:
+      - ../../Performance/k6:/scripts:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/results:/results
