@@ -175,9 +175,10 @@ jobs:
           tools: composer:v2
 
       # The harness mounts vendor/ into the PHP-FPM containers, so it is
-      # resolved here for the PHP version under test.
-      - name: Install dependencies (highest, no dev)
-        run: composer update --no-dev --no-progress
+      # resolved here for the PHP version under test, with the authoritative
+      # class map of production installs.
+      - name: Install dependencies (highest, no dev, authoritative class map)
+        run: composer update --no-dev --classmap-authoritative --no-progress
 
       - name: Smoke test on Apache and nginx with PHP-FPM
         env:
