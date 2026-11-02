@@ -16,6 +16,7 @@ use Mfonte\SecureImageConverter\Concurrency\LeaseInterface;
 use Mfonte\SecureImageConverter\Concurrency\LockDirectory;
 use Mfonte\SecureImageConverter\Contract\Exception\InvalidArgumentException;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -55,17 +56,74 @@ final class RequestCoalescerTest extends TestCase
     public function testTheFirstRequestLeads(): void
     {
         $coalescer = $this->coalescer($this->lock(), 1.0);
-        $coalescer->recordFailure('key', ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
 
         $lease = $coalescer->enter('key', static function (): bool {
             return false;
         });
 
         self::assertInstanceOf(LeaseInterface::class, $lease);
-        self::assertNull($coalescer->recentFailure('key'), 'the failure of an earlier leader is not for its waiters');
         self::assertNull($coalescer->tryEnter('key'), 'held');
         $lease->release();
         self::assertTrue($coalescer->isEnabled());
+    }
+
+    /**
+     * A request that finds the lock free after a leader recorded its
+     * outcome (it came late in the burst) answers with that outcome, as
+     * the waiters do, instead of leading a second fetch, and leaves the
+     * outcome for the waiters still polling; once it expires, the next
+     * request leads.
+     *
+     * @dataProvider recordedOutcomes
+     *
+     * @param callable(RequestCoalescer): void $record
+     */
+    #[DataProvider('recordedOutcomes')]
+    public function testALateRequestSharesTheOutcomeOfTheLeaderThatLeft(callable $record): void
+    {
+        $coalescer = $this->coalescer($this->lock(), 1.0);
+        $leader = $coalescer->enter('key', static function (): bool {
+            return false;
+        });
+        self::assertInstanceOf(LeaseInterface::class, $leader);
+        $record($coalescer);
+        $leader->release();
+
+        $late = $coalescer->enter('key', static function (): bool {
+            return false;
+        });
+
+        self::assertNull($late, 'it answers with the outcome');
+        self::assertTrue($coalescer->recentFailure('key') !== null || $coalescer->recentRedirect('key') !== null, 'kept');
+        $free = $coalescer->tryEnter('key');
+        self::assertNotNull($free, 'not held');
+        $free->release();
+
+        touch($this->directory->path('outcomes/' . substr(hash('sha256', 'key'), 0, 3) . '.outcome'), time() - RequestCoalescer::OUTCOME_WINDOW);
+        clearstatcache();
+        $next = $coalescer->enter('key', static function (): bool {
+            return false;
+        });
+        self::assertInstanceOf(LeaseInterface::class, $next, 'expired: the next request leads');
+        $next->release();
+    }
+
+    /**
+     * @return array<string, array{callable(RequestCoalescer): void}>
+     */
+    public static function recordedOutcomes(): array
+    {
+        return [
+            'failure' => [static function (RequestCoalescer $coalescer): void {
+                $coalescer->recordFailure('key', ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+            }],
+            'not found' => [static function (RequestCoalescer $coalescer): void {
+                $coalescer->recordFailure('key', ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
+            }],
+            'redirect' => [static function (RequestCoalescer $coalescer): void {
+                $coalescer->recordRedirect('key', 302, '/css/moved.css');
+            }],
+        ];
     }
 
     public function testAWaiterReturnsAsSoonAsTheEntryIsReadyWithoutTheLock(): void

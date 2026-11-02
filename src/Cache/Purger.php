@@ -11,8 +11,9 @@ namespace Mfonte\ProxyCdn\Cache;
  * A purge removes, in both tiers (the one the web server serves and the one
  * PHP revalidates, CacheLocation::managed()), the entry, its metadata, its
  * AVIF and WEBP variants and its Brotli and gzip encodings
- * (CacheLocation::getFiles()), and what the negative cache remembers for
- * it. A purge of a URL without query string also removes the entries of
+ * (CacheLocation::getFiles()), what the negative cache remembers for it,
+ * and the outcome the request coalescer shares for it (a 404, a redirect
+ * or a failure of the origin, which the next request must not be given). A purge of a URL without query string also removes the entries of
  * every query string of the same path, in ".q/" and ".qh/" (finding P-16:
  * 2.x left them, so "PURGE /app.css" kept serving "/app.css?v=2"); a purge
  * of a URL with a query string removes that entry only.
@@ -38,10 +39,16 @@ final class Purger
      */
     private $negativeCache;
 
-    public function __construct(CacheStorage $storage, NegativeCache $negativeCache)
+    /**
+     * @var RequestCoalescer|null
+     */
+    private $coalescer;
+
+    public function __construct(CacheStorage $storage, NegativeCache $negativeCache, ?RequestCoalescer $coalescer = null)
     {
         $this->storage = $storage;
         $this->negativeCache = $negativeCache;
+        $this->coalescer = $coalescer;
     }
 
     /**
@@ -67,6 +74,9 @@ final class Purger
                 }
             }
             $this->negativeCache->forget($entry->getFile());
+            if ($this->coalescer !== null) {
+                $this->coalescer->forget($entry->getKey());
+            }
         }
 
         return $removed;

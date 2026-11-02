@@ -50,6 +50,7 @@ final class NegativeCacheTest extends CharacterizationTestCase
         $markers = $this->negativeMarkers();
         self::assertCount(1, $markers);
         self::age($markers[0], 301);
+        $this->afterTheOutcomeWindow();
         $response = $this->get('/images/gradient.png');
 
         self::assertSame(200, $response->getStatus());

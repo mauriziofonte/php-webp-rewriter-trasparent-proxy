@@ -56,6 +56,7 @@ final class ProxyKernelFactory
         $negativeCache = new NegativeCache($storage, $stateDirectory . '/negative', $config->getNegativeCacheTtl());
         $responses = ResponseFactory::fromConfig($config);
         $cacheDirectory = rtrim($publicDirectory, '/') . '/' . CacheKeyResolver::CACHE_DIRECTORY;
+        $coalescer = new RequestCoalescer(self::lock($stateDirectory . '/locks', $logger), $config->getUpstreamTimeout() + self::COALESCING_MARGIN, $logger, $storage, $stateDirectory . '/coalescing');
 
         return new ProxyKernel(
             $config,
@@ -67,13 +68,13 @@ final class ProxyKernelFactory
             $storage,
             $negativeCache,
             new OriginCircuitBreaker($stateDirectory . '/breaker', $config->getNetworkErrorTtl(), $config->getCircuitBreakerThreshold()),
-            new Purger($storage, $negativeCache),
+            new Purger($storage, $negativeCache, $coalescer),
             $origin,
             $converter,
             new Precompressor($storage, $config->shouldPrecompress()),
             $responses,
             new FileResponder($storage, $responses, $config->getSendfile(), $cacheDirectory, $logger),
-            new RequestCoalescer(self::lock($stateDirectory . '/locks', $logger), $config->getUpstreamTimeout() + self::COALESCING_MARGIN, $logger, $storage, $stateDirectory . '/coalescing'),
+            $coalescer,
             $logger
         );
     }

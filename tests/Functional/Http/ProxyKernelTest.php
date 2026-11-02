@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
+use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
 use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
@@ -384,6 +385,26 @@ final class ProxyKernelTest extends TestCase
         self::assertFileDoesNotExist($this->cachePath('js/app.js.netfail'));
     }
 
+    /**
+     * Finding P-24: a request that comes after the one the origin failed,
+     * within OUTCOME_WINDOW, is answered with the same failure without a
+     * fetch (a late request of a burst cannot be told from it); once the
+     * window has passed, the origin is asked again.
+     */
+    public function testARequestWithinTheOutcomeWindowSharesTheFailureBeforeIt(): void
+    {
+        $kernel = $this->kernelWithThreshold(10);
+        $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 500));
+
+        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+        self::assertCount(1, $this->origin->getRequests(), 'shared');
+
+        $this->afterTheOutcomeWindow();
+        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+        self::assertCount(2, $this->origin->getRequests(), 'asked again');
+    }
+
     public function testTheBreakerOpensAfterTheThreshold(): void
     {
         $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 500));
@@ -395,7 +416,10 @@ final class ProxyKernelTest extends TestCase
             $this->logger
         );
 
+        // Each attempt after the window in which the coalescer shares the
+        // failure of the one before.
         for ($attempt = 0; $attempt < 4; ++$attempt) {
+            $this->afterTheOutcomeWindow();
             self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
         }
 
@@ -413,14 +437,19 @@ final class ProxyKernelTest extends TestCase
         $this->origin->respond(self::ORIGIN . '/js/down.js', OriginResponse::failure(OriginResponse::FAILURE_CONNECT, 0, 7, 'refused'));
         $this->origin->respond(self::ORIGIN . '/js/stream.js', OriginResponse::failure(OriginResponse::FAILURE_OTHER, 0, 92, 'stream error'));
 
+        // Each request after the window in which the coalescer shares the
+        // failure of the one before.
         for ($attempt = 0; $attempt < 4; ++$attempt) {
+            $this->afterTheOutcomeWindow();
             self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/down.js'))->getStatusCode());
         }
         self::assertSame(502, $kernel->handle(Request::create('https://cdn.example.test/js/stream.js'))->getStatusCode());
         // The fifth failure in a row opens the breaker.
+        $this->afterTheOutcomeWindow();
         self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/down.js'))->getStatusCode());
         $requests = count($this->origin->getRequests());
         for ($attempt = 0; $attempt < 3; ++$attempt) {
+            $this->afterTheOutcomeWindow();
             self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/down.js'))->getStatusCode());
         }
 
@@ -569,6 +598,7 @@ final class ProxyKernelTest extends TestCase
         $markers = glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/negative/*.neg')) ?: [];
         self::assertCount(1, $markers);
         touch($markers[0], time() - 3600);
+        $this->afterTheOutcomeWindow();
         $this->origin->serve(self::ORIGIN . '/css/gone.css', self::CSS, ['content-type' => 'text/css']);
 
         $response = $this->kernel()->handle(Request::create('https://cdn.example.test/css/site.css'));
@@ -870,8 +900,27 @@ final class ProxyKernelTest extends TestCase
     /**
      * Moves the times kept by every breaker by $seconds.
      */
+    /**
+     * As if OUTCOME_WINDOW seconds had passed since the last request: the
+     * outcome the coalescer shares with every request of an entry (a
+     * failure, a 404, a redirect) has expired, so that the next request of
+     * the same URL reaches the origin again.
+     */
+    private function afterTheOutcomeWindow(): void
+    {
+        foreach (glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/coalescing/*.outcome')) ?: [] as $file) {
+            touch($file, time() - RequestCoalescer::OUTCOME_WINDOW);
+        }
+        clearstatcache();
+    }
+
+    /**
+     * As if -$seconds seconds had passed for the breaker, and for the
+     * outcomes the coalescer shares (OUTCOME_WINDOW is shorter).
+     */
     private function shiftBreakerTimes(int $seconds): void
     {
+        $this->afterTheOutcomeWindow();
         foreach (glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/breaker/*.breaker')) ?: [] as $file) {
             $state = json_decode((string) file_get_contents($file), true);
             self::assertIsArray($state);

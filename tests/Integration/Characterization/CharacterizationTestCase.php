@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Tests\Integration\Characterization;
 
 use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
+use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Tests\Fixtures\FakeOrigin\FakeOriginServer;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\ProxyServer;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\RawHttpResponse;
@@ -234,6 +235,20 @@ SH;
     /**
      * Sets the modification time of a negative-cache marker $seconds in the past.
      */
+    /**
+     * As if OUTCOME_WINDOW seconds had passed since the last request: the
+     * outcome the coalescer shares with every request of an entry (a
+     * failure, a 404, a redirect) has expired, so that the next request of
+     * the same URL reaches the origin again.
+     */
+    protected function afterTheOutcomeWindow(): void
+    {
+        foreach (glob($this->proxy->getProjectDirectory() . '/var/coalescing/*.outcome') ?: [] as $file) {
+            touch($file, time() - RequestCoalescer::OUTCOME_WINDOW);
+        }
+        clearstatcache();
+    }
+
     protected static function age(string $file, int $seconds): void
     {
         self::assertFileExists($file);

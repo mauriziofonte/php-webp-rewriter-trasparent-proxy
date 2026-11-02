@@ -26,8 +26,10 @@ use Psr\Log\LoggerInterface;
  * nothing:
  * - a leader that the origin failed, or answered with a 403, 404 or 410,
  *   records the error it answered, and its waiters answer with it instead
- *   of fetching in turn; the record holds for OUTCOME_WINDOW seconds, and
- *   the next leader clears it;
+ *   of fetching in turn; the record holds for OUTCOME_WINDOW seconds, for
+ *   every request of the entry: one that finds the lock free meanwhile (it
+ *   came late, after the leader left) answers with it as well, so the
+ *   origin sees at most one fetch per window, however the burst spreads;
  * - a leader that the origin redirected records the redirect it passed
  *   on, and its waiters pass on the same one, for the same window;
  * - a leader whose response the origin forbids storing (no-store,
@@ -155,8 +157,16 @@ final class RequestCoalescer
         try {
             $lease = $lock->tryAcquire($key);
             if ($lease !== null) {
-                // A new leader: the outcome of an earlier one is not for its waiters.
-                $this->forget($key);
+                // A request that finds the lock free after a leader left an
+                // outcome (it came late in the burst, or the origin keeps
+                // failing) answers with that outcome too, until it expires:
+                // leading would fetch again, and erasing it would send the
+                // waiters still polling to the origin after it.
+                if ($this->outcomeOf($key) !== null) {
+                    $lease->release();
+
+                    return null;
+                }
 
                 return $lease;
             }

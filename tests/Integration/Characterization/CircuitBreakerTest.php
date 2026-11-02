@@ -24,8 +24,12 @@ final class CircuitBreakerTest extends CharacterizationTestCase
     {
         $this->origin->setRule('/images/gradient.png', 500);
 
+        // Each request after the window in which the coalescer shares the
+        // failure of the one before.
         $first = $this->get('/images/gradient.png');
+        $this->afterTheOutcomeWindow();
         $second = $this->get('/images/gradient.png');
+        $this->afterTheOutcomeWindow();
         $third = $this->get('/images/gradient.png');
 
         foreach ([$first, $second, $third] as $response) {
@@ -55,6 +59,7 @@ final class CircuitBreakerTest extends CharacterizationTestCase
         $this->origin->setRule('/images/gradient.png', 502);
         $this->origin->setRule('/js/app.js', 502);
         $this->get('/images/gradient.png');
+        $this->afterTheOutcomeWindow();
         $this->get('/images/gradient.png');
 
         $other = $this->get('/js/app.js');
@@ -71,6 +76,7 @@ final class CircuitBreakerTest extends CharacterizationTestCase
     {
         $this->origin->setRule('/images/gradient.png', 503);
         $this->get('/images/gradient.png');
+        $this->afterTheOutcomeWindow();
         $this->get('/images/gradient.png');
         $this->origin->removeRule('/images/gradient.png');
         self::assertSame(503, $this->get('/js/app.js')->getStatus());
@@ -89,6 +95,7 @@ final class CircuitBreakerTest extends CharacterizationTestCase
     {
         $this->origin->setRule('/images/gradient.png', 500);
         $this->get('/images/gradient.png');
+        $this->afterTheOutcomeWindow();
         $this->get('/images/gradient.png');
 
         $this->shiftBreakerTimes(-31);
@@ -125,6 +132,7 @@ final class CircuitBreakerTest extends CharacterizationTestCase
     {
         $this->origin->setRule('/images/gradient.png', 503);
         $this->get('/images/gradient.png');
+        $this->afterTheOutcomeWindow();
         $this->get('/images/gradient.png');
         $this->origin->setRule('/images/gradient.png', $status, $location);
         self::assertSame(503, $this->get('/js/app.js')->getStatus());
@@ -172,8 +180,9 @@ final class CircuitBreakerTest extends CharacterizationTestCase
     }
 
     /**
-     * The 3xx answer of the origin is retried at once: it never keeps the
-     * file unavailable (finding P-13).
+     * The 3xx answer of the origin is retried as soon as the coalescer
+     * stops sharing it (OUTCOME_WINDOW): it never keeps the file
+     * unavailable (finding P-13).
      *
      * @group regression
      */
@@ -183,6 +192,7 @@ final class CircuitBreakerTest extends CharacterizationTestCase
         $this->origin->setRule('/images/gradient.png', 302, '/images/elsewhere.png');
         $this->get('/images/gradient.png');
         $this->origin->removeRule('/images/gradient.png');
+        $this->afterTheOutcomeWindow();
 
         $response = $this->get('/images/gradient.png');
 
@@ -234,8 +244,13 @@ final class CircuitBreakerTest extends CharacterizationTestCase
     /**
      * Moves the times kept by every breaker by $seconds.
      */
+    /**
+     * As if -$seconds seconds had passed for the breaker, and for the
+     * outcomes the coalescer shares (OUTCOME_WINDOW is shorter).
+     */
     private function shiftBreakerTimes(int $seconds): void
     {
+        $this->afterTheOutcomeWindow();
         foreach ($this->breakerStates() as $file) {
             $state = json_decode((string) file_get_contents($file), true);
             self::assertIsArray($state);
