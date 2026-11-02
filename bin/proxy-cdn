@@ -10,10 +10,12 @@ declare(strict_types=1);
  *   cache:purge <url>...          purge URLs here and on CLUSTER_PEERS
  *   cache:evict                   evict LRU entries down to CACHE_MAX_SIZE
  *   cache:warmup <source>         request a sitemap or a URL list
+ *   cache:migrate-2x              move or wipe the cache of 2.x
  */
 
 use Mfonte\ProxyCdn\Config\ConfigLoader;
 use Mfonte\ProxyCdn\Console\CacheEvictCommand;
+use Mfonte\ProxyCdn\Console\CacheMigrate2xCommand;
 use Mfonte\ProxyCdn\Console\CachePurgeCommand;
 use Mfonte\ProxyCdn\Console\CacheWarmupCommand;
 use Mfonte\ProxyCdn\Console\CheckEnvCommand;
@@ -57,6 +59,7 @@ $application->addCommands([
     new CachePurgeCommand($installation),
     new CacheEvictCommand($installation),
     new CacheWarmupCommand($installation),
+    new CacheMigrate2xCommand($installation),
 ]);
 
 exit($application->run());
