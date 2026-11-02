@@ -68,7 +68,7 @@ The one thing this project does that is genuinely cumbersome to replicate with o
 ## Installation
 
 1. Clone this repo onto a LAMP/LEMP server and point a VirtualHost's `DocumentRoot` (nginx: `root`) at `./public`.
-2. Configure the web server (see *Web server configuration*). Apache: `sudo a2enmod rewrite headers setenvif deflate mime`.
+2. Configure the web server (see *Web server configuration*). Apache: `sudo a2enmod rewrite headers setenvif env deflate mime`.
 3. Make sure `curl` is available in your PHP build (`php -m | grep -i curl`).
 4. Install dependencies with `composer install`. The `post-install` hook runs `bin/proxy-cdn check-env --informational`, which validates every configuration key (including URL format, numeric ranges and suspicious extensions); `composer check-env` runs the same check and fails on any error.
 5. Copy `.env.example` to `.env` and adjust it. The defaults are safe for production (`DEBUG=false`, and the origin TLS certificate is verified; an origin with a self-signed certificate on a trusted network needs `UPSTREAM_VERIFY_TLS=false`).
@@ -89,7 +89,7 @@ Every setting is read from the environment first and from `.env` second: a varia
 
 | Key                               | Type      | Default                   | Description                                                                                                                                                     |
 |-----------------------------------|-----------|---------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `DEBUG`                           | bool      | `false`                   | When `true`, enables `display_errors`, `E_ALL` and info-level log entries. **Must be `false` in production** or PHP warnings will poison streamed asset bodies. |
+| `DEBUG`                           | bool      | `false`                   | When `true`, enables `display_errors`, `E_ALL` and info-level log entries. **Must be `false` in production** or PHP warnings will poison streamed asset bodies. The official web server configurations force `display_errors` off for PHP-FPM (`PHP_ADMIN_VALUE`), so that a warning PHP raises before the proxy runs (a body above `post_max_size`) never becomes a body either: there PHP errors go to the PHP error log only. |
 | `SOURCE_ORIGIN`                   | URL       | *required*                | Origin server from which missing assets are fetched. Validated at install time.                                                                                 |
 | `SOURCE_ORIGIN_SERVER`            | `ip:port` | *optional*                | Pins the cURL connection to a specific `host:port`, bypassing DNS (and therefore any CDN/WAF in front of the origin). See security notes. Not with several origins in `PROXY_HOSTS`. |
 | `PROXY_HOSTS`                     | CSV       | *required*                | The host names the proxy answers for: `cdn.example.com` fetches from `SOURCE_ORIGIN`, `cdn.example.com=https://origin.example.com` from its own origin. Each host has a cache directory of its own, `public/_cache/<host>/`; any other `Host` gets `421 Unknown host`. A name matches itself only, in any letter case, without wildcards. |

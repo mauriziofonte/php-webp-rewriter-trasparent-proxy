@@ -573,6 +573,22 @@ smoke() {
     cors_once "$s: preflight of a missing file" "$workdir/$s/options-miss.headers" \
         Access-Control-Allow-Origin Access-Control-Allow-Methods Access-Control-Max-Age
     expect "$s: missing file" "$(fetch "$base/images/missing.png" "$workdir/$s/missing")" 404
+
+    # A body above post_max_size (1K in the harness, whose php.ini displays
+    # errors): PHP warns before the proxy runs. The web server
+    # configurations force display_errors off, so the warning stays out of
+    # the body and the 405 of the proxy stands.
+    head -c 4000 /dev/zero | tr '\0' a >"$workdir/$s/post.data"
+    expect "$s: POST above post_max_size" \
+        "$(fetch "$base/images/post.png" "$workdir/$s/post" -X POST --data-binary "@$workdir/$s/post.data")" 405
+    if grep -qi 'warning\|post_max_size\|content-length of' "$workdir/$s/post.body"; then
+        die "$s: a PHP warning reached the body: $(head -c 200 "$workdir/$s/post.body")"
+    fi
+    pass "$s: POST above post_max_size: no PHP warning in the body"
+    case "$(header_of Content-Type "$workdir/$s/post.headers")" in
+        text/html*) die "$s: POST above post_max_size answered text/html" ;;
+    esac
+    pass "$s: POST above post_max_size: not text/html"
     expect "$s: an error carries no cache status" "$(cache_status "$workdir/$s/missing.headers")" ""
     case "$(status_of -H 'X-Forwarded-Proto: https' "$base/_cache/127.0.0.1$asset")" in
         200) die "$s: the cache directory is readable directly" ;;

@@ -9,7 +9,7 @@
 #
 # Requirements (see config/apache/proxy-cdn.conf for a virtual host):
 #   - DocumentRoot is public/, with "AllowOverride All";
-#   - mod_rewrite, mod_headers, mod_setenvif and mod_mime;
+#   - mod_rewrite, mod_headers, mod_setenvif, mod_env and mod_mime;
 #   - UseCanonicalName Off (the default): the cache directory is named
 #     after the Host header;
 #   - behind a TLS-terminating proxy, the virtual host sets PROXYCDN_HTTPS
@@ -41,6 +41,23 @@ ErrorDocument 403 "Access Forbidden"
 <FilesMatch "\.(404|netfail)$">
     Require all denied
 </FilesMatch>
+
+# PHP prints the errors it raises before the proxy runs (such as a body
+# above post_max_size) by its php.ini, which may display them: they would
+# become the body, and turn the status of the proxy into a 200 text/html.
+# Off for PHP-FPM (a FastCGI parameter, which public/index.php and DEBUG
+# cannot turn back on; Apache passes no "\n", and PHP shows a startup
+# error only when display_errors is on) and for mod_php (which then needs
+# "AllowOverride Options" as well).
+<IfModule mod_env.c>
+    SetEnv PHP_ADMIN_VALUE "display_errors=Off"
+</IfModule>
+<IfModule mod_php.c>
+    php_flag display_errors off
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag display_errors off
+</IfModule>
 
 # -----------------------------------------------------------------------------
 # 2. HTTPS redirect + routing
