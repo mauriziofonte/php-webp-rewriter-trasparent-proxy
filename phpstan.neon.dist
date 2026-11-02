@@ -25,6 +25,7 @@ parameters:
         - tests
         - bin/proxy-cdn
         - public/index.php
+        - config/php/preload.php
         - tools/require-tool.php
     # Declares the PHPUnit 10+ attributes the tests use, so that they are
     # checked even when vendor/ holds PHPUnit 8.5 or 9.6 (see the file).
