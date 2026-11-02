@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Config\ConfigLoader;
 use Mfonte\ProxyCdn\Config\ConfigValidation;
 use Mfonte\ProxyCdn\Config\ConfigValidator;
+use Mfonte\ProxyCdn\Config\DeprecatedKeys;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Formatter\OutputFormatter;
@@ -22,6 +23,10 @@ use Symfony\Component\Console\Output\OutputInterface;
  * warnings); it warns about the 2.x keys that were removed
  * (ConfigLoader::REMOVED_KEYS). Prints the 2.x messages and exits with 1
  * on any error.
+ *
+ * It also warns about the keys of DeprecatedKeys that are still set and,
+ * with a project root, about the state directories, the log file and the
+ * 2.x leftovers of the installation (OperationsCheck).
  *
  * With --informational, used by the Composer install hooks, it always exits
  * with 0, so that installing the dependencies never fails because the proxy
@@ -165,6 +170,13 @@ final class CheckEnvCommand extends Command
         }
 
         $validation = $this->validator->validate($values);
+        try {
+            foreach (DeprecatedKeys::warnings($this->loader) as $warning) {
+                $validation = $validation->withWarning($warning);
+            }
+        } catch (InvalidConfigurationException $exception) {
+            // readValues() parsed the same .env above.
+        }
         if (!($this->extensionLoaded)('curl')) {
             $validation = $validation->withError('cURL extension is not installed');
         }
@@ -179,10 +191,11 @@ final class CheckEnvCommand extends Command
         }
         if ($this->projectRoot !== null && $validation->isValid()) {
             try {
-                $expiry = $this->loader->loadFromArray($values)->getCacheExpiry();
+                $loaded = $this->loader->loadFromArray($values);
             } catch (InvalidConfigurationException $exception) {
                 return $validation;
             }
+            $expiry = $loaded->getCacheExpiry();
             foreach (self::WEB_SERVER_CONFIGS as $config) {
                 $maxAge = self::hitMaxAge($this->projectRoot . '/' . $config);
                 if ($maxAge !== null && $maxAge !== $expiry) {
@@ -191,6 +204,9 @@ final class CheckEnvCommand extends Command
                         . 'on the hits the web server serves. Set the same value in both.'
                     );
                 }
+            }
+            foreach ((new OperationsCheck($this->projectRoot))->warnings($loaded) as $warning) {
+                $validation = $validation->withWarning($warning);
             }
         }
 

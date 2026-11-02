@@ -335,6 +335,32 @@ final class ConfigLoader
     }
 
     /**
+     * The names of $names that are set in the environment or in .env
+     * (neither empty nor "null", as normalise() reads them), whether or
+     * not they are keys of KEYS: what check-env reads to find the keys of
+     * DeprecatedKeys.
+     *
+     * @param list<string> $names
+     *
+     * @throws InvalidConfigurationException when .env exists but cannot be parsed
+     *
+     * @return list<string>
+     */
+    public function readSetKeys(array $names): array
+    {
+        $fromFile = $this->readEnvFile();
+        $set = [];
+        foreach ($names as $name) {
+            $value = ($this->environment)($name) ?? $fromFile[$name] ?? null;
+            if (self::normalise($value) !== null) {
+                $set[] = $name;
+            }
+        }
+
+        return $set;
+    }
+
+    /**
      * Whether a .env file is configured and exists.
      */
     public function hasEnvFile(): bool
