@@ -133,7 +133,11 @@ final class TrustedProxies
     {
         $values = [];
         foreach ($request->headers->all(strtolower($name)) as $header) {
-            foreach (explode(',', (string) $header) as $value) {
+            // Older HeaderBag::all() is typed loosely: keep the strings.
+            if (!is_string($header)) {
+                continue;
+            }
+            foreach (explode(',', $header) as $value) {
                 $value = trim($value);
                 if ($value !== '') {
                     $values[] = $value;
