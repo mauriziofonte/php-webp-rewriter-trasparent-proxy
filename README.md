@@ -2,7 +2,7 @@
 
 A self-contained PHP application that turns a VirtualHost into a **self-hosted CDN** for the static assets of another site.
 
-It acts as a **transparent proxy** between the origin server and the client's browser: on the first request a missing asset is fetched from the origin and cached on the local filesystem; on every subsequent request the web server (Apache or nginx) serves the cached copy directly, without going through PHP. If the asset is a raster image (`jpg`, `jpeg`, `png`, `gif`, `bmp`) the proxy optionally generates a `.webp` variant alongside it, which the web server serves at the same URL to the clients that accept it (see *Content negotiation* below).
+It acts as a **transparent proxy** between the origin server and the client's browser: on the first request a missing asset is fetched from the origin and cached on the local filesystem; on every subsequent request the web server (Apache or nginx) serves the cached copy directly, without going through PHP. If the asset is a raster image (`jpg`, `jpeg`, `png`, `gif`, `bmp`) the proxy optionally generates AVIF and WEBP variants alongside it, which the web server serves at the same URL to the clients that accept it (see *Content negotiation* below).
 
 > Historical note: the repository name (`php-webp-rewriter-trasparent-proxy`) contains a typo kept for backward-compatibility. The project is a transparent proxy, not a "trasparent" one.
 
@@ -36,7 +36,7 @@ The one thing this project does that is genuinely cumbersome to replicate with o
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Web server configuration](#web-server-configuration)
-- [Image conversion modes](#image-conversion-modes)
+- [Image conversion](#image-conversion)
 - [Cache purge](#cache-purge)
 - [Origin cache semantics](#origin-cache-semantics)
 - [Query string caching](#query-string-caching)
@@ -63,7 +63,7 @@ The one thing this project does that is genuinely cumbersome to replicate with o
     4. Short-circuit to 404 or 410 if the negative cache still remembers the entry.
     5. Serve from disk if the cache file exists, negotiated as the web server does.
     6. Answer 503 without a fetch while the circuit breaker of the origin is open.
-    7. Otherwise, fetch the origin over HTTPS with cURL, distinguish a real 404 from a transient network failure, persist the bytes atomically, optionally convert to webp, and stream the response.
+    7. Otherwise, fetch the origin over HTTPS with cURL, distinguish a real 404 from a transient network failure, persist the bytes atomically, optionally make its AVIF and WEBP variants, and stream the response.
 
 ## Installation
 
@@ -72,8 +72,7 @@ The one thing this project does that is genuinely cumbersome to replicate with o
 3. Make sure `curl` is available in your PHP build (`php -m | grep -i curl`).
 4. Install dependencies with `composer install`. The `post-install` hook runs `bin/proxy-cdn check-env --informational`, which validates every configuration key (including URL format, numeric ranges and suspicious extensions); `composer check-env` runs the same check and fails on any error.
 5. Copy `.env.example` to `.env` and adjust it. The defaults are safe for production (`DEBUG=false`, and the origin TLS certificate is verified; an origin with a self-signed certificate on a trusted network needs `UPSTREAM_VERIFY_TLS=false`).
-6. If `IMAGE_CONVERSION_MODE = "native"`, install the `cwebp` binary (see *Image conversion modes*).
-7. If `IMAGE_CONVERSION_MODE = "api"`, deploy [mauriziofonte/php-image-to-webp-conversion-api](https://github.com/mauriziofonte/php-image-to-webp-conversion-api) on a separate VirtualHost and set `WEBP_API_SERVER` / `WEBP_API_KEY`.
+6. To make AVIF and WEBP variants, set `IMAGE_CONVERTER` (see *Image conversion*): `local` needs a conversion backend in this host, `remote` the [conversion API v2](https://github.com/mauriziofonte/php-image-to-webp-conversion-api).
 
 ### Minimum PHP version
 
@@ -81,7 +80,7 @@ PHP **7.2.5** or later (required by `symfony/http-foundation ^5.4`). The applica
 
 ### The compiled configuration
 
-The first request after a fresh install compiles the configuration into a small PHP file named `.config.cache.php` in the project root, written atomically (tmp + rename) with mode `0600`, so that `.env` is not parsed and validated on every request. The file is recompiled automatically on the next request whenever `.env` or a configuration variable of the environment changes; there is nothing to delete by hand. If the project root is not writable, the configuration is simply read on every request. The file holds every value, the secrets included (`WEBP_API_KEY`, `PURGE_KEYS`) even when they come only from the environment, so only its owner (the PHP user that wrote it) can read it; a copy that others can read, as earlier versions wrote it (`0644`), is never used and is replaced on the next request. Let the same user (the PHP-FPM pool user) run the proxy and any command that loads the configuration, or the other one compiles it on every request.
+The first request after a fresh install compiles the configuration into a small PHP file named `.config.cache.php` in the project root, written atomically (tmp + rename) with mode `0600`, so that `.env` is not parsed and validated on every request. The file is recompiled automatically on the next request whenever `.env` or a configuration variable of the environment changes; there is nothing to delete by hand. If the project root is not writable, the configuration is simply read on every request. The file holds every value, the secrets included (`IMAGE_API_KEY`, `RESIZE_KEY`, `PURGE_KEYS`) even when they come only from the environment, so only its owner (the PHP user that wrote it) can read it; a copy that others can read, as earlier versions wrote it (`0644`), is never used and is replaced on the next request. Let the same user (the PHP-FPM pool user) run the proxy and any command that loads the configuration, or the other one compiles it on every request.
 
 ## Configuration
 
@@ -112,9 +111,15 @@ Every setting is read from the environment first and from `.env` second: a varia
 | `QUERY_STRING_MODE`               | enum      | `ignore`                  | `ignore` drops the other parameters from the cache key and the origin request; `reject` answers 400 `Query parameter not allowed`.                              |
 | `PURGE_KEYS`                      | CSV       | *empty*                   | `scope=secret` pairs that authenticate a `PURGE` (see *Cache purge*); the scope is the origin host name or `*`. Empty disables purging.                          |
 | `TRUSTED_PROXIES`                 | CSV       | *empty*                   | IPs and CIDR blocks (IPv4, IPv6) of the reverse proxies whose `X-Forwarded-Proto` and `X-Forwarded-For` are believed; same key and syntax as the conversion API. Empty trusts nobody. |
-| `IMAGE_CONVERSION_MODE`           | enum      | `none`                    | One of `native`, `api`, `none`.                                                                                                                                 |
-| `WEBP_API_SERVER`                 | URL       | `null`                    | Only used when mode = `api`.                                                                                                                                    |
-| `WEBP_API_KEY`                    | string    | `null`                    | Only used when mode = `api`.                                                                                                                                    |
+| `IMAGE_CONVERTER`                 | enum      | `none`                    | `none`, `local` (mfonte/secure-image-converter in this host) or `remote` (the conversion API v2); see *Image conversion*. Replaces `IMAGE_CONVERSION_MODE`. |
+| `IMAGE_FORMATS`                   | CSV       | `avif,webp`               | The variants made of each raster entry: `avif` and/or `webp`.                                                                                                   |
+| `IMAGE_CONVERSION_TIMEOUT`        | seconds   | `55`                      | Cap on one conversion; for `remote`, above the API's `CONVERSION_TIME_LIMIT` (50 s), so that the API answers its own timeout first.                             |
+| `IMAGE_API_URL`                   | URL       | `null`                    | `remote`: base URL of the API (`https://images-api.example.com`). Replaces `WEBP_API_SERVER`.                                                                  |
+| `IMAGE_API_KEY`                   | string    | `null`                    | `remote`: an API key, 16 bytes or more, sent as `Authorization: Bearer`. Replaces `WEBP_API_KEY`.                                                              |
+| `IMAGE_API_CA_FILE`               | path      | `null`                    | `remote`: PEM file of the authorities that sign the API certificate; the system bundle otherwise. The certificate is always verified.                           |
+| `IMAGE_API_FALLBACK`              | bool      | `false`                   | `remote`: converts locally when the API cannot convert now (unreachable, breaker open, no capacity).                                                           |
+| `RESIZE_WIDTHS`                   | CSV       | *empty*                   | The widths, in pixels, the signed resize URLs may ask for (at most 16); empty disables them.                                                                   |
+| `RESIZE_KEY`                      | string    | `null`                    | The HMAC key of the resize URLs, 32 characters or more.                                                                                                        |
 | `CHARSET` / `TIMEZONE` / `LOCALE` | string    | `UTF-8` / `UTC` / `en_US` | Standard PHP locale setup.                                                                                                                                      |
 
 ## Web server configuration
@@ -130,27 +135,31 @@ Without them `X-Forwarded-Proto` is ignored, which is the safe default: a TLS-te
 
 **Sending files.** With `SENDFILE=x-accel-redirect` (nginx) or `SENDFILE=x-sendfile` (Apache with mod_xsendfile, `XSendFilePath` set to `public/_cache`), the files PHP chooses are sent by the web server too. PHP hands a file over only when the web server sets the variable `PROXYCDN_SENDFILE` to the same mode, as `config/nginx/proxy-cdn-fastcgi.conf` does, and the `mod_xsendfile` block of `config/apache/proxy-cdn.conf`; otherwise it streams the file itself, so that a missing module never yields empty responses.
 
-**Upgrading from 2.x.** 2.x stored entries at `public/<path>` and `public/_qs/`; 3.0 neither reads nor serves them. Delete them once the new layout is in place (everything in `public/` but `index.php`, `.htaccess` and `_cache/`). The `X.webp` URLs that 2.x redirected clients to keep working (`LEGACY_WEBP_URLS`). They are the one kind of hit that always goes through PHP, on purpose: the web server cannot tell that a missing `X.webp` stands for the entry of `X.jpg` (or `X.jpeg`, `X.png`, ...) without the setting, the order of the siblings and the fallback to the raster typed as itself when it has no WEBP variant, which PHP applies (converting the variant on the spot when a converter is configured). They are a migration path only, used by the clients that cached a 301 of 2.x: turn `LEGACY_WEBP_URLS` off once they are gone.
+**Upgrading from 2.x.** 2.x stored entries at `public/<path>` and `public/_qs/`; 3.0 neither reads nor serves them. Delete them once the new layout is in place (everything in `public/` but `index.php`, `.htaccess` and `_cache/`). The `X.webp` URLs that 2.x redirected clients to keep working (`LEGACY_WEBP_URLS`). They are the one kind of hit that always goes through PHP, on purpose: the web server cannot tell that a missing `X.webp` stands for the entry of `X.jpg` (or `X.jpeg`, `X.png`, ...) without the setting, the order of the siblings and the fallback to the raster typed as itself when it has no WEBP variant, which PHP applies (converting the variant on the spot when WEBP is in `IMAGE_FORMATS`). They are a migration path only, used by the clients that cached a 301 of 2.x: turn `LEGACY_WEBP_URLS` off once they are gone.
 
-## Image conversion modes
+## Image conversion
 
-`IMAGE_CONVERSION_MODE` controls how a newly-cached raster image is handled:
+Each raster entry (`jpg`, `jpeg`, `png`, `gif`, `bmp`) gets its variants in `IMAGE_FORMATS` when it is stored, before the entry itself, so that the web server never serves a new entry without them (see *Content negotiation*):
 
-- **`native`** - the image is converted on the fly using the `cwebp` binary. Requires PHP's `exec()` and `cwebp` in `PATH`. The output is written to a scratch path and then atomically renamed over the destination, so concurrent workers never observe a truncated `.webp`.
-- **`api`** - the image is POSTed to an external microservice ([php-image-to-webp-conversion-api](https://github.com/mauriziofonte/php-image-to-webp-conversion-api)) which returns the webp payload as base64. Written atomically.
-- **`none`** - conversion is disabled. The original raster image is cached and served as-is.
+- **`local`**: [mfonte/secure-image-converter](https://github.com/mauriziofonte/php-secure-image-converter) converts in this host, with the backends it finds (the `gd` or `imagick` extension, `vips`, `cwebp`, `avifenc`) and the process isolation it can set up (`ext-posix` is needed for it and for the caches the library keeps in `var/converter-cache/`). `composer check-env` warns when no backend or no `ext-posix` is found.
+- **`remote`**: the image is posted to the conversion API v2 (`POST /v2/convert`), whose capabilities and limits are read from its `/healthz` every 5 minutes. The certificate is always verified, a redirect is never followed, and an image above the API's size limit is not sent. An API that cannot convert (unreachable, `503`, rate limited) opens a circuit breaker in `var/conversion-api/`; with `IMAGE_API_FALLBACK=true` the conversion is made locally meanwhile.
 
-### Installing `cwebp`
+A conversion that fails never fails the request: the original is served, the failure is logged (`error_code` for the API's codes, `conversion_error_code` for the library's), and it is not tried again for a day (for `NETWORK_ERROR_TTL` seconds when the converter could not convert now). Every output is checked (format, dimensions) before it is moved into the cache. The request that stores an image waits for its conversions: give the web server a read timeout above `UPSTREAM_TIMEOUT` plus one `IMAGE_CONVERSION_TIMEOUT` per format (nginx `fastcgi_read_timeout`, Apache `ProxyTimeout`; both default to 60 s).
 
-| Distro                 | Command                          |
-|------------------------|----------------------------------|
-| Debian / Ubuntu        | `sudo apt install webp`          |
-| Alpine                 | `apk add libwebp-tools`          |
-| Arch / Manjaro         | `sudo pacman -S libwebp`         |
-| Fedora / RHEL / CentOS | `sudo dnf install libwebp-tools` |
-| macOS (Homebrew)       | `brew install webp`              |
+```ini
+IMAGE_CONVERTER = "remote"
+IMAGE_API_URL = "https://images-api.example.com"
+IMAGE_API_KEY = "the key the API gave you"
+```
 
-Smoke-test: `cwebp input.jpg -o output.webp`.
+### Resize URLs
+
+With `RESIZE_WIDTHS` and `RESIZE_KEY` set, `/_resize/<width>/<signature>/<path>` serves the image at `<path>` resized to `<width>` pixels (never enlarged), in its own format and with its variants. The signature is the first 32 hex digits of an HMAC-SHA256 with `RESIZE_KEY`; a URL that is not signed, or whose width is not listed, gets a `403` without any request to the origin. A resized image is stored until purged; `PURGE` of the image removes its resized copies too.
+
+```php
+$message = "resize\n" . 'cdn.example.com' . "\n" . 320 . "\n" . '/images/photo.jpg' . "\n" . ''; // host, width, path, canonical query string
+$url = 'https://cdn.example.com/_resize/320/' . substr(hash_hmac('sha256', $message, $resizeKey), 0, 32) . '/images/photo.jpg';
+```
 
 ## Cache purge
 
@@ -251,7 +260,9 @@ A successful fetch forgets the negative-cache entry of its file and closes the b
 A raster entry (`jpg`, `jpeg`, `png`, `gif`, `bmp`) is always served at its own URL; 2.x answered `301 -> foo.webp` instead, which broke the clients that cached the redirect. The web server and PHP choose the same file from the `Accept` header:
 
 - `image/avif` listed (without `q=0`) and an AVIF variant on disk (`<bucket>/.avif/<path>.avif`): the AVIF variant.
-- Otherwise `image/webp` listed and a WEBP variant on disk (`<bucket>/.webp/<path>.webp`): the WEBP variant, which PHP converts on the first such request.
+- Otherwise `image/webp` listed and a WEBP variant on disk (`<bucket>/.webp/<path>.webp`): the WEBP variant.
+
+The variants are made when the entry is stored (see *Image conversion*); for an entry PHP serves, a missing variant is made on the first request that accepts it.
 - Otherwise the original raster.
 
 Every raster response carries `Vary: Accept`, so that shared caches keep the variants apart. A bare `*/*` is intentionally NOT treated as support, because old UAs send it and then fail to decode the response.
@@ -358,10 +369,10 @@ Read these before putting the proxy on the public Internet.
 
 | Symptom                                     | Likely cause                                                                                                                                                                              |
 |---------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `cwebp binary not available in PATH`        | `IMAGE_CONVERSION_MODE=native` but `cwebp` is missing. Install it or switch to `api` / `none`.                                                                                            |
+| `check-env`: `IMAGE_CONVERSION_MODE is deprecated` | A 2.x key is still set and is ignored: use `IMAGE_CONVERTER`, `IMAGE_API_URL` and `IMAGE_API_KEY` (see *Image conversion*).                                                                |
 | 404s for assets that do exist on the origin | A negative-cache marker in `var/negative/` is still warm. Wait `NEGATIVE_CACHE_TTL` seconds or send a `PURGE` for the URL.                                                                                          |
 | 503 with `Retry-After: 30`                  | The circuit breaker of the origin is open (the origin failed `CIRCUIT_BREAKER_THRESHOLD` times in a row). Wait `NETWORK_ERROR_TTL` seconds for the probe, or delete `var/breaker/` once the origin is fixed.                                                                |
-| 500 `Image conversion failed`               | Origin returned something cURL accepted as 200 but `cwebp` refused. Inspect `public/_cache/<host>/<path>` and `logs/proxy.log`.                                                                         |
+| Images never served as AVIF or WEBP         | The conversions fail: look for `image conversion failed` in `logs/proxy.log` (its `error_code` or `conversion_error_code`). A failed variant is tried again after a day, or after a `PURGE`.               |
 | All responses HTTP (no HTTPS redirect)      | `mod_rewrite` off.                                                                                                                                                                        |
 | Redirect loop behind a load balancer        | The TLS-terminating proxy is not listed as trusted in the web server (see *Web server configuration*), so its `X-Forwarded-Proto: https` is ignored.                                      |
 | `421 Unknown host`                          | The `Host` header is not in `PROXY_HOSTS`.                                                                                                                                                |
