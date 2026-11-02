@@ -14,7 +14,6 @@ use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\CoalescerSeam;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
-use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeWebpConverter;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
 use Mfonte\ProxyCdn\Tests\Fixtures\Origin\FakeOriginFetcher;
 use Mfonte\ProxyCdn\Tests\Fixtures\Origin\LockProbingOrigin;
@@ -890,31 +889,6 @@ final class ProxyKernelTest extends TestCase
         self::assertSame((string) strlen($css), $response->headers->get('content-length'));
     }
 
-    public function testAWebpCapableClientGetsTheConversionOfAMiss(): void
-    {
-        $converter = new FakeWebpConverter();
-
-        $response = $this->kernel($converter)->handle(self::webpRequest('https://cdn.example.test/images/logo.png'));
-
-        self::assertSame('FAKE-WEBP:PNG-BYTES', self::body($response));
-        self::assertSame('image/webp', $response->headers->get('content-type'));
-        self::assertSame('19', $response->headers->get('content-length'));
-        self::assertSame('Accept', $response->headers->get('vary'));
-        self::assertSame('MISS', $response->headers->get('x-cache-status'));
-        self::assertSame([$this->cachePath('images/logo.png')], $converter->getSources());
-        self::assertSame('PNG-BYTES', file_get_contents($this->cachePath('images/logo.png')));
-    }
-
-    public function testOtherClientsGetTheOriginalAndTheSiblingIsStillWritten(): void
-    {
-        $response = $this->kernel(new FakeWebpConverter())->handle(Request::create('https://cdn.example.test/images/logo.png'));
-
-        self::assertSame('PNG-BYTES', self::body($response));
-        self::assertSame('image/png', $response->headers->get('content-type'));
-        self::assertSame('Accept', $response->headers->get('vary'), 'finding P-1: the variant depends on Accept');
-        self::assertFileExists($this->cachePath('.webp/images/logo.png.webp'));
-    }
-
     public function testAnExistingSiblingIsServedToWebpCapableClients(): void
     {
         $this->writeCache('images/logo.png', 'STORED-PNG');
@@ -926,30 +900,6 @@ final class ProxyKernelTest extends TestCase
         self::assertSame('image/webp', $response->headers->get('content-type'));
         self::assertSame('HIT', $response->headers->get('x-cache-status'));
         self::assertSame([], $this->origin->getRequests());
-    }
-
-    public function testABucketHitIsConvertedLazily(): void
-    {
-        $this->origin->serve(self::ORIGIN . '/images/logo.png?v=2', 'PNG-V2');
-        $this->kernel()->handle(Request::create('https://cdn.example.test/images/logo.png?v=2'));
-        $converter = new FakeWebpConverter();
-
-        $response = $this->kernel($converter)->handle(self::webpRequest('https://cdn.example.test/images/logo.png?v=2'));
-
-        self::assertSame('FAKE-WEBP:PNG-V2', self::body($response));
-        self::assertSame('HIT', $response->headers->get('x-cache-status'));
-        self::assertCount(1, $converter->getSources());
-        self::assertCount(1, $this->origin->getRequests());
-    }
-
-    public function testAFailedConversionIsAnInternalError(): void
-    {
-        $this->origin->serve(self::ORIGIN . '/images/broken.png', 'PNG');
-
-        $response = $this->kernel(new FakeWebpConverter())->handle(self::webpRequest('https://cdn.example.test/images/broken.png'));
-
-        self::assertSame(500, $response->getStatusCode());
-        self::assertSame("The request could not be processed.\nInternal server error: Image conversion failed: Fake conversion failed.", self::body($response));
     }
 
     public function testAnUncreatableDirectoryIsReported(): void
@@ -993,14 +943,14 @@ final class ProxyKernelTest extends TestCase
         );
     }
 
-    private function kernel(?FakeWebpConverter $converter = null): ProxyKernel
+    private function kernel(): ProxyKernel
     {
         return TestKernel::create(
             // One failure opens the breaker, as in 2.x, to keep the tests short.
-            TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'IMAGE_CONVERSION_MODE' => $converter === null ? 'none' : 'native', 'CIRCUIT_BREAKER_THRESHOLD' => '1']),
+            TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'CIRCUIT_BREAKER_THRESHOLD' => '1']),
             $this->directory->path(),
             $this->origin,
-            $converter,
+            null,
             $this->logger
         );
     }

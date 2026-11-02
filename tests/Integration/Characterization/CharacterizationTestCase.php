@@ -26,19 +26,6 @@ use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 abstract class CharacterizationTestCase extends TestCase
 {
     /**
-     * Fake cwebp: "cwebp -quiet -m 4 <input> -o <output>" writes
-     * "FAKE-WEBP:" followed by the input, and fails without output when the
-     * input path contains "broken". Each call is appended to
-     * $FAKE_CWEBP_LOG.
-     */
-    private const FAKE_CWEBP = <<<'SH'
-#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_CWEBP_LOG"
-case "$4" in *broken*) exit 1 ;; esac
-{ printf 'FAKE-WEBP:'; cat "$4"; } > "$6"
-SH;
-
-    /**
      * @var string
      */
     protected $workDirectory;
@@ -58,19 +45,12 @@ SH;
         parent::set_up();
 
         $this->workDirectory = sys_get_temp_dir() . '/proxy-cdn-http-' . bin2hex(random_bytes(6));
-        foreach (['/origin', '/bin', '/empty-bin'] as $directory) {
-            self::assertTrue(mkdir($this->workDirectory . $directory, 0777, true));
-        }
-        file_put_contents($this->workDirectory . '/bin/cwebp', self::FAKE_CWEBP . "\n");
-        chmod($this->workDirectory . '/bin/cwebp', 0755);
+        self::assertTrue(mkdir($this->workDirectory . '/origin', 0777, true));
 
         $this->origin = FakeOriginServer::start($this->workDirectory . '/origin', $this->originCacheControl());
         $this->proxy = ProxyServer::start(
             $this->workDirectory . '/app',
-            [
-                'PATH' => $this->executablePath(),
-                'FAKE_CWEBP_LOG' => $this->workDirectory . '/cwebp.log',
-            ],
+            ['PATH' => $this->executablePath()],
             $this->dotEnv($this->configuration())
         );
     }
@@ -107,7 +87,7 @@ SH;
             'CHARSET' => '"UTF-8"',
             'TIMEZONE' => '"UTC"',
             'LOCALE' => '"en_US"',
-            'IMAGE_CONVERSION_MODE' => '"none"',
+            'IMAGE_CONVERTER' => '"none"',
         ];
     }
 
@@ -123,11 +103,11 @@ SH;
     }
 
     /**
-     * PATH of the proxy process; the fake cwebp is found through it.
+     * PATH of the proxy process.
      */
     protected function executablePath(): string
     {
-        return $this->workDirectory . '/bin:/usr/local/bin:/usr/bin:/bin';
+        return '/usr/local/bin:/usr/bin:/bin';
     }
 
     /**

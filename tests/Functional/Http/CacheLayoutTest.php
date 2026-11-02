@@ -11,7 +11,7 @@ use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\CoalescerSeam;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
-use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeWebpConverter;
+use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeImageConverter;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
 use Mfonte\ProxyCdn\Tests\Fixtures\Origin\FakeOriginFetcher;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -201,15 +201,16 @@ final class CacheLayoutTest extends TestCase
     public function testALegacyWebpUrlFetchesAndConvertsTheSiblingL4(): void
     {
         $this->origin->serve(self::ORIGIN . '/images/a.png', 'PNG');
-        $converter = new FakeWebpConverter();
+        $converter = new FakeImageConverter();
+        $webp = (string) file_get_contents(dirname(__DIR__, 2) . '/Fixtures/Image/files/variant.webp');
 
-        $first = $this->kernel([], $converter)->handle(Request::create('https://cdn.example.test/images/a.webp'));
-        $second = $this->kernel([], $converter)->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        $first = $this->kernel(['IMAGE_CONVERTER' => 'local'], $converter)->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        $second = $this->kernel(['IMAGE_CONVERTER' => 'local'], $converter)->handle(Request::create('https://cdn.example.test/images/a.webp'));
 
-        self::assertSame('FAKE-WEBP:PNG', self::body($first));
+        self::assertSame($webp, self::body($first));
         self::assertSame('image/webp', $first->headers->get('content-type'));
         self::assertSame('MISS', $first->headers->get('x-cache-status'));
-        self::assertSame('FAKE-WEBP:PNG', self::body($second));
+        self::assertSame($webp, self::body($second));
         self::assertSame('HIT', $second->headers->get('x-cache-status'));
         self::assertSame([
             self::ORIGIN . '/images/a.webp',
@@ -382,7 +383,7 @@ final class CacheLayoutTest extends TestCase
     /**
      * @param array<string, string|null> $overrides
      */
-    private function kernel(array $overrides = [], ?FakeWebpConverter $converter = null): ProxyKernel
+    private function kernel(array $overrides = [], ?FakeImageConverter $converter = null): ProxyKernel
     {
         return TestKernel::create(TestConfig::create($overrides), $this->directory->path(), $this->origin, $converter, new MemoryLogger());
     }

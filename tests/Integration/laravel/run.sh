@@ -146,7 +146,7 @@ Route::get('/{path}', function (\Illuminate\Http\Request \$request) {
         'PROXY_HOSTS' => '127.0.0.1',
         'CACHEABLE_EXTENSIONS' => 'css,js,png,jpg',
         'UPSTREAM_VERIFY_TLS' => 'true',
-        'IMAGE_CONVERSION_MODE' => 'none',
+        'IMAGE_CONVERTER' => 'none',
     ]);
     \$logger = app('log');
     \$kernel = \Mfonte\ProxyCdn\Http\ProxyKernelFactory::create(

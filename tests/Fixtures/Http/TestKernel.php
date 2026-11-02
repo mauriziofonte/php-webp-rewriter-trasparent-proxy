@@ -7,7 +7,7 @@ namespace Mfonte\ProxyCdn\Tests\Fixtures\Http;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
 use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
-use Mfonte\ProxyCdn\Image\WebpConverter;
+use Mfonte\ProxyCdn\Image\ImageConverter;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Psr\Log\LoggerInterface;
 
@@ -28,7 +28,7 @@ final class TestKernel
         Config $config,
         string $cacheDirectory,
         OriginFetcher $origin,
-        ?WebpConverter $converter,
+        ?ImageConverter $converter,
         LoggerInterface $logger
     ): ProxyKernel {
         return ProxyKernelFactory::create($config, $cacheDirectory, $cacheDirectory . '/' . self::STATE_DIRECTORY, $origin, $converter, $logger);

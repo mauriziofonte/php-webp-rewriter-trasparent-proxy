@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Unit\Image;
 
+use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
 use Mfonte\ProxyCdn\Image\FallbackConverter;
 use Mfonte\ProxyCdn\Image\ImageConverterFactory;
 use Mfonte\ProxyCdn\Image\LocalConverter;
@@ -83,8 +84,8 @@ final class ImageConverterFactoryTest extends TestCase
     }
 
     /**
-     * Carried item: the worst case of the conversions of an entry, which
-     * the coalescing timeout must cover.
+     * Carried item: the coalescing timeout covers the fetch and the
+     * conversions of an entry.
      */
     public function testTheWorstCaseOfTheConversionsOfAnEntry(): void
     {
@@ -100,5 +101,8 @@ final class ImageConverterFactoryTest extends TestCase
             'RESIZE_WIDTHS' => '320',
             'RESIZE_KEY' => str_repeat('k', 32),
         ] + self::REMOTE)));
+
+        self::assertSame(60, ProxyKernelFactory::coalescingTimeout(TestConfig::create(), false));
+        self::assertSame(60 + 155, ProxyKernelFactory::coalescingTimeout(TestConfig::create(self::REMOTE), true));
     }
 }

@@ -16,7 +16,7 @@ use Mfonte\ProxyCdn\Config\RuntimeSettings;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
 use Mfonte\ProxyCdn\Http\ResponseFactory;
-use Mfonte\ProxyCdn\Image\Legacy\LegacyConverterFactory;
+use Mfonte\ProxyCdn\Image\ImageConverterFactory;
 use Mfonte\ProxyCdn\Observability\JsonLogger;
 use Mfonte\ProxyCdn\Origin\HttpOriginFetcher;
 use Psr\Log\LogLevel;
@@ -55,7 +55,7 @@ try {
         __DIR__,
         $projectRoot . '/var',
         HttpOriginFetcher::fromConfig($config, $logger),
-        LegacyConverterFactory::fromConfig($config, $storage, $logger),
+        ImageConverterFactory::create($config, $projectRoot . '/var', $logger, $storage),
         $logger
     );
     $response = $kernel->handle(Request::createFromGlobals());

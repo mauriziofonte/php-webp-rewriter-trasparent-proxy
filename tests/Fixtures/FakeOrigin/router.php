@@ -12,6 +12,8 @@ declare(strict_types=1);
  *   with a rule, it answers the rule's status and {"message": <body>}, or an
  *   HTML page when the rule has no body; a rule with status 200 and a body
  *   answers that body as it is;
+ * - another path with a rule of status 200 and a body answers that body
+ *   as it is, with the headers of the rule (an API answer, for example);
  * - any other path serves the file of the same (decoded) name below
  *   FAKE_ORIGIN_DOCROOT with Content-Type, Content-Length, ETag,
  *   Last-Modified and Vary, plus headers that a proxy must not forward
@@ -90,6 +92,12 @@ if ($path === '/__api/convert') {
     $upload = $uploads[0] ?? null;
     $contents = is_string($upload) ? (string) file_get_contents($upload) : '';
     echo json_encode(['response' => [['webp_image_base64' => base64_encode('API-WEBP:' . $contents)]]]);
+
+    return true;
+}
+
+if ($status === 200 && isset($rule['body']) && is_string($rule['body'])) {
+    echo $rule['body'];
 
     return true;
 }

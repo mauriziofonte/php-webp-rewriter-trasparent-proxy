@@ -16,7 +16,7 @@ use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Compression\Precompressor;
 use Mfonte\ProxyCdn\Config\Config;
-use Mfonte\ProxyCdn\Image\WebpConverter;
+use Mfonte\ProxyCdn\Image\VariantConverter;
 use Mfonte\ProxyCdn\Origin\CircuitBreaker;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Origin\OriginRequest;
@@ -70,8 +70,10 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    origin forbids storing (no-store, private) is streamed to the client
  *    only; any other is stored as the origin sent it, streamed from its
  *    temporary file (finding P-17), in the tier its lifetime calls for,
- *    with its compressed siblings, a raster is converted to WEBP when a
- *    converter is configured, and the asset is served from the cache.
+ *    with its compressed siblings and, for a raster, its AVIF and WEBP
+ *    variants (VariantConverter: a conversion that fails leaves the
+ *    original to be served, finding P-10), and the asset is served from
+ *    the cache.
  *
  * The web server serves the cache files itself, without PHP, whenever it
  * can compute their location (see CacheKeyResolver); the kernel answers
@@ -86,6 +88,13 @@ final class ProxyKernel
      * The raster formats: their entries may have AVIF and WEBP variants.
      */
     public const RASTER_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'bmp'];
+
+    /**
+     * The request attribute that holds the ID of the request (risk L-20),
+     * when the front controller or a host application set one: it is sent
+     * to the conversion API in X-Request-Id.
+     */
+    public const REQUEST_ID_ATTRIBUTE = '_proxy_cdn_request_id';
 
     /**
      * The failures that mean the origin is unavailable, which open the
@@ -170,9 +179,9 @@ final class ProxyKernel
     private $origin;
 
     /**
-     * @var WebpConverter|null
+     * @var VariantConverter|null
      */
-    private $converter;
+    private $variants;
 
     /**
      * @var Precompressor
@@ -215,7 +224,7 @@ final class ProxyKernel
     private $fetchStartedAt;
 
     /**
-     * @param WebpConverter|null $converter null when IMAGE_CONVERSION_MODE is "none"
+     * @param VariantConverter|null $variants null when IMAGE_CONVERTER is "none"
      */
     public function __construct(
         Config $config,
@@ -229,7 +238,7 @@ final class ProxyKernel
         CircuitBreaker $circuitBreaker,
         Purger $purger,
         OriginFetcher $origin,
-        ?WebpConverter $converter,
+        ?VariantConverter $variants,
         Precompressor $precompressor,
         ResponseFactory $responses,
         FileResponder $files,
@@ -248,7 +257,7 @@ final class ProxyKernel
         $this->circuitBreaker = $circuitBreaker;
         $this->purger = $purger;
         $this->origin = $origin;
-        $this->converter = $converter;
+        $this->variants = $variants;
         $this->precompressor = $precompressor;
         $this->responses = $responses;
         $this->files = $files;
@@ -757,18 +766,11 @@ final class ProxyKernel
             return $this->files->respondUncached($request, $body, $extension, $freshness->isNoStore());
         }
 
-        $result = $this->storeFetched($location, $extension, $fetched, $freshness);
+        $result = $this->storeFetched($location, $extension, $fetched, $freshness, self::requestIdOf($request));
         if (is_int($result)) {
             return $this->sharedError($location, $path, $result);
         }
         list($stored, $maxAge) = $result;
-
-        if ($this->isRaster($extension) && $this->converter !== null) {
-            $conversion = $this->converter->convert($stored->getFile(), $stored->getVariantFile(CacheLocation::FORMAT_WEBP));
-            if (!$conversion->isConverted()) {
-                return $this->responses->internalError('Image conversion failed: ' . (string) $conversion->getError());
-            }
-        }
 
         // The asset is back: forget any stale failure.
         $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
@@ -783,12 +785,13 @@ final class ProxyKernel
      * metadata; else the one the web server serves, kept until purged. The
      * entry of the other tier is removed.
      *
-     * @param CacheLocation $location the entry, in the tier the web server serves
+     * @param CacheLocation $location  the entry, in the tier the web server serves
+     * @param string|null   $requestId the ID of the client request, for the conversion API
      *
      * @return int|array{CacheLocation, int|null} the ResponseFactory::ERROR_* of a failure; or the stored entry and
      *                                            the max-age it has left (null in the tier of the web server)
      */
-    private function storeFetched(CacheLocation $location, string $extension, OriginResponse $fetched, ?Freshness $freshness = null)
+    private function storeFetched(CacheLocation $location, string $extension, OriginResponse $fetched, ?Freshness $freshness = null, ?string $requestId = null)
     {
         $now = time();
         $freshness = $freshness ?? Freshness::fromHeaders($fetched->getHeaders(), $now);
@@ -799,7 +802,7 @@ final class ProxyKernel
             $this->storage->delete($file);
         }
 
-        $error = $this->store($target, $extension, $fetched);
+        $error = $this->store($target, $extension, $fetched, $requestId);
         if ($error !== null) {
             return $error;
         }
@@ -819,12 +822,17 @@ final class ProxyKernel
     /**
      * Writes the body of $fetched as the entry of $location, replacing the
      * entry and the siblings of an older version, and writes its
-     * compressed siblings. The body is copied from its temporary file in
-     * chunks (finding P-17), which is then deleted.
+     * compressed siblings, or for a raster its AVIF and WEBP variants
+     * (VariantConverter), before the entry itself: the web server never
+     * serves the new entry without them, and the requests waiting for it
+     * find them. The body is copied from its temporary file in chunks
+     * (finding P-17), which is then deleted.
+     *
+     * @param string|null $requestId the ID of the client request, for the conversion API
      *
      * @return int|null the ResponseFactory::ERROR_* constant of a failure, null on success
      */
-    private function store(CacheLocation $location, string $extension, OriginResponse $fetched): ?int
+    private function store(CacheLocation $location, string $extension, OriginResponse $fetched, ?string $requestId = null): ?int
     {
         if (!$this->storage->ensureDirectory($location->getDirectory())) {
             $fetched->release();
@@ -837,10 +845,19 @@ final class ProxyKernel
             }
         }
         $body = $fetched->getBodyFile();
+        if ($this->variants !== null && $this->isRaster($extension)) {
+            $body = $body ?? ResponseBody::fromString($fetched->getBody(), sys_get_temp_dir());
+            if ($body !== null) {
+                $this->variants->convertAll($location, $body->getPath(), $requestId);
+            }
+        }
         $written = $body === null
             ? $this->storage->write($location->getFile(), $fetched->getBody())
             : $this->storage->import($location->getFile(), $body->getPath());
         $fetched->release();
+        if ($body !== null && $body !== $fetched->getBodyFile()) {
+            $body->delete();
+        }
         if (!$written) {
             return ResponseFactory::ERROR_CACHE_FILE;
         }
@@ -852,9 +869,10 @@ final class ProxyKernel
     /**
      * The response of the entry of $location when it is on disk: a raster
      * as its AVIF or WEBP variant when the client accepts it (converted
-     * first when a converter is configured and the WEBP variant is
-     * missing), any other entry as its Brotli or gzip sibling when the
-     * client accepts it; null when the entry is not on disk.
+     * first when the variant is missing and its format is enabled, unless
+     * a failure of it is remembered), any other entry as its Brotli or
+     * gzip sibling when the client accepts it; null when the entry is not
+     * on disk.
      *
      * @param string   $cacheStatus one of the ResponseFactory::CACHE_* constants
      * @param int|null $maxAge      the max-age of a managed entry; null for CACHE_EXPIRY
@@ -878,19 +896,53 @@ final class ProxyKernel
             return $this->files->respond($request, $file, $extension, $cacheStatus, $encoded, [], $maxAge);
         }
 
-        $webp = $location->getVariantFile(CacheLocation::FORMAT_WEBP);
-        if ($this->converter !== null && !$this->storage->isFile($webp)) {
-            $this->converter->convert($file, $webp);
-        }
         $accept = (string) $request->headers->get('Accept', '');
         foreach (CacheLocation::FORMATS as $format) {
             $variant = $location->getVariantFile($format);
-            if (AcceptHeader::accepts($accept, MediaTypes::of($format)) && $this->storage->isFile($variant)) {
+            if (AcceptHeader::accepts($accept, MediaTypes::of($format))
+                && ($this->storage->isFile($variant) || $this->convertOnHit($request, $location, $format))
+            ) {
                 return $this->files->respond($request, $variant, $format, $cacheStatus, [], ['Accept'], $maxAge);
             }
         }
 
         return $this->files->respond($request, $file, $extension, $cacheStatus, [], ['Accept'], $maxAge);
+    }
+
+    /**
+     * Makes the missing variant $format of the stored entry of $location
+     * on a hit PHP serves (VariantConverter::convertOnHit()), by one
+     * request at a time: the others serve what is on disk meanwhile.
+     * Whether the variant exists afterwards.
+     *
+     * @phpstan-impure
+     */
+    private function convertOnHit(Request $request, CacheLocation $location, string $format): bool
+    {
+        if ($this->variants === null) {
+            return false;
+        }
+        $lease = $this->coalescer->tryEnter($location->getKey() . '#' . $format);
+        if ($lease === null && $this->coalescer->isEnabled()) {
+            return false;
+        }
+        try {
+            return $this->variants->convertOnHit($location, $format, self::requestIdOf($request));
+        } finally {
+            if ($lease !== null) {
+                $lease->release();
+            }
+        }
+    }
+
+    /**
+     * The ID of $request (REQUEST_ID_ATTRIBUTE), when one was set.
+     */
+    private static function requestIdOf(Request $request): ?string
+    {
+        $requestId = $request->attributes->get(self::REQUEST_ID_ATTRIBUTE);
+
+        return is_string($requestId) && $requestId !== '' ? $requestId : null;
     }
 
     /**
@@ -932,7 +984,7 @@ final class ProxyKernel
 
     /**
      * The answer to "X.webp" from the raster entry of $location: its WEBP
-     * variant, converted first when a converter is configured, or else the
+     * variant, converted first when WEBP is enabled, or else the
      * raster itself, typed as what it is (risk L-4: the browsers that
      * cached a 301 of 2.x to "X.webp" keep asking for it, and the origin
      * has no such file).
@@ -940,10 +992,7 @@ final class ProxyKernel
     private function serveLegacy(Request $request, CacheLocation $location, string $extension, string $cacheStatus, ?int $maxAge = null): Response
     {
         $webp = $location->getVariantFile(CacheLocation::FORMAT_WEBP);
-        if ($this->converter !== null && !$this->storage->isFile($webp)) {
-            $this->converter->convert($location->getFile(), $webp);
-        }
-        if ($this->storage->isFile($webp)) {
+        if ($this->storage->isFile($webp) || $this->convertOnHit($request, $location, CacheLocation::FORMAT_WEBP)) {
             return $this->files->respond($request, $webp, CacheLocation::FORMAT_WEBP, $cacheStatus, [], [], $maxAge);
         }
 
@@ -1044,7 +1093,7 @@ final class ProxyKernel
 
                 return $this->files->respondUncached($request, $body, $extension, $freshness->isNoStore());
             }
-            $result = $this->storeFetched($location, $extension, $fetched, $freshness);
+            $result = $this->storeFetched($location, $extension, $fetched, $freshness, self::requestIdOf($request));
             if (is_int($result)) {
                 return $this->sharedError($webp, $path, $result);
             }
