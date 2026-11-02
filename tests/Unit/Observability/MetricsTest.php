@@ -48,6 +48,7 @@ final class MetricsTest extends TestCase
         $metrics->recordPurge(Metrics::RESULT_REFUSED);
         $metrics->recordPeerPurge(false);
         $metrics->recordRateLimited();
+        $metrics->recordRateLimitUnavailable();
         $metrics->recordEarlyHints();
         self::assertTrue($metrics->flush());
 
@@ -74,6 +75,7 @@ final class MetricsTest extends TestCase
         self::assertStringContainsString("proxy_cdn_purges_total{result=\"refused\"} 1\n", $text);
         self::assertStringContainsString("proxy_cdn_peer_purges_total{result=\"failed\"} 1\n", $text);
         self::assertStringContainsString("# TYPE proxy_cdn_miss_rate_limited_total counter\nproxy_cdn_miss_rate_limited_total 1\n", $text);
+        self::assertStringContainsString("# TYPE proxy_cdn_miss_rate_limit_unavailable_total counter\nproxy_cdn_miss_rate_limit_unavailable_total 1\n", $text);
         self::assertStringContainsString("proxy_cdn_early_hints_total 1\n", $text);
         self::assertStringEndsWith("\n", $text);
     }

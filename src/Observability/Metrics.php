@@ -13,20 +13,21 @@ use Mfonte\ProxyCdn\Config\OperationsConfig;
  * every PHP process and rendered in the text exposition format 0.0.4 by
  * /metrics, with the conventions of the conversion API's metrics:
  *
- * | Metric                                  | Type      | Labels                 |
- * | --------------------------------------- | --------- | ---------------------- |
- * | proxy_cdn_up                            | gauge     |                        |
- * | proxy_cdn_metrics_available             | gauge     |                        |
- * | proxy_cdn_requests_total                | counter   | method, cache, status  |
- * | proxy_cdn_request_duration_seconds      | histogram | cache                  |
- * | proxy_cdn_origin_fetches_total          | counter   | outcome                |
- * | proxy_cdn_purges_total                  | counter   | result                 |
- * | proxy_cdn_peer_purges_total             | counter   | result                 |
- * | proxy_cdn_miss_rate_limited_total       | counter   |                        |
- * | proxy_cdn_early_hints_total             | counter   |                        |
- * | proxy_cdn_cache_bytes                   | gauge     |                        |
- * | proxy_cdn_cache_entries                 | gauge     |                        |
- * | proxy_cdn_cache_scan_timestamp_seconds  | gauge     |                        |
+ * | Metric                                      | Type      | Labels                 |
+ * | ------------------------------------------- | --------- | ---------------------- |
+ * | proxy_cdn_up                                | gauge     |                        |
+ * | proxy_cdn_metrics_available                 | gauge     |                        |
+ * | proxy_cdn_requests_total                    | counter   | method, cache, status  |
+ * | proxy_cdn_request_duration_seconds          | histogram | cache                  |
+ * | proxy_cdn_origin_fetches_total              | counter   | outcome                |
+ * | proxy_cdn_purges_total                      | counter   | result                 |
+ * | proxy_cdn_peer_purges_total                 | counter   | result                 |
+ * | proxy_cdn_miss_rate_limited_total           | counter   |                        |
+ * | proxy_cdn_miss_rate_limit_unavailable_total | counter   |                        |
+ * | proxy_cdn_early_hints_total                 | counter   |                        |
+ * | proxy_cdn_cache_bytes                       | gauge     |                        |
+ * | proxy_cdn_cache_entries                     | gauge     |                        |
+ * | proxy_cdn_cache_scan_timestamp_seconds      | gauge     |                        |
  *
  * - Only the requests that reach PHP are counted: the hits the web server
  *   serves never do (read them from its own logs or status module).
@@ -98,6 +99,7 @@ final class Metrics
         'purges_total' => ['counter', 'PURGE requests, by result (purged or refused).'],
         'peer_purges_total' => ['counter', 'Purges sent to CLUSTER_PEERS, by result (ok or failed).'],
         'miss_rate_limited_total' => ['counter', 'Misses refused with 429 by MISS_RATE_LIMIT.'],
+        'miss_rate_limit_unavailable_total' => ['counter', 'Misses let through unchecked because the MISS_RATE_LIMIT buckets could not be updated.'],
         'early_hints_total' => ['counter', '103 Early Hints responses sent before an origin fetch.'],
     ];
 
@@ -187,6 +189,15 @@ final class Metrics
     public function recordRateLimited(): void
     {
         $this->increment('miss_rate_limited_total', []);
+    }
+
+    /**
+     * Counts a miss let through unchecked because the buckets of the miss
+     * rate limit could not be updated (the limit fails open).
+     */
+    public function recordRateLimitUnavailable(): void
+    {
+        $this->increment('miss_rate_limit_unavailable_total', []);
     }
 
     /**

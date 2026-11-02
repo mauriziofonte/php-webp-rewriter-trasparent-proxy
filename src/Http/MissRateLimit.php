@@ -23,8 +23,9 @@ use Symfony\Component\HttpFoundation\Response;
  * client is its /64 network, the block one subscriber usually holds. Its
  * bucket is keyed by a hash of the address, never by the address itself.
  * When the buckets cannot be updated (a refused var/ratelimit, reported by
- * check-env), the miss is let through and a warning is logged: the limit
- * protects the origin, it never decides who may read a public asset.
+ * check-env, or an I/O error), the miss is let through, a warning is
+ * logged and proxy_cdn_miss_rate_limit_unavailable_total counts it: the
+ * limit protects the origin, it never decides who may read a public asset.
  */
 final class MissRateLimit implements OriginFetchGuard
 {
@@ -61,6 +62,7 @@ final class MissRateLimit implements OriginFetchGuard
         $client = $this->trustedProxies->getClientAddress($request);
         $wait = $this->limiter->consume(self::keyOf($client));
         if ($wait === null) {
+            $this->metrics->recordRateLimitUnavailable();
             $this->logger->warning('miss rate limit unavailable: the buckets cannot be updated');
 
             return null;

@@ -11,8 +11,10 @@ use Mfonte\ProxyCdn\Http\TrustedProxies;
 use Mfonte\ProxyCdn\Limits\RateLimiter;
 use Mfonte\ProxyCdn\Limits\RateLimitStore;
 use Mfonte\ProxyCdn\Net\IpRange;
+use Mfonte\ProxyCdn\Observability\FileMetricsStore;
 use Mfonte\ProxyCdn\Observability\Metrics;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
+use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Limits\MemoryRateLimitStore;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -71,7 +73,9 @@ final class MissRateLimitTest extends TestCase
 
     /**
      * A store that cannot be updated lets the miss through: the limit
-     * protects the origin, it never decides who may read an asset.
+     * protects the origin, it never decides who may read an asset. Each
+     * such miss is logged and counted, so that a limit that silently stopped
+     * working shows in /metrics.
      */
     public function testAnUnavailableStoreLetsMissesThrough(): void
     {
@@ -81,12 +85,24 @@ final class MissRateLimitTest extends TestCase
                 return false;
             }
         };
-        $logger = new MemoryLogger();
-        $guard = new MissRateLimit(new RateLimiter($store, 1, 1), new TrustedProxies(), new Metrics(null), $logger);
+        $directory = new TemporaryDirectory();
 
-        self::assertNull($guard->beforeFetch(self::request('192.0.2.1'), '/a.png'));
-        self::assertNull($guard->beforeFetch(self::request('192.0.2.1'), '/a.png'));
-        self::assertCount(2, $logger->recordsWithMessage('miss rate limit unavailable: the buckets cannot be updated'));
+        try {
+            $metrics = new Metrics(new FileMetricsStore($directory->path('metrics')));
+            $logger = new MemoryLogger();
+            $guard = new MissRateLimit(new RateLimiter($store, 1, 1), new TrustedProxies(), $metrics, $logger);
+
+            self::assertNull($guard->beforeFetch(self::request('192.0.2.1'), '/a.png'));
+            self::assertNull($guard->beforeFetch(self::request('192.0.2.1'), '/a.png'));
+            self::assertTrue($metrics->flush());
+            self::assertCount(2, $logger->recordsWithMessage('miss rate limit unavailable: the buckets cannot be updated'));
+            self::assertStringContainsString(
+                "# TYPE proxy_cdn_miss_rate_limit_unavailable_total counter\nproxy_cdn_miss_rate_limit_unavailable_total 2\n",
+                (new Metrics(new FileMetricsStore($directory->path('metrics'))))->render()
+            );
+        } finally {
+            $directory->remove();
+        }
     }
 
     public function testGuardsRunInOrderUntilOneAnswers(): void
