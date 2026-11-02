@@ -81,7 +81,7 @@ PHP **7.2.5** or later (required by `symfony/http-foundation ^5.4`). The applica
 
 ### The compiled configuration
 
-The first request after a fresh install compiles the configuration into a small PHP file named `.config.cache.php` in the project root, written atomically (tmp + rename), so that `.env` is not parsed and validated on every request. The file is recompiled automatically on the next request whenever `.env` or a configuration variable of the environment changes; there is nothing to delete by hand. If the project root is not writable, the configuration is simply read on every request.
+The first request after a fresh install compiles the configuration into a small PHP file named `.config.cache.php` in the project root, written atomically (tmp + rename) with mode `0600`, so that `.env` is not parsed and validated on every request. The file is recompiled automatically on the next request whenever `.env` or a configuration variable of the environment changes; there is nothing to delete by hand. If the project root is not writable, the configuration is simply read on every request. The file holds every value, the secrets included (`WEBP_API_KEY`, `PURGE_KEYS`) even when they come only from the environment, so only its owner (the PHP user that wrote it) can read it; a copy that others can read, as earlier versions wrote it (`0644`), is never used and is replaced on the next request. Let the same user (the PHP-FPM pool user) run the proxy and any command that loads the configuration, or the other one compiles it on every request.
 
 ## Configuration
 

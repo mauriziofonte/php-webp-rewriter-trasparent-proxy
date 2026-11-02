@@ -63,6 +63,37 @@ final class CompiledConfigCacheTest extends TestCase
         self::assertSame($config->toArray(), $loaded->toArray());
     }
 
+    /**
+     * The file holds WEBP_API_KEY and PURGE_KEYS, even when they come only
+     * from the environment: only its owner may read it.
+     */
+    public function testTheFileIsReadableByItsOwnerOnly(): void
+    {
+        $config = TestConfig::create(['PURGE_KEYS' => '*=' . str_repeat('k', 32)]);
+
+        self::assertTrue($this->cache->save('fingerprint', $config));
+
+        self::assertSame(0600, fileperms($this->file) & 0777);
+        self::assertStringContainsString(str_repeat('k', 32), (string) file_get_contents($this->file));
+    }
+
+    /**
+     * A file others may read (written by an earlier version, 0644) is not
+     * used, so that it is compiled again and replaced with mode 0600.
+     */
+    public function testAFileReadableByOthersIsNotLoaded(): void
+    {
+        $config = TestConfig::create();
+        $this->cache->save('fingerprint', $config);
+        chmod($this->file, 0644);
+
+        self::assertNull($this->cache->load('fingerprint'));
+
+        self::assertTrue($this->cache->save('fingerprint', $config));
+        self::assertSame(0600, fileperms($this->file) & 0777);
+        self::assertNotNull($this->cache->load('fingerprint'));
+    }
+
     public function testAnotherFingerprintIsNotLoaded(): void
     {
         $this->cache->save('fingerprint', TestConfig::create());

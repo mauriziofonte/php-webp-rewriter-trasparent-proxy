@@ -46,7 +46,7 @@ final class FilesystemStorage implements CacheStorage
         return $time === false ? null : $time;
     }
 
-    public function write(string $path, string $contents): bool
+    public function write(string $path, string $contents, int $mode = 0644): bool
     {
         $directory = dirname($path);
         if (!$this->ensureDirectory($directory)) {
@@ -65,7 +65,9 @@ final class FilesystemStorage implements CacheStorage
             return false;
         }
 
-        @chmod($temporary, 0644);
+        // tempnam() creates the file 0600: it is widened, if at all, only
+        // once complete.
+        @chmod($temporary, $mode);
 
         if (!@rename($temporary, $path)) {
             @unlink($temporary);

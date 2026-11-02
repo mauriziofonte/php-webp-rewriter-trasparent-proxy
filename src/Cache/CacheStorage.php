@@ -62,11 +62,15 @@ interface CacheStorage
 
     /**
      * Atomically replaces the file at $path with $contents, creating the
-     * missing parent directories.
+     * missing parent directories. The file has $mode from the start: it
+     * is never readable by more users than $mode allows, even while it
+     * is being written.
+     *
+     * @param int $mode permissions of the file (0600 for a secret)
      *
      * @return bool true when the file holds $contents afterwards
      */
-    public function write(string $path, string $contents): bool;
+    public function write(string $path, string $contents, int $mode = 0644): bool;
 
     /**
      * Creates $directory and its missing parents.

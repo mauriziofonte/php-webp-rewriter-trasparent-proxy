@@ -76,6 +76,22 @@ final class FilesystemStorageTest extends TestCase
         self::assertSame(0755, fileperms($this->directory->path('a/b')) & 0777);
     }
 
+    /**
+     * A secret is written with the mode asked, also over a file that had
+     * a wider one (the file is replaced, not changed in place).
+     */
+    public function testWriteWithAModeReplacesAWiderFile(): void
+    {
+        $file = $this->directory->write('secret.php', 'old');
+        chmod($file, 0644);
+
+        self::assertTrue($this->storage->write($file, 'new', 0600));
+
+        self::assertStringEqualsFile($file, 'new');
+        self::assertSame(0600, fileperms($file) & 0777);
+        self::assertSame(['.', '..', 'secret.php'], scandir($this->directory->path()));
+    }
+
     public function testWriteReplacesTheFileAndLeavesNoTemporaryFile(): void
     {
         $file = $this->directory->write('a.css', 'old');

@@ -15,7 +15,9 @@ use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
  * only while it matches, so a change of .env or of the environment takes
  * effect on the next request (finding P-20). The file is written atomically
  * with var_export(), so no value can break out of its literal, and OPcache
- * is told to forget the previous version.
+ * is told to forget the previous version. It holds the secrets of the
+ * configuration, so it is written with mode 0600, from its temporary file
+ * on; one that others may read is never used.
  */
 final class CompiledConfigCache
 {
@@ -44,7 +46,7 @@ final class CompiledConfigCache
      */
     public function load(string $fingerprint): ?Config
     {
-        if (!$this->storage->isFile($this->file)) {
+        if (!$this->storage->isFile($this->file) || self::isReadableByOthers($this->file)) {
             return null;
         }
         $compiled = self::includeFile($this->file);
@@ -72,7 +74,9 @@ final class CompiledConfigCache
             . "// environment changes. Do not edit.\n\n"
             . 'return ' . var_export(['fingerprint' => $fingerprint, 'values' => $config->toArray()], true) . ";\n";
 
-        if (!$this->storage->write($this->file, $contents)) {
+        // The values include the secrets (WEBP_API_KEY, PURGE_KEYS), even
+        // those that only the environment holds: owner only.
+        if (!$this->storage->write($this->file, $contents, 0600)) {
             return false;
         }
         if (function_exists('opcache_invalidate')) {
@@ -80,6 +84,20 @@ final class CompiledConfigCache
         }
 
         return true;
+    }
+
+    /**
+     * Whether $file grants any permission to its group or to other users,
+     * as the files of earlier versions did (0644): it is then compiled
+     * again, and replaced by a file of the owner only.
+     */
+    private static function isReadableByOthers(string $file): bool
+    {
+        // Not from the stat cache, which PHP 7 does not clear on chmod().
+        clearstatcache(true, $file);
+        $permissions = @fileperms($file);
+
+        return DIRECTORY_SEPARATOR === '/' && $permissions !== false && ($permissions & 0077) !== 0;
     }
 
     /**
