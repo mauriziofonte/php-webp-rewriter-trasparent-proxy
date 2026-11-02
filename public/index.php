@@ -5,9 +5,10 @@ declare(strict_types=1);
 /*
  * Front controller of the standalone proxy: the web server routes here every
  * request it cannot serve from the cache (see public/.htaccess). It builds
- * the kernel with ProxyKernelFactory and sends its response; a host
- * application can mount Mfonte\ProxyCdn\Http\ProxyKernel the same way.
- * Every log entry of the request carries its ID (LOG_FILE, LOG_LEVEL).
+ * the kernel with EdgeKernelFactory (ProxyKernel with /healthz and the
+ * request ID) and sends its response; a host application can mount
+ * Mfonte\ProxyCdn\Http\ProxyKernel or EdgeKernel the same way. Every log
+ * entry of the request carries its ID (LOG_FILE, LOG_LEVEL).
  */
 
 use Mfonte\ProxyCdn\Cache\FilesystemStorage;
@@ -15,7 +16,7 @@ use Mfonte\ProxyCdn\Config\CompiledConfigCache;
 use Mfonte\ProxyCdn\Config\ConfigLoader;
 use Mfonte\ProxyCdn\Config\RuntimeSettings;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
-use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
+use Mfonte\ProxyCdn\Http\EdgeKernelFactory;
 use Mfonte\ProxyCdn\Http\RequestId;
 use Mfonte\ProxyCdn\Http\ResponseFactory;
 use Mfonte\ProxyCdn\Image\ImageConverterFactory;
@@ -62,7 +63,7 @@ $logger = new JsonLogger(
 );
 $kernel = null;
 try {
-    $kernel = ProxyKernelFactory::create(
+    $kernel = EdgeKernelFactory::create(
         $config,
         __DIR__,
         $projectRoot . '/var',
