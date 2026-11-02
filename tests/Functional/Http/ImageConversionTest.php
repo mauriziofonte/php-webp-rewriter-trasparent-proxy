@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
 use Mfonte\ProxyCdn\Http\ProxyKernel;
+use Mfonte\ProxyCdn\Image\ImageConverterFactory;
 use Mfonte\ProxyCdn\Image\SignedUrlVerifier;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
+use Mfonte\ProxyCdn\Tests\Fixtures\FakeApi\FakeApiServer;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
 use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeImageConverter;
@@ -158,6 +160,60 @@ final class ImageConversionTest extends TestCase
         self::assertSame('image/webp', $second->headers->get('content-type'));
         self::assertSame(['webp'], $this->converter->getFormats());
         self::assertCount(1, $this->origin->getRequests());
+    }
+
+    /**
+     * A hit PHP serves (its variant on disk, or a client that takes no
+     * variant) and a miss of an asset that is not a raster never ask the
+     * converter: no build of the library's converter, no isolation or
+     * capability detection, no /healthz.
+     */
+    public function testAHitAndANonImageMissNeverAskTheConverter(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/css/site.css', 'body{}', ['content-type' => 'text/css']);
+        $this->kernel()->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        $asked = [$this->converter->getCapabilityCalls(), count($this->converter->getCalls())];
+
+        $css = $this->kernel()->handle(self::request('/css/site.css', self::ACCEPT_ALL));
+        $variant = $this->kernel()->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        $original = $this->kernel()->handle(self::request('/images/logo.png', 'image/*'));
+
+        self::assertSame(['MISS', 'body{}'], [$css->headers->get('x-cache-status'), self::body($css)]);
+        self::assertSame(['HIT', 'image/avif'], [$variant->headers->get('x-cache-status'), $variant->headers->get('content-type')]);
+        self::assertSame(['HIT', 'image/png'], [$original->headers->get('x-cache-status'), $original->headers->get('content-type')]);
+        self::assertSame($asked, [$this->converter->getCapabilityCalls(), count($this->converter->getCalls())]);
+    }
+
+    /**
+     * The same paths with the real remote converter send nothing to the
+     * conversion API: its capabilities are discovered on the first
+     * conversion only.
+     */
+    public function testAHitAndANonImageMissNeverCallTheConversionApi(): void
+    {
+        mkdir($this->directory->path('api'));
+        $api = FakeApiServer::start($this->directory->path('api'));
+        try {
+            $config = TestConfig::create([
+                'SOURCE_ORIGIN' => self::ORIGIN,
+                'IMAGE_CONVERTER' => 'remote',
+                'IMAGE_API_URL' => $api->getBaseUrl(),
+                'IMAGE_API_KEY' => 'api-key-0123456789abcdef',
+            ]);
+            $converter = ImageConverterFactory::create($config, $this->directory->path('state'), $this->logger);
+            $this->origin->serve(self::ORIGIN . '/css/site.css', 'body{}', ['content-type' => 'text/css']);
+            $this->directory->write('_cache/cdn.example.test/images/logo.png', 'PNG-BYTES');
+            copy(self::FIXTURES . 'variant.avif', $this->directory->write('_cache/cdn.example.test/.avif/images/logo.png.avif', ''));
+
+            $css = TestKernel::create($config, $this->directory->path(), $this->origin, $converter, $this->logger)->handle(self::request('/css/site.css', self::ACCEPT_ALL));
+            $hit = TestKernel::create($config, $this->directory->path(), $this->origin, $converter, $this->logger)->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+
+            self::assertSame('MISS', $css->headers->get('x-cache-status'));
+            self::assertSame(['HIT', 'image/avif'], [$hit->headers->get('x-cache-status'), $hit->headers->get('content-type')]);
+            self::assertSame([], $api->getRequests());
+        } finally {
+            $api->stop();
+        }
     }
 
     /**

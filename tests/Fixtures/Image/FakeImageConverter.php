@@ -51,6 +51,11 @@ final class FakeImageConverter implements ImageConverter
      */
     private $reportedFormat;
 
+    /**
+     * @var int
+     */
+    private $capabilityCalls = 0;
+
     public function __construct()
     {
         $this->capabilities = self::capabilities([ImageFormat::WEBP, ImageFormat::AVIF, ImageFormat::PNG]);
@@ -106,6 +111,8 @@ final class FakeImageConverter implements ImageConverter
 
     public function getCapabilities(): ?Capabilities
     {
+        ++$this->capabilityCalls;
+
         return $this->capabilities;
     }
 
@@ -135,6 +142,14 @@ final class FakeImageConverter implements ImageConverter
     public function getCalls(): array
     {
         return $this->calls;
+    }
+
+    /**
+     * How many times getCapabilities() was called.
+     */
+    public function getCapabilityCalls(): int
+    {
+        return $this->capabilityCalls;
     }
 
     /**
