@@ -19,6 +19,8 @@ use Mfonte\ProxyCdn\Observability\JsonLogger;
  *   Not set: logs/proxy.log of the project, as before.
  * - LOG_LEVEL: the least severe PSR-3 level that is logged. Not set:
  *   "debug" with DEBUG, "notice" otherwise, as before.
+ * - METRICS_STORE: "file" (counters in one locked file of var/metrics,
+ *   shared by every PHP process of the host) or "off". Default: file.
  *
  * Immutable.
  */
@@ -30,6 +32,15 @@ final class OperationsConfig
     public const KEYS = [
         'LOG_FILE',
         'LOG_LEVEL',
+        'METRICS_STORE',
+    ];
+
+    public const METRICS_STORE_FILE = 'file';
+
+    public const METRICS_STORE_OFF = 'off';
+
+    private const DEFAULTS = [
+        'METRICS_STORE' => self::METRICS_STORE_FILE,
     ];
 
     /**
@@ -41,6 +52,11 @@ final class OperationsConfig
      * @var string|null
      */
     private $logLevel;
+
+    /**
+     * @var string
+     */
+    private $metricsStore;
 
     private function __construct()
     {
@@ -69,6 +85,11 @@ final class OperationsConfig
             $errors[] = 'LOG_LEVEL must be one of: debug, info, notice, warning, error, critical, alert, emergency (got: ' . var_export($logLevel, true) . ')';
         }
 
+        $store = $values['METRICS_STORE'] ?? null;
+        if ($store !== null && !in_array($store, [self::METRICS_STORE_FILE, self::METRICS_STORE_OFF], true)) {
+            $errors[] = 'METRICS_STORE must be one of: file, off (got: ' . var_export($store, true) . ')';
+        }
+
         return [$errors, $warnings];
     }
 
@@ -83,12 +104,13 @@ final class OperationsConfig
     public static function normalise(array $values): array
     {
         $value = static function (string $key) use ($values): ?string {
-            return $values[$key] ?? null;
+            return $values[$key] ?? self::DEFAULTS[$key] ?? null;
         };
 
         return [
             'LOG_FILE' => $value('LOG_FILE'),
             'LOG_LEVEL' => $value('LOG_LEVEL'),
+            'METRICS_STORE' => (string) $value('METRICS_STORE'),
         ];
     }
 
@@ -105,9 +127,13 @@ final class OperationsConfig
         $settings = new self();
         $settings->logFile = self::optionalString($values, 'LOG_FILE');
         $settings->logLevel = self::optionalString($values, 'LOG_LEVEL');
+        $settings->metricsStore = (string) self::optionalString($values, 'METRICS_STORE');
 
         if ($settings->logLevel !== null && !JsonLogger::isLevel($settings->logLevel)) {
             throw new InvalidConfigurationException(['LOG_LEVEL has an unknown value']);
+        }
+        if (!in_array($settings->metricsStore, [self::METRICS_STORE_FILE, self::METRICS_STORE_OFF], true)) {
+            throw new InvalidConfigurationException(['METRICS_STORE has an unknown value']);
         }
 
         return $settings;
@@ -123,6 +149,7 @@ final class OperationsConfig
         return [
             'LOG_FILE' => $this->logFile,
             'LOG_LEVEL' => $this->logLevel,
+            'METRICS_STORE' => $this->metricsStore,
         ];
     }
 
@@ -142,6 +169,14 @@ final class OperationsConfig
     public function getLogLevel(): ?string
     {
         return $this->logLevel;
+    }
+
+    /**
+     * METRICS_STORE: METRICS_STORE_FILE or METRICS_STORE_OFF.
+     */
+    public function getMetricsStore(): string
+    {
+        return $this->metricsStore;
     }
 
     /**

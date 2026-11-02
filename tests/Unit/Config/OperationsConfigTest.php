@@ -25,6 +25,7 @@ final class OperationsConfigTest extends TestCase
 
         self::assertNull($operations->getLogFile());
         self::assertNull($operations->getLogLevel());
+        self::assertSame(OperationsConfig::METRICS_STORE_FILE, $operations->getMetricsStore());
     }
 
     public function testTheValuesAreNormalised(): void
@@ -32,10 +33,12 @@ final class OperationsConfigTest extends TestCase
         $operations = TestConfig::create([
             'LOG_FILE' => '/var/log/proxy-cdn/proxy.log',
             'LOG_LEVEL' => 'warning',
+            'METRICS_STORE' => 'off',
         ])->getOperations();
 
         self::assertSame('/var/log/proxy-cdn/proxy.log', $operations->getLogFile());
         self::assertSame('warning', $operations->getLogLevel());
+        self::assertSame('off', $operations->getMetricsStore());
     }
 
     /**
@@ -61,6 +64,7 @@ final class OperationsConfigTest extends TestCase
         return [
             'relative log file' => [['LOG_FILE' => 'logs/proxy.log'], 'LOG_FILE must be'],
             'unknown log level' => [['LOG_LEVEL' => 'verbose'], 'LOG_LEVEL must be'],
+            'unknown store' => [['METRICS_STORE' => 'apcu'], 'METRICS_STORE must'],
         ];
     }
 

@@ -234,6 +234,7 @@ final class ConfigTest extends TestCase
             'RESIZE_KEY' => 'resize-key-0123456789abcdef0123456789',
             'LOG_FILE' => 'stderr',
             'LOG_LEVEL' => 'info',
+            'METRICS_STORE' => 'file',
         ], $overrides);
     }
 }
