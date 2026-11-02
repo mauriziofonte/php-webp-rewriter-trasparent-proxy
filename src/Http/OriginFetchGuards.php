@@ -33,8 +33,9 @@ final class OriginFetchGuards implements OriginFetchGuard
 
     /**
      * The guards of the configuration: the miss rate limit when
-     * MISS_RATE_LIMIT is above 0 (its buckets in var/ratelimit); null when
-     * there is none, and ProxyKernel fetches as without guard.
+     * MISS_RATE_LIMIT is above 0 (its buckets in var/ratelimit), then the
+     * Early Hints when EARLY_HINTS is set; null when there is none, and
+     * ProxyKernel fetches as without guard.
      *
      * @param string $stateDirectory the state directory of the proxy (var/ of the project)
      */
@@ -54,8 +55,15 @@ final class OriginFetchGuards implements OriginFetchGuard
                 $logger
             );
         }
+        $hints = $operations->getEarlyHints();
+        if ($hints !== null) {
+            $guards[] = new EarlyHints($hints, $metrics);
+        }
+        if ($guards === []) {
+            return null;
+        }
 
-        return $guards === [] ? null : $guards[0];
+        return count($guards) === 1 ? $guards[0] : new self($guards);
     }
 
     public function beforeFetch(Request $request, string $path): ?Response

@@ -238,6 +238,7 @@ final class ConfigTest extends TestCase
             'METRICS_STORE' => 'file',
             'MISS_RATE_LIMIT' => 120,
             'MISS_RATE_LIMIT_BURST' => 20,
+            'EARLY_HINTS' => '</a.css>; rel=preload; as=style',
         ], $overrides);
     }
 }

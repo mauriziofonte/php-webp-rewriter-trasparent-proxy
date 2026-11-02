@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Unit\Http;
 
+use Mfonte\ProxyCdn\Http\EarlyHints;
 use Mfonte\ProxyCdn\Http\MissRateLimit;
 use Mfonte\ProxyCdn\Http\OriginFetchGuards;
 use Mfonte\ProxyCdn\Http\TrustedProxies;
@@ -88,6 +89,22 @@ final class MissRateLimitTest extends TestCase
         self::assertCount(2, $logger->recordsWithMessage('miss rate limit unavailable: the buckets cannot be updated'));
     }
 
+    public function testGuardsRunInOrderUntilOneAnswers(): void
+    {
+        $sent = 0;
+        $hints = new EarlyHints('</a.css>; rel=preload; as=style', new Metrics(null), static function (string $links) use (&$sent): bool {
+            ++$sent;
+
+            return true;
+        });
+        $limit = new MissRateLimit(new RateLimiter(new MemoryRateLimitStore(), 6, 1), new TrustedProxies(), new Metrics(null), new MemoryLogger());
+        $guards = new OriginFetchGuards([$limit, $hints]);
+
+        self::assertNull($guards->beforeFetch(self::request('192.0.2.1'), '/a.png'));
+        self::assertNotNull($guards->beforeFetch(self::request('192.0.2.1'), '/a.png'));
+        self::assertSame(1, $sent, 'no hints for a refused miss');
+    }
+
     public function testFromConfig(): void
     {
         $metrics = new Metrics(null);
@@ -95,6 +112,8 @@ final class MissRateLimitTest extends TestCase
 
         self::assertNull(OriginFetchGuards::fromConfig(TestConfig::create(), '/nonexistent', $metrics, $logger));
         self::assertInstanceOf(MissRateLimit::class, OriginFetchGuards::fromConfig(TestConfig::create(['MISS_RATE_LIMIT' => '60']), '/nonexistent', $metrics, $logger));
+        self::assertInstanceOf(EarlyHints::class, OriginFetchGuards::fromConfig(TestConfig::create(['EARLY_HINTS' => '</a.css>; rel=preload']), '/nonexistent', $metrics, $logger));
+        self::assertInstanceOf(OriginFetchGuards::class, OriginFetchGuards::fromConfig(TestConfig::create(['MISS_RATE_LIMIT' => '60', 'EARLY_HINTS' => '</a.css>; rel=preload']), '/nonexistent', $metrics, $logger));
     }
 
     private static function request(string $remoteAddress, ?string $forwardedFor = null): Request

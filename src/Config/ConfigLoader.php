@@ -82,6 +82,7 @@ final class ConfigLoader
         'METRICS_STORE',
         'MISS_RATE_LIMIT',
         'MISS_RATE_LIMIT_BURST',
+        'EARLY_HINTS',
     ];
 
     /**

@@ -31,6 +31,9 @@ use Mfonte\ProxyCdn\Observability\MetricsAuthenticator;
  *   TRUSTED_PROXIES; 0 turns the limit off. Default: 0.
  * - MISS_RATE_LIMIT_BURST: the misses a client may cause at once after a
  *   pause. Default: 60.
+ * - EARLY_HINTS: a Link header value sent as a 103 Early Hints response
+ *   before a miss is fetched, where the server API can send one. Not set:
+ *   none.
  *
  * Immutable.
  */
@@ -46,6 +49,7 @@ final class OperationsConfig
         'METRICS_STORE',
         'MISS_RATE_LIMIT',
         'MISS_RATE_LIMIT_BURST',
+        'EARLY_HINTS',
     ];
 
     public const METRICS_STORE_FILE = 'file';
@@ -65,6 +69,12 @@ final class OperationsConfig
         'MISS_RATE_LIMIT' => [0, 1000000],
         'MISS_RATE_LIMIT_BURST' => [1, 100000],
     ];
+
+    /**
+     * One link of a Link header value: "<URI-reference>" and its
+     * parameters, printable ASCII without "<", ">" or "," in them.
+     */
+    private const LINK = '<[\x21-\x3B\x3D\x3F-\x7E]+>(?:[ \t]*;[ \t]*[\x21-\x2B\x2D-\x3B\x3D\x3F-\x7E]+(?:[ \t]+[\x21-\x2B\x2D-\x3B\x3D\x3F-\x7E]+)*)*';
 
     /**
      * @var string|null
@@ -95,6 +105,11 @@ final class OperationsConfig
      * @var int
      */
     private $missRateLimitBurst;
+
+    /**
+     * @var string|null
+     */
+    private $earlyHints;
 
     private function __construct()
     {
@@ -149,6 +164,16 @@ final class OperationsConfig
                 . 'shares one limit: list its addresses in TRUSTED_PROXIES.';
         }
 
+        $hints = $values['EARLY_HINTS'] ?? null;
+        if ($hints !== null && !self::isLinkValue($hints)) {
+            $errors[] = 'EARLY_HINTS must be a Link header value: "<URL>; rel=preload; as=style", several separated by commas (got: '
+                . var_export($hints, true) . ')';
+        } elseif ($hints !== null) {
+            $warnings[] = "NOTE: EARLY_HINTS is sent as a 103 only where PHP can send an interim\n"
+                . "response (FrankenPHP); PHP-FPM and mod_php cannot, and send nothing.\n"
+                . 'Browsers use 103 on documents only, not on images or scripts.';
+        }
+
         return [$errors, $warnings];
     }
 
@@ -173,6 +198,7 @@ final class OperationsConfig
             'METRICS_STORE' => (string) $value('METRICS_STORE'),
             'MISS_RATE_LIMIT' => (int) $value('MISS_RATE_LIMIT'),
             'MISS_RATE_LIMIT_BURST' => (int) $value('MISS_RATE_LIMIT_BURST'),
+            'EARLY_HINTS' => $value('EARLY_HINTS') === null ? null : trim((string) $value('EARLY_HINTS')),
         ];
     }
 
@@ -193,6 +219,7 @@ final class OperationsConfig
         $settings->metricsStore = (string) self::optionalString($values, 'METRICS_STORE');
         $settings->missRateLimit = self::integer($values, 'MISS_RATE_LIMIT');
         $settings->missRateLimitBurst = self::integer($values, 'MISS_RATE_LIMIT_BURST');
+        $settings->earlyHints = self::optionalString($values, 'EARLY_HINTS');
 
         if ($settings->logLevel !== null && !JsonLogger::isLevel($settings->logLevel)) {
             throw new InvalidConfigurationException(['LOG_LEVEL has an unknown value']);
@@ -224,6 +251,7 @@ final class OperationsConfig
             'METRICS_STORE' => $this->metricsStore,
             'MISS_RATE_LIMIT' => $this->missRateLimit,
             'MISS_RATE_LIMIT_BURST' => $this->missRateLimitBurst,
+            'EARLY_HINTS' => $this->earlyHints,
         ];
     }
 
@@ -279,6 +307,25 @@ final class OperationsConfig
     public function getMissRateLimitBurst(): int
     {
         return $this->missRateLimitBurst;
+    }
+
+    /**
+     * EARLY_HINTS: the Link header value of the 103 Early Hints sent before
+     * a miss is fetched; null for none.
+     */
+    public function getEarlyHints(): ?string
+    {
+        return $this->earlyHints;
+    }
+
+    /**
+     * Whether $value is a Link header value: one or more "<URI>; params"
+     * separated by commas.
+     */
+    public static function isLinkValue(string $value): bool
+    {
+        return strlen($value) <= 4096
+            && preg_match('/\A[ \t]*' . self::LINK . '(?:[ \t]*,[ \t]*' . self::LINK . ')*[ \t]*\z/', $value) === 1;
     }
 
     /**

@@ -20,6 +20,7 @@ use Mfonte\ProxyCdn\Config\OperationsConfig;
  * | proxy_cdn_request_duration_seconds      | histogram | cache                  |
  * | proxy_cdn_origin_fetches_total          | counter   | outcome                |
  * | proxy_cdn_miss_rate_limited_total       | counter   |                        |
+ * | proxy_cdn_early_hints_total             | counter   |                        |
  *
  * - Only the requests that reach PHP are counted: the hits the web server
  *   serves never do (read them from its own logs or status module).
@@ -77,6 +78,7 @@ final class Metrics
         'request_duration_seconds' => ['histogram', 'Time PHP took to build the response, by X-Cache-Status.'],
         'origin_fetches_total' => ['counter', 'Requests sent to the origins, by outcome.'],
         'miss_rate_limited_total' => ['counter', 'Misses refused with 429 by MISS_RATE_LIMIT.'],
+        'early_hints_total' => ['counter', '103 Early Hints responses sent before an origin fetch.'],
     ];
 
     /**
@@ -147,6 +149,14 @@ final class Metrics
     public function recordRateLimited(): void
     {
         $this->increment('miss_rate_limited_total', []);
+    }
+
+    /**
+     * Counts a 103 Early Hints response.
+     */
+    public function recordEarlyHints(): void
+    {
+        $this->increment('early_hints_total', []);
     }
 
     /**
