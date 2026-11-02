@@ -305,6 +305,8 @@ fetch() {
 
 # header_of <name> <headers file>: the values of a header, comma-joined.
 header_of() { grep -i "^$1:" "$2" | cut -d: -f2- | sed 's/^ *//' | tr -d '\r' | paste -sd, - || true; }
+# cache_directives <headers file>: the Cache-Control directives, sorted.
+cache_directives() { header_of Cache-Control "$1" | tr -d ' ' | tr ',' '\n' | sort | paste -sd, -; }
 
 # varies_on <label> <headers file> <field>: Vary lists the field once.
 varies_on() {
@@ -373,7 +375,7 @@ smoke() {
     expect "$s: second request served without the origin" "$(origin_count "$asset")" 1
     fpm_quiet "$s: second request served" "$fpm_log" "$lines"
 
-    cors_once "$s: miss" "$workdir/$s/first.headers" Access-Control-Allow-Origin X-Cache-Status
+    cors_once "$s: miss" "$workdir/$s/first.headers" Access-Control-Allow-Origin X-Cache-Status Cache-Control
     hit_headers "$s: hit" "$workdir/$s/second.headers"
     expect "$s: the first request is a miss" "$(cache_status "$workdir/$s/first.headers")" MISS
     expect "$s: the second request is a hit" "$(cache_status "$workdir/$s/second.headers")" HIT
@@ -405,6 +407,20 @@ smoke() {
     expect "$s: query string, second request is a hit" "$(cache_status "$workdir/$s/query2.headers")" HIT
     fpm_quiet "$s: query string hit served" "$fpm_log" "$lines"
     expect "$s: query string fetched from the origin once" "$(origin_count "$asset")" 2
+
+    # A hit that PHP must serve: "zz" is not in the allowlist, so the web
+    # server cannot map the query string. Apache gets the file streamed by
+    # PHP (no mod_xsendfile), nginx through X-Accel-Redirect: the headers
+    # once either way, Cache-Control included (nginx passes on the one of
+    # PHP and must not add its own).
+    lines="$(lines_of "$fpm_log")"
+    expect "$s: PHP-path hit" "$(fetch "$base$asset?v=3&zz=1" "$workdir/$s/phphit")" 200
+    cmp -s "$workdir/$s/phphit.body" "$fixture" || die "$s: the PHP-path hit differs from the origin file"
+    expect "$s: PHP-path hit is a hit" "$(cache_status "$workdir/$s/phphit.headers")" HIT
+    wait_for "$s: PHP-path hit went through PHP-FPM" 10 has_lines "$fpm_log" $((lines + 1))
+    hit_headers "$s: PHP-path hit" "$workdir/$s/phphit.headers"
+    expect "$s: PHP-path hit has the Cache-Control of a web-server hit" \
+        "$(cache_directives "$workdir/$s/phphit.headers")" "$(cache_directives "$workdir/$s/second.headers")"
 
     # Encodings: the proxy stores a gzip encoding of a text file.
     css=/css/site.css
