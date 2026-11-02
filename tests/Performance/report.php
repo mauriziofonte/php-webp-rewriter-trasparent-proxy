@@ -9,7 +9,8 @@ declare(strict_types=1);
  *
  * Usage: php report.php <results directory> [--max-ratio [<stack>=]x]... [--max-p99-ratio [<stack>=]x]... [--min-rps-ratio [<stack>=]x]... [--strict]
  *
- * The limits apply to the best round (see LatencyReport). A limit without a
+ * The limits apply to the statistics of LatencyReport (lowest p50 of each
+ * side, best round for p99 and requests per second). A limit without a
  * stack name applies to every stack without one of its own; the defaults
  * are the target: 1.10 for p50 and p99, 0.90 for requests per second.
  *

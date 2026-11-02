@@ -28,7 +28,8 @@
 #                          the virtual host, as config/apache/proxy-cdn.conf
 #                          recommends
 #   --rounds <n>           rounds of the hit and baseline measurements (default 3);
-#                          the gate takes the best one
+#                          the gate takes the lowest p50 of each side, and the
+#                          best round for p99 and requests per second
 #   --duration <time>      duration of each of those measurements (default 10s)
 #   --rate <n>             requests per second of the latency measurements (default 1000)
 #   --vus <n>              clients of the throughput measurements (default 16)
@@ -37,11 +38,11 @@
 #   --origin-delay <ms>    fixed latency of the origin for the misses (default 50)
 #   --herd <n>             concurrent requests of the herd (default 500)
 #   --max-ratio [<stack>=]<x>
-#                          gate: in its best round, the p50 of the hit may be at
-#                          most x times the baseline; repeat it with a stack name
+#                          gate: the lowest p50 of the hit may be at most x times
+#                          the lowest of the baseline; repeat it with a stack name
 #                          (apache=1.50) to set one stack (default 1.10, the target)
 #   --max-p99-ratio [<stack>=]<x>
-#                          gate: the same for p99 (default 1.10)
+#                          gate: in its best round, the same for p99 (default 1.10)
 #   --min-rps-ratio [<stack>=]<x>
 #                          gate: in its best round, the hit reaches at least x times
 #                          the requests per second of the baseline (default 0.90)
@@ -90,7 +91,7 @@ die() {
     printf 'FAILED: %s\n' "$*" >&2
     exit 1
 }
-usage() { sed -n '18,50p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '18,51p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in

@@ -59,7 +59,7 @@ final class LatencyReportTest extends TestCase
         $report = new LatencyReport($this->directory->path(), ['*' => 1.10], ['*' => 1.10], [], true);
 
         self::assertTrue($report->passed(), $report->markdown());
-        self::assertStringContainsString('| nginx | web-server hit | p50 hit / static file (best of 1 round) | 1.067 |', $report->markdown());
+        self::assertStringContainsString('| nginx | web-server hit | p50 hit / static file (lowest of 1 round each) | 1.067 |', $report->markdown());
         self::assertStringContainsString('| nginx | cold miss | p50 overhead (p50 54.000 ms - p50 of the origin 51.000 ms) | 3.000 ms | < 5 ms | PASS |', $report->markdown());
         self::assertStringContainsString('| nginx | PHP hit | server-side p50 | 1.000 ms | < 2 ms | PASS |', $report->markdown());
     }
@@ -107,18 +107,17 @@ final class LatencyReportTest extends TestCase
 
     public function testTheGateTakesTheBestRound(): void
     {
-        // Round 2 is noisy (the hit slowed down, or the static file sped
-        // up); round 3 is the best one.
+        // Round 2 is noisy: the hit slowed down.
         $this->writeRun(['hitP50' => 0.33, 'staticP50' => 0.30, 'hitRps' => 9000.0, 'staticRps' => 10000.0, 'fetches' => 1, 'rounds' => [
             [0.36, 0.30, 8000.0, 10000.0],
             [0.60, 0.30, 4000.0, 10000.0],
         ]]);
 
-        $report = new LatencyReport($this->directory->path(), ['*' => 1.40], ['*' => 2.00], ['*' => 0.75], false);
+        $report = new LatencyReport($this->directory->path(), ['*' => 1.50], ['*' => 2.00], ['*' => 0.80], false);
 
         self::assertTrue($report->passed(), $report->markdown());
-        self::assertStringContainsString('| nginx | web-server hit | p50 hit / static file (best of 3 rounds) | 1.100 | <= 1.10 (gate 1.40) | PASS |', $report->markdown());
-        self::assertStringContainsString('| requests per second hit / static file (best of 3 rounds) | 0.900 | >= 0.90 (gate 0.75) | PASS |', $report->markdown());
+        self::assertStringContainsString('| nginx | web-server hit | p50 hit / static file (lowest of 3 rounds each) | 1.100 | <= 1.10 (gate 1.50) | PASS |', $report->markdown());
+        self::assertStringContainsString('| requests per second hit / static file (best of 3 rounds) | 0.900 | >= 0.90 (gate 0.80) | PASS |', $report->markdown());
         self::assertStringContainsString('(median of rounds) | 1.200 / 1.200 / 0.800 |', $report->markdown());
     }
 
@@ -129,11 +128,26 @@ final class LatencyReportTest extends TestCase
             [0.54, 0.30, 5000.0, 10000.0],
         ]]);
 
-        $report = new LatencyReport($this->directory->path(), ['*' => 1.40], ['*' => 2.00], ['*' => 0.75], false);
+        $report = new LatencyReport($this->directory->path(), ['*' => 1.50], ['*' => 2.00], ['*' => 0.80], false);
 
         self::assertFalse($report->passed());
-        self::assertStringContainsString('| 1.600 | <= 1.10 (gate 1.40) | FAIL |', $report->markdown());
-        self::assertStringContainsString('| 0.600 | >= 0.90 (gate 0.75) | FAIL |', $report->markdown());
+        self::assertStringContainsString('| 1.600 | <= 1.10 (gate 1.50) | FAIL |', $report->markdown());
+        self::assertStringContainsString('| 0.600 | >= 0.90 (gate 0.80) | FAIL |', $report->markdown());
+    }
+
+    public function testASlowedStaticFileDoesNotFlatterTheHit(): void
+    {
+        // In round 1 the static file slowed down as much as the hit: its
+        // ratio is 1.0, yet the hit is never faster than 0.45 ms against
+        // 0.30 ms for the static file.
+        $this->writeRun(['hitP50' => 0.45, 'staticP50' => 0.30, 'hitRps' => 9000.0, 'staticRps' => 10000.0, 'fetches' => 1, 'rounds' => [
+            [0.45, 0.45, 9000.0, 10000.0],
+        ]]);
+
+        $report = new LatencyReport($this->directory->path(), ['*' => 1.40], ['*' => 2.00], ['*' => 0.80], false);
+
+        self::assertFalse($report->passed());
+        self::assertStringContainsString('| 1.500 | <= 1.10 (gate 1.40) | FAIL |', $report->markdown());
     }
 
     public function testMoreThanOneOriginFetchForTheHerdFails(): void
