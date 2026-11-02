@@ -185,6 +185,66 @@ final class PurgeAuthenticatorTest extends TestCase
         self::assertTrue(PurgeAuthenticator::fromConfig(TestConfig::create())->isDisabled());
     }
 
+    /**
+     * A purge fanned out by a peer is accepted with the fan-out HMAC and
+     * reported as such, so that it is not fanned out again.
+     */
+    public function testAFanoutSignatureIsAccepted(): void
+    {
+        $request = self::fanout(self::ORIGIN_SECRET, '1');
+
+        self::assertTrue(PurgeAuthenticator::isFanout($request));
+        self::assertFalse(PurgeAuthenticator::isFanout(self::signed(self::ORIGIN_SECRET, (string) self::NOW)));
+        self::assertSame(PurgeAuthenticator::SCHEME_FANOUT, self::authenticator()->authenticate($request, 'origin.example.test', self::NOW));
+        self::assertNull(self::authenticator()->authenticate($request, 'origin.example.test', self::NOW + 301));
+    }
+
+    /**
+     * The marker is signed: a fan-out cannot lose it (and be fanned out
+     * again), a client signature cannot gain it, and a Bearer key never
+     * passes for a fan-out.
+     */
+    public function testTheFanoutMarkerIsBoundToTheSignature(): void
+    {
+        $fanout = self::fanout(self::ORIGIN_SECRET, '1');
+        $stripped = self::purge([
+            'HTTP_X_PURGE_TIMESTAMP' => (string) $fanout->headers->get('X-Purge-Timestamp'),
+            'HTTP_X_PURGE_SIGNATURE' => (string) $fanout->headers->get('X-Purge-Signature'),
+        ]);
+        $client = self::signed(self::ORIGIN_SECRET, (string) self::NOW);
+        $client->headers->set(PurgeAuthenticator::FANOUT_HEADER, '1');
+        $bearer = self::purge(['HTTP_AUTHORIZATION' => 'Bearer ' . self::ORIGIN_SECRET, 'HTTP_X_PURGE_FANOUT' => '1']);
+
+        $authenticator = self::authenticator();
+        self::assertNull($authenticator->authenticate($stripped, 'origin.example.test', self::NOW));
+        self::assertNull($authenticator->authenticate($client, 'origin.example.test', self::NOW));
+        self::assertNull($authenticator->authenticate($bearer, 'origin.example.test', self::NOW));
+        self::assertNull($authenticator->authenticate(self::fanout(self::ORIGIN_SECRET, 'yes'), 'origin.example.test', self::NOW));
+        self::assertNull($authenticator->authenticate(self::fanout(self::OTHER_SECRET, '1'), 'origin.example.test', self::NOW));
+    }
+
+    public function testTheFanoutMessageCoversTheBody(): void
+    {
+        $empty = PurgeAuthenticator::fanoutMessage('cdn.example.test', '/css/a.css', '1', '');
+
+        self::assertSame(PurgeAuthenticator::signedMessage('cdn.example.test', '/css/a.css', '1') . "\nfanout\n" . hash('sha256', ''), $empty);
+        self::assertNotSame($empty, PurgeAuthenticator::fanoutMessage('cdn.example.test', '/css/a.css', '1', 'x'));
+    }
+
+    public function testSecretForPrefersTheKeyOfTheOrigin(): void
+    {
+        self::assertSame(self::ORIGIN_SECRET, self::authenticator()->secretFor('Origin.Example.Test'));
+        self::assertSame(self::ANY_SECRET, self::authenticator()->secretFor('third.example.test'));
+        self::assertNull((new PurgeAuthenticator([['origin.example.test', self::ORIGIN_SECRET]]))->secretFor('third.example.test'));
+    }
+
+    private static function fanout(string $secret, string $marker): Request
+    {
+        $signature = hash_hmac('sha256', PurgeAuthenticator::fanoutMessage('cdn.example.test', '/css/a.css', (string) self::NOW, ''), $secret);
+
+        return self::purge(['HTTP_X_PURGE_TIMESTAMP' => (string) self::NOW, 'HTTP_X_PURGE_SIGNATURE' => $signature, 'HTTP_X_PURGE_FANOUT' => $marker]);
+    }
+
     private static function authenticator(): PurgeAuthenticator
     {
         return new PurgeAuthenticator([

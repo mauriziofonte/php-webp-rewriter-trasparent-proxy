@@ -28,6 +28,14 @@ use Symfony\Component\HttpFoundation\Request;
  *   MAX_CLOCK_SKEW seconds of the proxy clock; within that window a
  *   signature can be replayed, which only repeats the same purge.
  *
+ * A purge that an instance of a cluster sends to its peers (PRX-9,
+ * Cluster\PeerNotifier) carries "X-Purge-Fanout: 1" and is accepted with
+ * the HMAC only, over fanoutMessage(): the string above followed by
+ * "\nfanout\n" and the hex SHA-256 of the request body (empty for a
+ * PURGE). The marker is part of what is signed, so a client signature
+ * cannot pass for a fan-out and a fan-out cannot be stripped of its
+ * marker: a peer never fans a fanned-out purge out again (no loop).
+ *
  * Replays are accepted on purpose (decision of PRX-7, for the review of
  * PRX-11): a purge is idempotent, its worst replayed effect is one more
  * origin fetch per purged entry, which the circuit breaker bounds; a
@@ -43,6 +51,11 @@ final class PurgeAuthenticator
     public const SCHEME_BEARER = 'bearer';
 
     public const SCHEME_HMAC = 'hmac';
+
+    /**
+     * The scheme of a purge fanned out by a peer of the cluster.
+     */
+    public const SCHEME_FANOUT = 'fanout';
 
     /**
      * The scope that covers every origin.
@@ -62,6 +75,11 @@ final class PurgeAuthenticator
     public const TIMESTAMP_HEADER = 'X-Purge-Timestamp';
 
     public const SIGNATURE_HEADER = 'X-Purge-Signature';
+
+    /**
+     * The marker of a purge fanned out by a peer, signed with it.
+     */
+    public const FANOUT_HEADER = 'X-Purge-Fanout';
 
     /**
      * @var list<array{string, string}> scope and secret of each key
@@ -120,8 +138,10 @@ final class PurgeAuthenticator
     }
 
     /**
-     * The scheme (SCHEME_BEARER or SCHEME_HMAC) by which $request proves a
-     * key whose scope covers $originHost; null when it proves none.
+     * The scheme (SCHEME_BEARER, SCHEME_HMAC or SCHEME_FANOUT) by which
+     * $request proves a key whose scope covers $originHost; null when it
+     * proves none. A request marked with FANOUT_HEADER proves one with the
+     * HMAC of fanoutMessage() only.
      *
      * @param string $originHost the host name of the origin the request targets
      * @param int    $now        the current Unix time
@@ -133,8 +153,9 @@ final class PurgeAuthenticator
             return null;
         }
 
+        $fanout = $request->headers->has(self::FANOUT_HEADER);
         $authorization = (string) $request->headers->get('Authorization', '');
-        if (preg_match('/\ABearer +(\S+)\z/i', trim($authorization), $match) === 1) {
+        if (!$fanout && preg_match('/\ABearer +(\S+)\z/i', trim($authorization), $match) === 1) {
             foreach ($secrets as $secret) {
                 if (hash_equals($secret, $match[1])) {
                     return self::SCHEME_BEARER;
@@ -157,14 +178,63 @@ final class PurgeAuthenticator
         } catch (SuspiciousOperationException $exception) {
             return null;
         }
-        $message = self::signedMessage(strtolower($host), $request->getRequestUri(), $timestamp);
+        if ($fanout && trim((string) $request->headers->get(self::FANOUT_HEADER, '')) !== '1') {
+            return null;
+        }
+        $message = $fanout
+            ? self::fanoutMessage(strtolower($host), $request->getRequestUri(), $timestamp, (string) $request->getContent())
+            : self::signedMessage(strtolower($host), $request->getRequestUri(), $timestamp);
         foreach ($secrets as $secret) {
             if (hash_equals(hash_hmac('sha256', $message, $secret), $signature)) {
-                return self::SCHEME_HMAC;
+                return $fanout ? self::SCHEME_FANOUT : self::SCHEME_HMAC;
             }
         }
 
         return null;
+    }
+
+    /**
+     * Whether $request is marked as a purge fanned out by a peer: it is
+     * then never fanned out again, whatever its authentication.
+     */
+    public static function isFanout(Request $request): bool
+    {
+        return $request->headers->has(self::FANOUT_HEADER);
+    }
+
+    /**
+     * The string an instance signs for its peers: the signedMessage(),
+     * then "fanout" and the hex SHA-256 of the body, one per line.
+     *
+     * @param string $host          the Host header, in lower case
+     * @param string $requestTarget the path and query string, as sent
+     * @param string $timestamp     the X-Purge-Timestamp value
+     * @param string $body          the request body; empty for a PURGE
+     */
+    public static function fanoutMessage(string $host, string $requestTarget, string $timestamp, string $body): string
+    {
+        return self::signedMessage($host, $requestTarget, $timestamp) . "\nfanout\n" . hash('sha256', $body);
+    }
+
+    /**
+     * The secret a purge for the origin $originHost is signed with: the
+     * first key of that origin, else the first key of every origin ("*");
+     * null when no key covers it.
+     */
+    public function secretFor(string $originHost): ?string
+    {
+        $originHost = strtolower($originHost);
+        $any = null;
+        foreach ($this->keys as $key) {
+            if ($key[0] === $originHost) {
+                return $key[1];
+            }
+            if ($key[0] === self::ANY_ORIGIN && $any === null) {
+                $any = $key[1];
+            }
+        }
+
+        return $any;
     }
 
     /**
