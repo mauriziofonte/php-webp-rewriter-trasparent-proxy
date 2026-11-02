@@ -3,6 +3,10 @@ name: CI
 on:
   push:
   pull_request:
+  # Nightly as well: with no lock file, a new release of a dependency can
+  # break the matrix or the latency suite without any push.
+  schedule:
+    - cron: '23 3 * * *'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -292,3 +296,54 @@ jobs:
             ${{ runner.temp }}/contract/*.log
           if-no-files-found: ignore
           retention-days: 7
+
+  # Latency suite of plan section 10 (tests/Performance/run.sh): hits served
+  # by Apache and nginx against static files of the same server, hits served
+  # by PHP, cold misses against an origin with a fixed latency, and the
+  # thundering herd, on the lowest and the highest PHP. Runners are noisy, so
+  # the gate compares each hit with the static file measured in the same
+  # job, with margins above the 10% target (apache: see the README); the
+  # absolute targets are reported in the job summary.
+  performance:
+    name: Performance (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.2', '8.5']
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+
+      # As in production: no development dependencies, and an authoritative
+      # class map (the suite records which autoloader it measured).
+      - name: Install dependencies (highest, no dev, authoritative class map)
+        run: composer update --no-dev --classmap-authoritative --no-progress
+
+      - name: Latency suite and regression gate
+        env:
+          BENCH_PHP: ${{ matrix.php }}
+          BENCH_RESULTS: ${{ runner.temp }}/performance
+          HARNESS_WORKDIR: ${{ runner.temp }}/harness
+        run: >-
+          tests/Performance/run.sh --php "$BENCH_PHP" --results "$BENCH_RESULTS"
+          --max-ratio 1.25 --max-ratio apache=1.40 --max-p99-ratio 2.00
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: performance-php-${{ matrix.php }}
+          path: ${{ runner.temp }}/performance/
+          if-no-files-found: ignore
+          retention-days: 30
