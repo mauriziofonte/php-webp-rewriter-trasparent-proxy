@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\CacheLocation;
 use Mfonte\ProxyCdn\Cache\CacheStorage;
 use Mfonte\ProxyCdn\Config\Config;
+use Mfonte\ProxyCdn\Image\SignedUrlVerifier;
 use Mfonte\ProxyCdn\Origin\ResponseBody;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -307,7 +308,7 @@ final class FileResponder
         }
         fclose($input);
         if ($copied !== $length) {
-            $logger->error('response body cut short', ['file' => $file, 'declared' => $length, 'sent' => (int) $copied]);
+            $logger->error('response body cut short', ['file' => SignedUrlVerifier::mask($file), 'declared' => $length, 'sent' => (int) $copied]);
         }
     }
 

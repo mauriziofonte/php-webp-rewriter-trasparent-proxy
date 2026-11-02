@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
 use Mfonte\ProxyCdn\Http\ProxyKernel;
+use Mfonte\ProxyCdn\Image\SignedUrlVerifier;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
@@ -17,8 +18,8 @@ use Symfony\Component\HttpFoundation\Response;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
- * The image variants through ProxyKernel, with a fake converter that
- * writes small valid images.
+ * The image variants and the signed resize URLs through ProxyKernel, with
+ * a fake converter that writes small valid images.
  *
  * @covers \Mfonte\ProxyCdn\Http\ProxyKernel
  */
@@ -28,6 +29,10 @@ final class ImageConversionTest extends TestCase
     private const ORIGIN = 'https://origin.example.test';
 
     private const FIXTURES = __DIR__ . '/../../Fixtures/Image/files/';
+
+    private const RESIZE_KEY = 'resize-key-0123456789abcdef0123456789';
+
+    private const PURGE_SECRET = 'purge-secret-0123456789';
 
     private const ACCEPT_ALL = 'image/avif,image/webp,*/*';
 
@@ -156,6 +161,88 @@ final class ImageConversionTest extends TestCase
     }
 
     /**
+     * Opportunity O-I, risk L-14: a resize URL that is not signed, or
+     * whose width is not listed, is refused without touching the origin.
+     */
+    public function testAnUnsignedOrUnlistedResizeIsRefusedWithoutFetching(): void
+    {
+        $signedUnlisted = (new SignedUrlVerifier(self::RESIZE_KEY, [999]))->pathOf('cdn.example.test', 999, '/images/photo.png', '');
+
+        foreach (['/_resize/320/images/photo.png', '/_resize/320/' . str_repeat('0', 32) . '/images/photo.png', $signedUnlisted] as $path) {
+            $response = $this->resizingKernel()->handle(self::request($path, ''));
+
+            self::assertSame(403, $response->getStatusCode(), $path);
+            self::assertStringContainsString('Resize URL refused', self::body($response));
+        }
+        self::assertSame([], $this->origin->getRequests());
+        self::assertSame([], $this->converter->getCalls());
+    }
+
+    public function testASignedResizeIsResizedStoredAndServed(): void
+    {
+        $path = $this->resizePath(320, '/images/photo.png');
+
+        $miss = $this->resizingKernel()->handle(self::request($path, ''));
+        $hit = $this->resizingKernel()->handle(self::request($path, ''));
+        $webp = $this->resizingKernel()->handle(self::request($path, 'image/webp'));
+
+        self::assertSame(200, $miss->getStatusCode());
+        self::assertSame('MISS', $miss->headers->get('x-cache-status'));
+        self::assertSame('image/png', $miss->headers->get('content-type'));
+        self::assertStringEqualsFile(self::FIXTURES . 'resized.png', self::body($miss));
+        self::assertSame('HIT', $hit->headers->get('x-cache-status'));
+        self::assertSame('image/webp', $webp->headers->get('content-type'));
+        self::assertSame([self::ORIGIN . '/images/photo.png'], $this->origin->getRequestedUrls());
+        self::assertFileEquals(self::FIXTURES . 'resized.png', $this->cachePath(ltrim($path, '/')));
+        self::assertSame(['original', 'avif', 'webp'], $this->converter->getFormats());
+        // The signature is masked in the logs.
+        self::assertStringNotContainsString(explode('/', $path)[3], (string) json_encode($this->logger->getRecords()));
+    }
+
+    public function testAPurgeOfTheImageRemovesItsResizedEntries(): void
+    {
+        $path = $this->resizePath(320, '/images/photo.png');
+        $this->resizingKernel()->handle(self::request($path, ''));
+        self::assertFileExists($this->cachePath(ltrim($path, '/')));
+
+        $response = $this->resizingKernel()->handle(Request::create('https://cdn.example.test/images/photo.png', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertFileDoesNotExist($this->cachePath(ltrim($path, '/')));
+        self::assertFileDoesNotExist($this->cachePath('.webp' . $path . '.webp'));
+    }
+
+    public function testAnImageThatCannotBeResizedIsStoredAsItIs(): void
+    {
+        $path = $this->resizePath(640, '/images/logo.png');
+
+        $response = $this->resizingKernel()->handle(self::request($path, ''));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('PNG-BYTES', self::body($response));
+        self::assertSame('PNG-BYTES', file_get_contents($this->cachePath(ltrim($path, '/'))));
+    }
+
+    public function testAResizeTheConverterCannotMakeNowStreamsTheOriginal(): void
+    {
+        $this->converter->setUnavailable(true);
+        $path = $this->resizePath(320, '/images/photo.png');
+
+        $response = $this->resizingKernel()->handle(self::request($path, ''));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertStringEqualsFile(self::FIXTURES . 'image.png', self::body($response));
+        self::assertFileDoesNotExist($this->cachePath(ltrim($path, '/')));
+    }
+
+    public function testAResizeOfAMissingImageIsA404(): void
+    {
+        $response = $this->resizingKernel()->handle(self::request($this->resizePath(320, '/images/none.png'), ''));
+
+        self::assertSame(404, $response->getStatusCode());
+    }
+
+    /**
      * @param array<string, string|null> $overrides
      */
     private function kernel(array $overrides = []): ProxyKernel
@@ -167,6 +254,16 @@ final class ImageConversionTest extends TestCase
             $this->converter,
             $this->logger
         );
+    }
+
+    private function resizingKernel(): ProxyKernel
+    {
+        return $this->kernel(['RESIZE_WIDTHS' => '320,640', 'RESIZE_KEY' => self::RESIZE_KEY, 'PURGE_KEYS' => '*=' . self::PURGE_SECRET]);
+    }
+
+    private function resizePath(int $width, string $path): string
+    {
+        return (new SignedUrlVerifier(self::RESIZE_KEY, [320, 640]))->pathOf('cdn.example.test', $width, $path, '');
     }
 
     private static function request(string $path, string $accept): Request

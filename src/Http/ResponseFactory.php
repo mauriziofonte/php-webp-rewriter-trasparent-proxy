@@ -65,6 +65,12 @@ final class ResponseFactory
     /** The host is not in PROXY_HOSTS (risk L-13). */
     public const ERROR_UNKNOWN_HOST = 13;
 
+    /**
+     * A resize URL that is not signed, or whose width is not one of
+     * RESIZE_WIDTHS (opportunity O-I, risk L-14).
+     */
+    public const ERROR_RESIZE_REFUSED = 14;
+
     /** X-Cache-Status of a response served from the cache. */
     public const CACHE_HIT = 'HIT';
 
@@ -129,6 +135,7 @@ final class ResponseFactory
         self::ERROR_CACHE_FILE => 500,
         self::ERROR_UPSTREAM_UNAVAILABLE => 503,
         self::ERROR_CONFIGURATION => 503,
+        self::ERROR_RESIZE_REFUSED => 403,
     ];
 
     /**
@@ -150,6 +157,7 @@ final class ResponseFactory
         self::ERROR_BAD_GATEWAY => 'Bad response from the remote origin',
         self::ERROR_BAD_HOST => 'Invalid Host header',
         self::ERROR_UNKNOWN_HOST => 'Unknown host',
+        self::ERROR_RESIZE_REFUSED => 'Resize URL refused',
     ];
 
     /**
@@ -159,6 +167,8 @@ final class ResponseFactory
         self::ERROR_PURGE_UNAUTHORIZED => 'The anonymous ?purge=1 and ?purge_all=1 of 2.x were removed in 3.0. '
             . 'Send "PURGE <url>" with "Authorization: Bearer <key>", or with the X-Purge-Timestamp and '
             . 'X-Purge-Signature headers, where the key is one of PURGE_KEYS for this origin (see the Purge section of the README).',
+        self::ERROR_RESIZE_REFUSED => 'A resize URL must be signed with RESIZE_KEY and ask for one of RESIZE_WIDTHS '
+            . '(see the Image conversion section of the README).',
     ];
 
     /**

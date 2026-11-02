@@ -16,6 +16,7 @@ use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Compression\Precompressor;
 use Mfonte\ProxyCdn\Config\Config;
+use Mfonte\ProxyCdn\Image\SignedUrlVerifier;
 use Mfonte\ProxyCdn\Image\VariantConverter;
 use Mfonte\ProxyCdn\Origin\CircuitBreaker;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
@@ -73,7 +74,13 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    with its compressed siblings and, for a raster, its AVIF and WEBP
  *    variants (VariantConverter: a conversion that fails leaves the
  *    original to be served, finding P-10), and the asset is served from
- *    the cache.
+ *    the cache;
+ * 7. a signed resize URL (SignedUrlVerifier, opportunity O-I) is verified
+ *    before anything else is done for it: one that is not signed, or
+ *    whose width is not listed, gets a 403 without touching the origin;
+ *    otherwise its entry is served like any other, and a miss fetches
+ *    the image, resizes it and stores the result at the path of the
+ *    resize URL, for the web server to serve.
  *
  * The web server serves the cache files itself, without PHP, whenever it
  * can compute their location (see CacheKeyResolver); the kernel answers
@@ -184,6 +191,11 @@ final class ProxyKernel
     private $variants;
 
     /**
+     * @var SignedUrlVerifier|null
+     */
+    private $resize;
+
+    /**
      * @var Precompressor
      */
     private $precompressor;
@@ -224,7 +236,8 @@ final class ProxyKernel
     private $fetchStartedAt;
 
     /**
-     * @param VariantConverter|null $variants null when IMAGE_CONVERTER is "none"
+     * @param VariantConverter|null  $variants null when IMAGE_CONVERTER is "none"
+     * @param SignedUrlVerifier|null $resize   null when resizing is off
      */
     public function __construct(
         Config $config,
@@ -243,7 +256,8 @@ final class ProxyKernel
         ResponseFactory $responses,
         FileResponder $files,
         RequestCoalescer $coalescer,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        ?SignedUrlVerifier $resize = null
     ) {
         $this->config = $config;
         $this->hosts = $config->getHostAllowlist();
@@ -258,6 +272,7 @@ final class ProxyKernel
         $this->purger = $purger;
         $this->origin = $origin;
         $this->variants = $variants;
+        $this->resize = $resize;
         $this->precompressor = $precompressor;
         $this->responses = $responses;
         $this->files = $files;
@@ -346,15 +361,15 @@ final class ProxyKernel
         $originHost = strtolower((string) parse_url((string) $this->hosts->originOf($host), PHP_URL_HOST));
         $scheme = $this->purgeAuthenticator->authenticate($request, $originHost, time());
         if ($scheme === null) {
-            $this->logger->warning('purge refused', ['host' => $host, 'path' => $path, 'client' => $client]);
+            $this->logger->warning('purge refused', ['host' => $host, 'path' => SignedUrlVerifier::mask($path), 'client' => $client]);
 
             return $this->responses->error($path, ResponseFactory::ERROR_PURGE_UNAUTHORIZED);
         }
 
-        $removed = $this->purger->purge($location);
+        $removed = array_merge($this->purger->purge($location), $this->purgeResized($host, $path, $query));
         $this->logger->notice('purge', [
             'host' => $host,
-            'path' => $path,
+            'path' => SignedUrlVerifier::mask($path),
             'query' => $query->getCanonical(),
             'removed' => count($removed),
             'auth' => $scheme,
@@ -362,6 +377,27 @@ final class ProxyKernel
         ]);
 
         return $this->responses->purged($path, $query->getCanonical(), count($removed));
+    }
+
+    /**
+     * The files of the resized images of $path, the image of a purge, at
+     * every width of RESIZE_WIDTHS (with the query string of the purge):
+     * they are removed with it.
+     *
+     * @return list<string>
+     */
+    private function purgeResized(string $host, string $path, QueryString $query): array
+    {
+        if ($this->resize === null || SignedUrlVerifier::isResizePath($path) || !$this->isRaster(self::extensionOf($path))) {
+            return [];
+        }
+        $removed = [];
+        foreach ($this->resize->getWidths() as $width) {
+            $resized = $this->resize->pathOf($host, $width, $path, $query->getCanonical());
+            $removed = array_merge($removed, $this->purger->purge($this->keyResolver->resolve($host, $resized, $query->getCanonical())));
+        }
+
+        return $removed;
     }
 
     /**
@@ -381,6 +417,15 @@ final class ProxyKernel
         $rawQuery = self::rawQuery($request);
         if (self::hasFlag($rawQuery, 'purge') || self::hasFlag($rawQuery, 'purge_all')) {
             return $this->responses->error($path, ResponseFactory::ERROR_PURGE_UNAUTHORIZED);
+        }
+
+        if ($this->resize !== null && SignedUrlVerifier::isResizePath($path)) {
+            $resize = $this->resize->verify($host, $path, $query->getCanonical());
+            if (!is_array($resize) || !$this->isRaster($extension)) {
+                return $this->responses->error(SignedUrlVerifier::mask($path), ResponseFactory::ERROR_RESIZE_REFUSED);
+            }
+
+            return $this->handleResize($request, $origin, $path, $extension, $query, $location, $resize[0], $resize[1]);
         }
 
         $legacy = $this->isLegacyWebpRequest($extension, $location) ? $this->legacySiblings($host, $path, $query) : [];
@@ -477,6 +522,123 @@ final class ProxyKernel
                 }
             }
         }
+    }
+
+    /**
+     * The answer to a signed resize URL, verified: its entry when stored;
+     * else, by one request of those that miss it together, the image at
+     * $imagePath fetched from the origin, resized to $width and stored
+     * with its variants at the path of the resize URL, in the tier the web
+     * server serves (kept until purged, whatever its lifetime: PURGE of
+     * the image removes its resized entries). An image that cannot be
+     * resized as asked is stored as it is, so that it is not tried again;
+     * when the converter cannot resize now, the image is streamed as it
+     * is without being stored, and so is an image the origin forbids
+     * storing. A failure of the conversion never fails the request.
+     *
+     * @param string $path      the decoded path of the resize URL
+     * @param string $imagePath the decoded path of the image on the origin
+     */
+    private function handleResize(Request $request, string $origin, string $path, string $extension, QueryString $query, CacheLocation $location, int $width, string $imagePath): Response
+    {
+        $logPath = SignedUrlVerifier::mask($path);
+        $file = $location->getFile();
+        $remembered = $this->negativeCache->lookup($file);
+        if ($remembered !== null) {
+            return $this->notFound($logPath, $remembered);
+        }
+        $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT);
+        if ($stored !== null) {
+            return $stored;
+        }
+        if ($this->circuitBreaker->isOpen(RedirectTarget::originOf($origin))) {
+            return $this->responses->error($logPath, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+        }
+
+        $key = $location->getKey();
+        $lease = $this->coalescer->enter($key, function () use ($file): bool {
+            return $this->storage->isFile($file) || $this->negativeCache->lookup($file) !== null;
+        });
+        if ($lease === false) {
+            return $this->responses->error($logPath, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+        }
+        try {
+            $remembered = $this->negativeCache->lookup($file);
+            if ($remembered !== null) {
+                return $this->notFound($logPath, $remembered);
+            }
+            $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT);
+            if ($stored !== null) {
+                return $stored;
+            }
+            $shared = $lease === null ? $this->sharedOutcome($key, $logPath) : null;
+            if ($shared !== null) {
+                return $shared;
+            }
+
+            $fetched = $this->fetch($request, $origin, $imagePath, $query);
+            if ($fetched->getFailureReason() === OriginResponse::FAILURE_REDIRECT) {
+                // The redirect would lead the client to the image, not to
+                // its resized copy.
+                $fetched->release();
+
+                return $this->sharedError($location, $logPath, ResponseFactory::ERROR_BAD_GATEWAY);
+            }
+            if (!$fetched->isSuccessful()) {
+                return $this->failure($origin, $logPath, $location, $fetched);
+            }
+            $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
+
+            return $this->resizeAndServe($request, $location, $extension, $width, $fetched);
+        } finally {
+            if ($lease !== null) {
+                $lease->release();
+            }
+        }
+    }
+
+    /**
+     * Stores the image of $fetched resized as the entry of the resize URL
+     * of $location and serves it (see handleResize()).
+     */
+    private function resizeAndServe(Request $request, CacheLocation $location, string $extension, int $width, OriginResponse $fetched): Response
+    {
+        $logPath = SignedUrlVerifier::mask('/' . $location->getRelativePath());
+        $body = $fetched->getBodyFile() ?? ResponseBody::fromString($fetched->getBody(), sys_get_temp_dir());
+        if ($body === null) {
+            $fetched->release();
+
+            return $this->sharedError($location, $logPath, ResponseFactory::ERROR_CACHE_FILE);
+        }
+        $freshness = Freshness::fromHeaders($fetched->getHeaders(), time());
+        $requestId = self::requestIdOf($request);
+        $outcome = !$freshness->isStorable() || $this->variants === null
+            ? VariantConverter::UNAVAILABLE
+            : $this->variants->resizeEntry($location, $body->getPath(), $width, $requestId);
+        if ($outcome === VariantConverter::UNAVAILABLE) {
+            if (!$freshness->isStorable()) {
+                $this->coalescer->recordUncacheable($location->getKey());
+            }
+
+            return $this->files->respondUncached($request, $body, $extension, $freshness->isNoStore());
+        }
+        if ($outcome === VariantConverter::REJECTED && $this->variants !== null) {
+            // Stored as it is, with the variants of the image.
+            $this->variants->convertAll($location, $body->getPath(), $requestId);
+            if (!$this->storage->ensureDirectory($location->getDirectory()) || !$this->storage->import($location->getFile(), $body->getPath())) {
+                $fetched->release();
+                $body->delete();
+
+                return $this->sharedError($location, $logPath, ResponseFactory::ERROR_CACHE_FILE);
+            }
+        }
+        $fetched->release();
+        $body->delete();
+        $this->negativeCache->forget($location->getFile());
+        $this->coalescer->forget($location->getKey());
+
+        return $this->serve($request, $location, $extension, ResponseFactory::CACHE_MISS)
+            ?? $this->responses->error($logPath, ResponseFactory::ERROR_CACHE_FILE);
     }
 
     /**
@@ -678,7 +840,7 @@ final class ProxyKernel
             // The outcome first, then the breaker: see failure().
             $this->coalescer->recordFailure($web->getKey(), ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
             $this->circuitBreaker->recordFailure($breakerKey, $this->fetchStartedAt);
-            $this->logger->warning('stale entry served, origin unavailable', ['path' => $path, 'reason' => $reason]);
+            $this->logger->warning('stale entry served, origin unavailable', ['path' => SignedUrlVerifier::mask($path), 'reason' => $reason]);
 
             return $request === null ? null : $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0);
         }
@@ -1079,7 +1241,7 @@ final class ProxyKernel
                 return $this->failure($origin, $path, $location, $fetched, $webp);
             }
             $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
-            $this->logger->info('legacy webp url', ['path' => $path, 'sibling' => $siblingPath]);
+            $this->logger->info('legacy webp url', ['path' => SignedUrlVerifier::mask($path), 'sibling' => SignedUrlVerifier::mask($siblingPath)]);
             $freshness = Freshness::fromHeaders($fetched->getHeaders(), time());
             if (!$freshness->isStorable()) {
                 $this->coalescer->recordUncacheable($webp->getKey());

@@ -14,6 +14,7 @@ use Mfonte\ProxyCdn\Compression\Precompressor;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\ImageConverter;
 use Mfonte\ProxyCdn\Image\ImageConverterFactory;
+use Mfonte\ProxyCdn\Image\SignedUrlVerifier;
 use Mfonte\ProxyCdn\Origin\OriginCircuitBreaker;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Security\PathSanitizer;
@@ -80,7 +81,8 @@ final class ProxyKernelFactory
             $responses,
             new FileResponder($storage, $responses, $config->getSendfile(), $cacheDirectory, $logger),
             $coalescer,
-            $logger
+            $logger,
+            $converter === null ? null : SignedUrlVerifier::fromConfig($config)
         );
     }
 
