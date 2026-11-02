@@ -7,13 +7,8 @@ declare(strict_types=1);
  * built-in web server (see FakeOriginServer). Every request is appended to
  * requests.jsonl in FAKE_ORIGIN_STATE, then answered:
  *
- * - POST /__api/convert imitates the 1.x conversion API: it answers with the
- *   uploaded image, prefixed with "API-WEBP:", as base64 in the 1.x JSON shape;
- *   with a rule, it answers the rule's status and {"message": <body>}, or an
- *   HTML page when the rule has no body; a rule with status 200 and a body
- *   answers that body as it is;
- * - another path with a rule of status 200 and a body answers that body
- *   as it is, with the headers of the rule (an API answer, for example);
+ * - a path with a rule of status 200 and a body answers that body as it
+ *   is, with the headers of the rule (an API answer, for example);
  * - any other path serves the file of the same (decoded) name below
  *   FAKE_ORIGIN_DOCROOT with Content-Type, Content-Length, ETag,
  *   Last-Modified and Vary, plus headers that a proxy must not forward
@@ -44,10 +39,6 @@ foreach ($server as $name => $value) {
 }
 
 $record = ['method' => $method, 'uri' => $uri, 'path' => $path, 'headers' => $headers];
-if ($path === '/__api/convert') {
-    $record['post'] = $_POST;
-    $record['files'] = array_keys($_FILES);
-}
 file_put_contents($state . '/requests.jsonl', json_encode($record) . "\n", FILE_APPEND | LOCK_EX);
 
 $rules = json_decode((string) @file_get_contents($state . '/rules.json'), true);
@@ -66,34 +57,6 @@ if (isset($rule['headers']) && is_array($rule['headers'])) {
             header($name . ': ' . $value);
         }
     }
-}
-
-if ($path === '/__api/convert') {
-    if ($status !== 200) {
-        http_response_code($status);
-        if (isset($rule['body']) && is_string($rule['body'])) {
-            header('Content-Type: application/json');
-            echo json_encode(['message' => $rule['body']]);
-        } else {
-            header('Content-Type: text/html');
-            echo '<h1>Bad gateway</h1>';
-        }
-
-        return true;
-    }
-    header('Content-Type: application/json');
-    if (isset($rule['body']) && is_string($rule['body'])) {
-        echo $rule['body'];
-
-        return true;
-    }
-    $images = $_FILES['images'] ?? null;
-    $uploads = is_array($images) && isset($images['tmp_name']) && is_array($images['tmp_name']) ? $images['tmp_name'] : [];
-    $upload = $uploads[0] ?? null;
-    $contents = is_string($upload) ? (string) file_get_contents($upload) : '';
-    echo json_encode(['response' => [['webp_image_base64' => base64_encode('API-WEBP:' . $contents)]]]);
-
-    return true;
 }
 
 if ($status === 200 && isset($rule['body']) && is_string($rule['body'])) {

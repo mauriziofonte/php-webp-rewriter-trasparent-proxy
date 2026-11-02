@@ -93,14 +93,14 @@ final class FakeOriginServer
     /**
      * Every request received so far, oldest first.
      *
-     * @return list<array{method: string, uri: string, path: string, headers: array<string, string>, post?: array<string, mixed>, files?: list<string>}>
+     * @return list<array{method: string, uri: string, path: string, headers: array<string, string>}>
      */
     public function getRequests(): array
     {
         $requests = [];
         $lines = @file($this->stateDirectory . '/requests.jsonl', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
         foreach ($lines === false ? [] : $lines as $line) {
-            /** @var array{method: string, uri: string, path: string, headers: array<string, string>, post?: array<string, mixed>, files?: list<string>} $request */
+            /** @var array{method: string, uri: string, path: string, headers: array<string, string>} $request */
             $request = json_decode($line, true);
             $requests[] = $request;
         }
@@ -126,7 +126,7 @@ final class FakeOriginServer
     /**
      * The last request received.
      *
-     * @return array{method: string, uri: string, path: string, headers: array<string, string>, post?: array<string, mixed>, files?: list<string>}
+     * @return array{method: string, uri: string, path: string, headers: array<string, string>}
      */
     public function getLastRequest(): array
     {
