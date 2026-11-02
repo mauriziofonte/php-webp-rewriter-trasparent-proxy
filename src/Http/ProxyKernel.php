@@ -240,6 +240,11 @@ final class ProxyKernel
     private $logger;
 
     /**
+     * @var OriginFetchGuard|null
+     */
+    private $guard;
+
+    /**
      * The entries served stale, to revalidate in terminate(), by key.
      *
      * @var array<string, array{CacheLocation, string, string, string, QueryString}>
@@ -265,6 +270,9 @@ final class ProxyKernel
     private $pendingConversions = [];
 
     /**
+     * The optional $guard runs before each miss is fetched (the miss rate
+     * limit and Early Hints of PRX-9, OriginFetchGuard); null for none.
+     *
      * @param VariantConverter|null  $variants null when IMAGE_CONVERTER is "none"
      * @param SignedUrlVerifier|null $resize   null when resizing is off
      */
@@ -286,7 +294,8 @@ final class ProxyKernel
         FileResponder $files,
         RequestCoalescer $coalescer,
         LoggerInterface $logger,
-        ?SignedUrlVerifier $resize = null
+        ?SignedUrlVerifier $resize = null,
+        ?OriginFetchGuard $guard = null
     ) {
         $this->config = $config;
         $this->hosts = $config->getHostAllowlist();
@@ -308,6 +317,7 @@ final class ProxyKernel
         $this->files = $files;
         $this->coalescer = $coalescer;
         $this->logger = $logger;
+        $this->guard = $guard;
     }
 
     public function handle(Request $request): Response
@@ -537,6 +547,10 @@ final class ProxyKernel
                     continue;
                 }
 
+                $refused = $this->guard === null ? null : $this->guard->beforeFetch($request, $path);
+                if ($refused !== null) {
+                    return $refused;
+                }
                 $fetched = $this->fetch($request, $origin, $path, $query);
                 if ($fetched->isSuccessful()) {
                     return $this->storeAndServe($request, $origin, $location, $extension, $fetched);

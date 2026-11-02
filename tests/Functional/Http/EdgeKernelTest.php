@@ -203,6 +203,37 @@ final class EdgeKernelTest extends TestCase
     }
 
     /**
+     * MISS_RATE_LIMIT bounds the origin fetches of one client; its hits are
+     * never limited, and another client has its own bucket.
+     */
+    public function testTheMissRateLimitAppliesToMissesOnly(): void
+    {
+        foreach (['a', 'b', 'c'] as $name) {
+            $this->origin->serve(self::ORIGIN . '/js/' . $name . '.js', $name, ['content-type' => 'text/javascript']);
+        }
+        $overrides = ['MISS_RATE_LIMIT' => '6', 'MISS_RATE_LIMIT_BURST' => '2', 'METRICS_KEYS' => self::METRICS_KEY];
+        $kernel = $this->kernel($overrides);
+        $client = ['REMOTE_ADDR' => '192.0.2.10'];
+
+        $first = $kernel->handle(self::request('https://cdn.example.test/js/a.js', $client));
+        $second = $kernel->handle(self::request('https://cdn.example.test/js/b.js', $client));
+        $limited = $kernel->handle(self::request('https://cdn.example.test/js/c.js', $client));
+        $hit = $kernel->handle(self::request('https://cdn.example.test/js/a.js', $client));
+        $otherClient = $kernel->handle(self::request('https://cdn.example.test/js/c.js', ['REMOTE_ADDR' => '192.0.2.11']));
+        $kernel->terminate();
+
+        self::assertSame([200, 200, 429, 200, 200], [
+            $first->getStatusCode(), $second->getStatusCode(), $limited->getStatusCode(), $hit->getStatusCode(), $otherClient->getStatusCode(),
+        ]);
+        self::assertSame('10', $limited->headers->get('Retry-After'));
+        self::assertSame('HIT', $hit->headers->get('X-Cache-Status'));
+        self::assertSame([self::ORIGIN . '/js/a.js', self::ORIGIN . '/js/b.js', self::ORIGIN . '/js/c.js'], $this->origin->getRequestedUrls());
+        $text = (string) $this->kernel($overrides)->handle(self::request('https://cdn.example.test/metrics', ['HTTP_AUTHORIZATION' => 'Bearer ' . self::METRICS_KEY]))->getContent();
+        self::assertStringContainsString("proxy_cdn_miss_rate_limited_total 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_requests_total{method=\"GET\",cache=\"none\",status=\"429\"} 1\n", $text);
+    }
+
+    /**
      * @param array<string, string|null> $overrides
      */
     private function serveAndTerminate(array $overrides, string $url): void

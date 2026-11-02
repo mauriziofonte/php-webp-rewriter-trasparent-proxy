@@ -19,6 +19,7 @@ use Mfonte\ProxyCdn\Config\OperationsConfig;
  * | proxy_cdn_requests_total                | counter   | method, cache, status  |
  * | proxy_cdn_request_duration_seconds      | histogram | cache                  |
  * | proxy_cdn_origin_fetches_total          | counter   | outcome                |
+ * | proxy_cdn_miss_rate_limited_total       | counter   |                        |
  *
  * - Only the requests that reach PHP are counted: the hits the web server
  *   serves never do (read them from its own logs or status module).
@@ -75,6 +76,7 @@ final class Metrics
         'requests_total' => ['counter', 'Requests answered by PHP, by method, X-Cache-Status and HTTP status.'],
         'request_duration_seconds' => ['histogram', 'Time PHP took to build the response, by X-Cache-Status.'],
         'origin_fetches_total' => ['counter', 'Requests sent to the origins, by outcome.'],
+        'miss_rate_limited_total' => ['counter', 'Misses refused with 429 by MISS_RATE_LIMIT.'],
     ];
 
     /**
@@ -137,6 +139,14 @@ final class Metrics
     public function recordOriginFetch(string $outcome): void
     {
         $this->increment('origin_fetches_total', ['outcome' => in_array($outcome, self::OUTCOMES, true) ? $outcome : self::OTHER]);
+    }
+
+    /**
+     * Counts a miss refused by the miss rate limit.
+     */
+    public function recordRateLimited(): void
+    {
+        $this->increment('miss_rate_limited_total', []);
     }
 
     /**

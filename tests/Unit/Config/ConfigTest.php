@@ -236,6 +236,8 @@ final class ConfigTest extends TestCase
             'LOG_LEVEL' => 'info',
             'METRICS_KEYS' => ['metrics-key-0123456789'],
             'METRICS_STORE' => 'file',
+            'MISS_RATE_LIMIT' => 120,
+            'MISS_RATE_LIMIT_BURST' => 20,
         ], $overrides);
     }
 }

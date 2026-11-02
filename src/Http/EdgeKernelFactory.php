@@ -17,9 +17,10 @@ use Psr\Log\LoggerInterface;
 /**
  * Builds the EdgeKernel of the front controller around the ProxyKernel of
  * ProxyKernelFactory, with the same arguments plus the Metrics of the
- * request: the origin fetches are counted (MeteredOriginFetcher), /healthz
- * checks the cache and state directories, and /metrics is served when
- * METRICS_KEYS is set.
+ * request: the origin fetches are counted (MeteredOriginFetcher), the
+ * misses go through the miss rate limit of the configuration
+ * (OriginFetchGuards), /healthz checks the cache and state directories,
+ * and /metrics is served when METRICS_KEYS is set.
  */
 final class EdgeKernelFactory
 {
@@ -44,7 +45,8 @@ final class EdgeKernelFactory
             $stateDirectory,
             new MeteredOriginFetcher($origin, $metrics),
             $converter,
-            $logger
+            $logger,
+            OriginFetchGuards::fromConfig($config, $stateDirectory, $metrics, $logger)
         );
 
         return new EdgeKernel(

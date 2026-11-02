@@ -26,6 +26,11 @@ use Mfonte\ProxyCdn\Observability\MetricsAuthenticator;
  *   not served.
  * - METRICS_STORE: "file" (counters in one locked file of var/metrics,
  *   shared by every PHP process of the host) or "off". Default: file.
+ * - MISS_RATE_LIMIT: origin fetches per minute that one client address
+ *   may cause (cache misses; hits are never limited), read through
+ *   TRUSTED_PROXIES; 0 turns the limit off. Default: 0.
+ * - MISS_RATE_LIMIT_BURST: the misses a client may cause at once after a
+ *   pause. Default: 60.
  *
  * Immutable.
  */
@@ -39,6 +44,8 @@ final class OperationsConfig
         'LOG_LEVEL',
         'METRICS_KEYS',
         'METRICS_STORE',
+        'MISS_RATE_LIMIT',
+        'MISS_RATE_LIMIT_BURST',
     ];
 
     public const METRICS_STORE_FILE = 'file';
@@ -47,6 +54,16 @@ final class OperationsConfig
 
     private const DEFAULTS = [
         'METRICS_STORE' => self::METRICS_STORE_FILE,
+        'MISS_RATE_LIMIT' => '0',
+        'MISS_RATE_LIMIT_BURST' => '60',
+    ];
+
+    /**
+     * Inclusive ranges of the integer keys.
+     */
+    private const INTEGER_RANGES = [
+        'MISS_RATE_LIMIT' => [0, 1000000],
+        'MISS_RATE_LIMIT_BURST' => [1, 100000],
     ];
 
     /**
@@ -68,6 +85,16 @@ final class OperationsConfig
      * @var string
      */
     private $metricsStore;
+
+    /**
+     * @var int
+     */
+    private $missRateLimit;
+
+    /**
+     * @var int
+     */
+    private $missRateLimitBurst;
 
     private function __construct()
     {
@@ -106,6 +133,22 @@ final class OperationsConfig
             $errors[] = 'METRICS_STORE must be one of: file, off (got: ' . var_export($store, true) . ')';
         }
 
+        foreach (self::INTEGER_RANGES as $key => $range) {
+            $raw = $values[$key] ?? null;
+            if ($raw === null) {
+                continue;
+            }
+            if (preg_match('/\A[0-9]{1,10}\z/', $raw) !== 1 || (int) $raw < $range[0] || (int) $raw > $range[1]) {
+                $errors[] = sprintf('%s must be an integer between %d and %d (got: %s)', $key, $range[0], $range[1], var_export($raw, true));
+            }
+        }
+        $rateLimit = $values['MISS_RATE_LIMIT'] ?? null;
+        if ($rateLimit !== null && preg_match('/\A[1-9][0-9]*\z/', $rateLimit) === 1 && ($values['TRUSTED_PROXIES'] ?? null) === null) {
+            $warnings[] = "NOTE: MISS_RATE_LIMIT is on and TRUSTED_PROXIES is empty. Behind a load\n"
+                . "balancer or a CDN every client has the address of that proxy and\n"
+                . 'shares one limit: list its addresses in TRUSTED_PROXIES.';
+        }
+
         return [$errors, $warnings];
     }
 
@@ -128,6 +171,8 @@ final class OperationsConfig
             'LOG_LEVEL' => $value('LOG_LEVEL'),
             'METRICS_KEYS' => ConfigValidator::entryList($value('METRICS_KEYS')),
             'METRICS_STORE' => (string) $value('METRICS_STORE'),
+            'MISS_RATE_LIMIT' => (int) $value('MISS_RATE_LIMIT'),
+            'MISS_RATE_LIMIT_BURST' => (int) $value('MISS_RATE_LIMIT_BURST'),
         ];
     }
 
@@ -146,6 +191,8 @@ final class OperationsConfig
         $settings->logLevel = self::optionalString($values, 'LOG_LEVEL');
         $settings->metricsKeys = self::stringList($values, 'METRICS_KEYS');
         $settings->metricsStore = (string) self::optionalString($values, 'METRICS_STORE');
+        $settings->missRateLimit = self::integer($values, 'MISS_RATE_LIMIT');
+        $settings->missRateLimitBurst = self::integer($values, 'MISS_RATE_LIMIT_BURST');
 
         if ($settings->logLevel !== null && !JsonLogger::isLevel($settings->logLevel)) {
             throw new InvalidConfigurationException(['LOG_LEVEL has an unknown value']);
@@ -155,6 +202,9 @@ final class OperationsConfig
         }
         if (MetricsAuthenticator::parseKeys($settings->metricsKeys) === null) {
             throw new InvalidConfigurationException(['METRICS_KEYS must be a list of keys']);
+        }
+        if ($settings->missRateLimitBurst < 1) {
+            throw new InvalidConfigurationException(['MISS_RATE_LIMIT_BURST must be at least 1']);
         }
 
         return $settings;
@@ -172,6 +222,8 @@ final class OperationsConfig
             'LOG_LEVEL' => $this->logLevel,
             'METRICS_KEYS' => $this->metricsKeys,
             'METRICS_STORE' => $this->metricsStore,
+            'MISS_RATE_LIMIT' => $this->missRateLimit,
+            'MISS_RATE_LIMIT_BURST' => $this->missRateLimitBurst,
         ];
     }
 
@@ -213,6 +265,23 @@ final class OperationsConfig
     }
 
     /**
+     * MISS_RATE_LIMIT: origin fetches per minute and client address; 0
+     * when misses are not limited.
+     */
+    public function getMissRateLimit(): int
+    {
+        return $this->missRateLimit;
+    }
+
+    /**
+     * MISS_RATE_LIMIT_BURST: the misses a client may cause at once.
+     */
+    public function getMissRateLimitBurst(): int
+    {
+        return $this->missRateLimitBurst;
+    }
+
+    /**
      * @param array<mixed> $values
      *
      * @throws InvalidConfigurationException
@@ -225,6 +294,21 @@ final class OperationsConfig
         $value = $values[$key];
         if ($value !== null && (!is_string($value) || $value === '')) {
             throw new InvalidConfigurationException([$key . ' must be a non-empty string or null']);
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param array<mixed> $values
+     *
+     * @throws InvalidConfigurationException
+     */
+    private static function integer(array $values, string $key): int
+    {
+        $value = $values[$key] ?? null;
+        if (!is_int($value) || $value < 0) {
+            throw new InvalidConfigurationException([$key . ' must be a non-negative integer']);
         }
 
         return $value;

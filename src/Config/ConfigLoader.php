@@ -80,6 +80,8 @@ final class ConfigLoader
         'LOG_LEVEL',
         'METRICS_KEYS',
         'METRICS_STORE',
+        'MISS_RATE_LIMIT',
+        'MISS_RATE_LIMIT_BURST',
     ];
 
     /**

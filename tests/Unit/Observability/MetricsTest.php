@@ -44,6 +44,7 @@ final class MetricsTest extends TestCase
         $metrics->recordRequest('GET', 'MISS', 200, 0.2);
         $metrics->recordRequest('PURGE', null, 401, 0.0005);
         $metrics->recordOriginFetch('success');
+        $metrics->recordRateLimited();
         self::assertTrue($metrics->flush());
 
         $text = (new Metrics($this->store()))->render();
@@ -66,6 +67,7 @@ final class MetricsTest extends TestCase
         self::assertStringContainsString("proxy_cdn_request_duration_seconds_sum{cache=\"MISS\"} 0.203\n", $text);
         self::assertStringContainsString("proxy_cdn_request_duration_seconds_count{cache=\"MISS\"} 2\n", $text);
         self::assertStringContainsString("proxy_cdn_origin_fetches_total{outcome=\"success\"} 1\n", $text);
+        self::assertStringContainsString("# TYPE proxy_cdn_miss_rate_limited_total counter\nproxy_cdn_miss_rate_limited_total 1\n", $text);
         self::assertStringEndsWith("\n", $text);
     }
 

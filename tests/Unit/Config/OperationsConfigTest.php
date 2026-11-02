@@ -27,6 +27,8 @@ final class OperationsConfigTest extends TestCase
         self::assertNull($operations->getLogLevel());
         self::assertSame([], $operations->getMetricsKeys());
         self::assertSame(OperationsConfig::METRICS_STORE_FILE, $operations->getMetricsStore());
+        self::assertSame(0, $operations->getMissRateLimit());
+        self::assertSame(60, $operations->getMissRateLimitBurst());
     }
 
     public function testTheValuesAreNormalised(): void
@@ -36,12 +38,17 @@ final class OperationsConfigTest extends TestCase
             'LOG_LEVEL' => 'warning',
             'METRICS_KEYS' => ' metrics-key-0123456789 , sha256:' . str_repeat('AB', 32),
             'METRICS_STORE' => 'off',
+            'MISS_RATE_LIMIT' => '600',
+            'MISS_RATE_LIMIT_BURST' => '100',
+            'TRUSTED_PROXIES' => '10.0.0.0/8',
         ])->getOperations();
 
         self::assertSame('/var/log/proxy-cdn/proxy.log', $operations->getLogFile());
         self::assertSame('warning', $operations->getLogLevel());
         self::assertSame(['metrics-key-0123456789', 'sha256:' . str_repeat('AB', 32)], $operations->getMetricsKeys());
         self::assertSame('off', $operations->getMetricsStore());
+        self::assertSame(600, $operations->getMissRateLimit());
+        self::assertSame(100, $operations->getMissRateLimitBurst());
     }
 
     /**
@@ -71,6 +78,9 @@ final class OperationsConfigTest extends TestCase
             'metrics key with space' => [['METRICS_KEYS' => 'a key with spaces inside'], 'METRICS_KEYS must'],
             'bad digest' => [['METRICS_KEYS' => 'sha256:abc'], 'METRICS_KEYS must'],
             'unknown store' => [['METRICS_STORE' => 'apcu'], 'METRICS_STORE must'],
+            'negative rate' => [['MISS_RATE_LIMIT' => '-1'], 'MISS_RATE_LIMIT must'],
+            'huge rate' => [['MISS_RATE_LIMIT' => '1000001'], 'MISS_RATE_LIMIT must'],
+            'zero burst' => [['MISS_RATE_LIMIT_BURST' => '0'], 'MISS_RATE_LIMIT_BURST must'],
         ];
     }
 
@@ -83,6 +93,16 @@ final class OperationsConfigTest extends TestCase
 
         self::assertStringNotContainsString('tiny-secret', implode("\n", $validation->getErrors()));
         self::assertStringNotContainsString('valid-metrics-key-0001', implode("\n", $validation->getErrors()));
+    }
+
+    public function testARateLimitWithoutTrustedProxiesIsNoted(): void
+    {
+        $validation = (new ConfigValidator())->validate(TestConfig::rawValues(['MISS_RATE_LIMIT' => '600']));
+        $behindProxy = (new ConfigValidator())->validate(TestConfig::rawValues(['MISS_RATE_LIMIT' => '600', 'TRUSTED_PROXIES' => '10.0.0.1']));
+
+        self::assertTrue($validation->isValid());
+        self::assertStringContainsString('MISS_RATE_LIMIT is on and TRUSTED_PROXIES is empty', implode("\n", $validation->getWarnings()));
+        self::assertStringNotContainsString('MISS_RATE_LIMIT', implode("\n", $behindProxy->getWarnings()));
     }
 
     /**

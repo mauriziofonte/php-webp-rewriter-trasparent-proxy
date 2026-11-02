@@ -41,6 +41,9 @@ final class ProxyKernelFactory
     private const COALESCING_MARGIN = 30;
 
     /**
+     * The optional $guard runs before each miss is fetched
+     * (OriginFetchGuards::fromConfig(), PRX-9); null for none.
+     *
      * @param string              $publicDirectory the document root; the cache entries are stored in its
      *                                             "_cache" directory (CacheKeyResolver::CACHE_DIRECTORY)
      * @param string              $stateDirectory  a writable directory outside the document root for the
@@ -54,7 +57,8 @@ final class ProxyKernelFactory
         string $stateDirectory,
         OriginFetcher $origin,
         ?ImageConverter $converter,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        ?OriginFetchGuard $guard = null
     ): ProxyKernel {
         $stateDirectory = rtrim($stateDirectory, '/');
         $storage = new FilesystemStorage();
@@ -82,7 +86,8 @@ final class ProxyKernelFactory
             new FileResponder($storage, $responses, $config->getSendfile(), $cacheDirectory, $logger),
             $coalescer,
             $logger,
-            $converter === null ? null : SignedUrlVerifier::fromConfig($config)
+            $converter === null ? null : SignedUrlVerifier::fromConfig($config),
+            $guard
         );
     }
 
