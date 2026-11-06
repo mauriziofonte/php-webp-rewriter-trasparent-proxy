@@ -31,9 +31,13 @@ use Symfony\Component\Console\Output\OutputInterface;
  * refused, an extension that is not cacheable) is left in place and
  * listed. Links are never followed or moved.
  *
- * Without --force nothing changes: the plan is printed. --wipe deletes
- * the 2.x cache instead of moving it (the documented alternative: 3.x
- * fills its cache again from the origin).
+ * Without --force nothing changes: the plan is printed, every path it
+ * would move or delete and every path it leaves. --wipe deletes the 2.x
+ * cache instead of moving it (the documented alternative: 3.x fills its
+ * cache again from the origin): what can be told to be 2.x cache only,
+ * that is _qs/, the markers, .cached.env.php, the entries ProxyUrls
+ * accepts and their X.webp. Every other file stays, in both modes:
+ * robots.txt, .well-known/, a directory of another application.
  */
 final class CacheMigrate2xCommand extends Command
 {
@@ -53,8 +57,6 @@ final class CacheMigrate2xCommand extends Command
      * The raster extensions an X.webp of 2.x was converted from.
      */
     public const RASTER_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'bmp'];
-
-    private const MAX_LISTED = 20;
 
     /**
      * @var Installation
@@ -89,25 +91,26 @@ final class CacheMigrate2xCommand extends Command
         $wipe = $input->getOption('wipe') === true;
         $force = $input->getOption('force') === true;
         $hosts = $config->getHostAllowlist();
-        $host = null;
-        if (!$wipe) {
-            $option = $input->getOption('host');
-            if (is_string($option)) {
-                $host = $hosts->match($option);
-            } else {
-                $candidates = array_values(array_filter($hosts->getHosts(), static function (string $candidate) use ($hosts, $config): bool {
-                    return $hosts->originOf($candidate) === rtrim($config->getSourceOrigin(), '/');
-                }));
-                $host = count($candidates) === 1 ? $candidates[0] : null;
-            }
-            if ($host === null) {
-                $output->writeln('<error>Name the proxy host that receives the 2.x cache with --host (one of PROXY_HOSTS), or use --wipe.</error>');
-
-                return 1;
+        $option = $input->getOption('host');
+        if (is_string($option)) {
+            $host = $hosts->match($option);
+        } else {
+            $candidates = array_values(array_filter($hosts->getHosts(), static function (string $candidate) use ($hosts, $config): bool {
+                return $hosts->originOf($candidate) === rtrim($config->getSourceOrigin(), '/');
+            }));
+            $host = count($candidates) === 1 ? $candidates[0] : null;
+            if ($host === null && $wipe) {
+                // A wipe moves nothing: any proxy host tells which files the rules of live traffic accept.
+                $host = $hosts->getHosts()[0] ?? null;
             }
         }
+        if ($host === null) {
+            $output->writeln('<error>Name the proxy host that receives the 2.x cache with --host (one of PROXY_HOSTS).</error>');
 
-        $plan = $this->plan($host === null ? null : new ProxyUrls($config, $this->installation->getCacheDirectory()), $host);
+            return 1;
+        }
+
+        $plan = $this->plan(new ProxyUrls($config, $this->installation->getCacheDirectory()), $host, $wipe);
         $this->report($plan, $output, $force);
         if (!$force) {
             $output->writeln('Nothing changed. Run again with --force to apply.');
@@ -135,11 +138,11 @@ final class CacheMigrate2xCommand extends Command
     /**
      * What to do with each file of the 2.x cache: move (to a target),
      * variant (to the WEBP variant of a moved entry), delete, leave (with
-     * the reason).
+     * the reason). With $wipe, what would move is deleted instead.
      *
      * @return array{move: array<string, string>, variant: array<string, string>, delete: list<string>, leave: array<string, string>}
      */
-    private function plan(?ProxyUrls $proxyUrls, ?string $host): array
+    private function plan(ProxyUrls $proxyUrls, string $host, bool $wipe): array
     {
         $root = $this->installation->getRoot();
         $public = $this->installation->getPublicDirectory();
@@ -168,22 +171,26 @@ final class CacheMigrate2xCommand extends Command
             }
             $files[$relative] = true;
         }
+        // The entries of 2.x: the files whose URL the rules of live traffic accept.
+        $entries = [];
         foreach (array_keys($files) as $relative) {
             $relative = (string) $relative;
             $file = $public . '/' . $relative;
-            $extension = strtolower(pathinfo($relative, PATHINFO_EXTENSION));
-            if (self::isMarker($relative) || $proxyUrls === null || $host === null) {
+            if (self::isMarker($relative)) {
                 $plan['delete'][] = $file;
                 continue;
             }
-            if ($extension === 'webp') {
+            if (strtolower(pathinfo($relative, PATHINFO_EXTENSION)) === 'webp') {
                 $webps[] = $relative;
                 continue;
             }
             $target = self::target($proxyUrls, $host, $relative);
             if ($target === null) {
                 $plan['leave'][$file] = 'not a cache entry of 3.x';
-            } elseif (CacheTree::stat($target->getFile()) !== null) {
+                continue;
+            }
+            $entries[$relative] = true;
+            if ($wipe || CacheTree::stat($target->getFile()) !== null) {
                 $plan['delete'][] = $file;
             } else {
                 $plan['move'][$file] = $target->getFile();
@@ -193,28 +200,35 @@ final class CacheMigrate2xCommand extends Command
             $file = $public . '/' . $relative;
             $base = (string) substr($relative, 0, -strlen('.webp'));
             $rasters = [];
+            $moved = [];
             foreach (self::RASTER_EXTENSIONS as $raster) {
                 foreach ([$raster, strtoupper($raster)] as $candidate) {
-                    if (isset($plan['move'][$public . '/' . $base . '.' . $candidate])) {
+                    if (isset($entries[$base . '.' . $candidate])) {
                         $rasters[] = $base . '.' . $candidate;
+                    }
+                    if (isset($plan['move'][$public . '/' . $base . '.' . $candidate])) {
+                        $moved[] = $base . '.' . $candidate;
                     }
                 }
             }
-            $hasRaster = false;
-            foreach (self::RASTER_EXTENSIONS as $raster) {
-                $hasRaster = $hasRaster || isset($files[$base . '.' . $raster]) || isset($files[$base . '.' . strtoupper($raster)]);
-            }
-            $target = count($rasters) === 1 && $proxyUrls !== null && $host !== null ? self::target($proxyUrls, $host, $rasters[0]) : null;
+            $target = count($moved) === 1 ? self::target($proxyUrls, $host, $moved[0]) : null;
             if ($target !== null) {
                 $plan['variant'][$file] = $target->getVariantFile(CacheLocation::FORMAT_WEBP);
                 continue;
             }
-            $own = $proxyUrls !== null && $host !== null && !$hasRaster ? self::target($proxyUrls, $host, $relative) : null;
-            if ($own !== null && CacheTree::stat($own->getFile()) === null) {
-                // An X.webp of the origin itself, with no raster next to it.
-                $plan['move'][$file] = $own->getFile();
-            } else {
+            if ($rasters !== []) {
+                // The WEBP conversion of a 2.x entry that does not move: 3.x converts again.
                 $plan['delete'][] = $file;
+                continue;
+            }
+            $own = self::target($proxyUrls, $host, $relative);
+            if ($own === null) {
+                $plan['leave'][$file] = 'not a cache entry of 3.x';
+            } elseif ($wipe || CacheTree::stat($own->getFile()) !== null) {
+                $plan['delete'][] = $file;
+            } else {
+                // An X.webp of the origin itself, with no entry raster next to it.
+                $plan['move'][$file] = $own->getFile();
             }
         }
 
@@ -260,7 +274,13 @@ final class CacheMigrate2xCommand extends Command
             $verb,
             count($plan['leave'])
         ));
-        foreach (array_slice($plan['leave'], 0, self::MAX_LISTED, true) as $file => $reason) {
+        foreach ($plan['move'] + $plan['variant'] as $file => $target) {
+            $output->writeln('  move: ' . OutputFormatter::escape((string) $file) . ' -> ' . OutputFormatter::escape($target));
+        }
+        foreach ($plan['delete'] as $file) {
+            $output->writeln('  delete: ' . OutputFormatter::escape($file));
+        }
+        foreach ($plan['leave'] as $file => $reason) {
             $output->writeln('  left: ' . OutputFormatter::escape((string) $file) . ' (' . $reason . ')');
         }
     }
@@ -287,29 +307,30 @@ final class CacheMigrate2xCommand extends Command
             }
         }
         $public = $this->installation->getPublicDirectory();
-        foreach ((array) @scandir($public) as $name) {
-            if (is_string($name) && $name !== '.' && $name !== '..' && !in_array($name, OperationsCheck::PUBLIC_ENTRIES, true)) {
-                self::pruneEmpty($public . '/' . $name);
-            }
+        $emptied = [];
+        foreach (array_merge(array_keys($plan['move']), array_keys($plan['variant']), $plan['delete']) as $file) {
+            $emptied[dirname((string) $file)] = true;
+        }
+        foreach (array_keys($emptied) as $directory) {
+            self::pruneEmpty((string) $directory, $public);
         }
 
         return $failed;
     }
 
     /**
-     * Removes the empty directories of a tree, never through a link.
+     * Removes $directory and then its parents while they are empty, up to
+     * $public (excluded): only the directories the migration emptied go,
+     * never one through a link.
      */
-    private static function pruneEmpty(string $directory): void
+    private static function pruneEmpty(string $directory, string $public): void
     {
-        $stat = @lstat($directory);
-        if ($stat === false || ($stat['mode'] & 0170000) !== 0040000) {
-            return;
-        }
-        foreach ((array) @scandir($directory) as $name) {
-            if (is_string($name) && $name !== '.' && $name !== '..') {
-                self::pruneEmpty($directory . '/' . $name);
+        while (strpos($directory, $public . '/') === 0) {
+            $stat = @lstat($directory);
+            if ($stat === false || ($stat['mode'] & 0170000) !== 0040000 || !@rmdir($directory)) {
+                return;
             }
+            $directory = dirname($directory);
         }
-        @rmdir($directory);
     }
 }

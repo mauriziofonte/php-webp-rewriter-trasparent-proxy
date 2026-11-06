@@ -62,6 +62,11 @@ final class CacheMigrate2xCommandTest extends TestCase
         self::assertSame(0, $exitCode, $display);
         self::assertStringContainsString('3 entries would be moved, 1 WEBP variants would be kept, 5 files would be deleted, 1 files left in place.', $display);
         self::assertStringContainsString('left: ' . $this->directory->path('public/robots.txt') . ' (not a cache entry of 3.x)', $display);
+        self::assertStringContainsString('move: ' . $this->directory->path('public/css/site.css') . ' -> ' . $this->directory->path(self::HOST . '/css/site.css'), $display);
+        self::assertStringContainsString('move: ' . $this->directory->path('public/images/hero.webp') . ' -> ' . $this->directory->path(self::HOST . '/.webp/images/hero.jpg.webp'), $display);
+        self::assertStringContainsString('delete: ' . $this->directory->path('public/_qs/0a1b/css/site.css'), $display);
+        self::assertStringContainsString('delete: ' . $this->directory->path('.cached.env.php'), $display);
+        self::assertSame(10, substr_count($display, "\n  "), 'one line per path');
         self::assertFileExists($this->directory->path('public/css/site.css'));
         self::assertFileExists($this->directory->path('.cached.env.php'));
     }
@@ -94,8 +99,58 @@ final class CacheMigrate2xCommandTest extends TestCase
 
         self::assertSame(0, $exitCode, $display);
         self::assertFileDoesNotExist($this->directory->path(self::HOST . '/css/site.css'));
-        self::assertSame(['.htaccess', '_cache', 'index.php'], array_values(array_diff((array) scandir($this->directory->path('public')), ['.', '..'])));
+        self::assertSame(['.htaccess', '_cache', 'index.php', 'robots.txt'], array_values(array_diff((array) scandir($this->directory->path('public')), ['.', '..'])));
         self::assertSame('new', file_get_contents($this->directory->path(self::HOST . '/js/app.js')));
+    }
+
+    /**
+     * Neither mode touches what is not 2.x cache: robots.txt, an ACME
+     * challenge, the files and the empty directories of another
+     * application. The plan names each of them.
+     */
+    public function testFilesThatAreNoCacheStayInBothModes(): void
+    {
+        $kept = [
+            'public/robots.txt' => 'User-agent: *',
+            'public/.well-known/acme-challenge/tok' => 'token',
+            'public/.well-known/security.txt' => 'Contact: mailto:security@example.test',
+            'public/other-app/config.yml' => 'key: value',
+        ];
+        foreach ($kept as $relative => $contents) {
+            $this->directory->write($relative, $contents);
+        }
+        mkdir($this->directory->path('public/other-app/uploads'));
+
+        foreach ([['--wipe' => true], ['--wipe' => true, '--force' => true], ['--force' => true]] as $input) {
+            list($exitCode, $display) = $this->migrate($input);
+
+            self::assertSame(0, $exitCode, $display);
+            foreach ($kept as $relative => $contents) {
+                self::assertSame($contents, file_get_contents($this->directory->path($relative)), $relative);
+                self::assertStringNotContainsString('delete: ' . $this->directory->path($relative), $display);
+                self::assertStringNotContainsString('move: ' . $this->directory->path($relative), $display);
+            }
+            self::assertDirectoryExists($this->directory->path('public/other-app/uploads'));
+        }
+        self::assertFileDoesNotExist($this->directory->path('public/css/site.css'));
+        self::assertDirectoryDoesNotExist($this->directory->path('public/_qs'));
+    }
+
+    /**
+     * The dry run of a wipe names every path it would delete, and deletes
+     * none.
+     */
+    public function testTheDryRunOfAWipeListsEveryPath(): void
+    {
+        list($exitCode, $display) = $this->migrate(['--wipe' => true]);
+
+        self::assertSame(0, $exitCode, $display);
+        self::assertStringContainsString('0 entries would be moved, 0 WEBP variants would be kept, 9 files would be deleted, 1 files left in place.', $display);
+        foreach (['public/css/site.css', 'public/images/hero.jpg', 'public/images/hero.webp', 'public/images/photo.webp', 'public/images/missing.png.404', 'public/js/down.js.netfail', 'public/_qs/0a1b/css/site.css', 'public/js/app.js', '.cached.env.php'] as $relative) {
+            self::assertStringContainsString('delete: ' . $this->directory->path($relative) . "\n", $display);
+            self::assertFileExists($this->directory->path($relative));
+        }
+        self::assertStringContainsString('left: ' . $this->directory->path('public/robots.txt'), $display);
     }
 
     /**
