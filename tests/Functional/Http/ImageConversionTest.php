@@ -185,6 +185,24 @@ final class ImageConversionTest extends TestCase
     }
 
     /**
+     * A converter without AVIF encoder (GD alone): the hits PHP serves to
+     * the clients that accept AVIF ask it nothing once it said so.
+     */
+    public function testHitsDoNotAskForAFormatTheConverterCannotMake(): void
+    {
+        $this->converter->setCapabilities(FakeImageConverter::capabilities(['webp']));
+        $this->kernel()->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        $asked = $this->converter->getCapabilityCalls();
+
+        for ($hit = 0; $hit < 3; ++$hit) {
+            $response = $this->kernel()->handle(self::request('/images/logo.png', 'image/avif'));
+            self::assertSame(['HIT', 'image/png'], [$response->headers->get('x-cache-status'), $response->headers->get('content-type')]);
+        }
+
+        self::assertSame($asked, $this->converter->getCapabilityCalls());
+    }
+
+    /**
      * The same paths with the real remote converter send nothing to the
      * conversion API: its capabilities are discovered on the first
      * conversion only.

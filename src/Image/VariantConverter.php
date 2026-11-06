@@ -49,6 +49,13 @@ final class VariantConverter
     public const PERMANENT_RETRY = 86400;
 
     /**
+     * Seconds a format the converter cannot produce (no AVIF encoder, as
+     * with GD alone) is not asked again on a hit: the time the
+     * capabilities of the conversion API are kept (CapabilityCache).
+     */
+    public const UNSUPPORTED_RETRY = CapabilityCache::SUCCESS_TTL;
+
+    /**
      * resize(): the resized image is at the target.
      */
     public const RESIZED = 'resized';
@@ -262,8 +269,12 @@ final class VariantConverter
         if ($capabilities === null) {
             $failure = ConversionFailure::unavailable($this->converter->getName(), 'The converter is unavailable', 'converter_unavailable');
         } elseif (!$capabilities->supportsOutput($format)) {
-            // Not a failure: this converter makes no such variant.
+            // Not a failure: this converter makes no such variant. It is
+            // remembered all the same, so that the hits PHP serves to the
+            // clients that accept the format do not ask the converter
+            // (and build it, or discover the API) on every request.
             $this->logger->debug('variant format not available', ['path' => $path, 'format' => $format, 'converter' => $this->converter->getName()]);
+            $this->failures->remember($variant, self::UNSUPPORTED_RETRY);
 
             return null;
         } else {

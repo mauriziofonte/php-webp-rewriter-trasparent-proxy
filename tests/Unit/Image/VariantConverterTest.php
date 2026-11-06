@@ -87,6 +87,27 @@ final class VariantConverterTest extends TestCase
     }
 
     /**
+     * A format the converter cannot produce is remembered: the hits that
+     * PHP serves to the clients that accept it never ask the converter
+     * again (no capability query, no build of the library's converter, no
+     * /healthz) until the capabilities may have changed.
+     */
+    public function testAFormatTheConverterCannotMakeIsNotAskedAgainOnHits(): void
+    {
+        $this->converter->setCapabilities(FakeImageConverter::capabilities(['webp']));
+        $variants = $this->variants();
+        $variants->convertAll($this->location, $this->directory->write('source.png', 'PNG-BYTES'), null);
+        $asked = $this->converter->getCapabilityCalls();
+
+        for ($hit = 0; $hit < 3; ++$hit) {
+            self::assertFalse($variants->convertOnHit($this->location, 'avif', null));
+        }
+
+        self::assertSame($asked, $this->converter->getCapabilityCalls());
+        self::assertSame(['webp'], $this->converter->getFormats());
+    }
+
+    /**
      * Finding C-11: an output that is not what the converter reported is
      * not stored.
      */
