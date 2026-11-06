@@ -228,6 +228,7 @@ final class RemoteConverterTest extends TestCase
         return [
             'concurrency' => [503, 'concurrency_unavailable'],
             'rate limit store' => [503, 'rate_limit_unavailable'],
+            'isolation missing' => [503, 'isolation_unavailable'],
             'key refused' => [401, 'invalid_api_key'],
         ];
     }

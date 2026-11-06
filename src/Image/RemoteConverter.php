@@ -43,7 +43,8 @@ use Psr\Log\LoggerInterface;
  * | --------------------------------------------- | ----------- | -------- |
  * | 200 with a consistent image                   | none        | closed   |
  * | 503 concurrency_unavailable,                  | unavailable | opened   |
- * | rate_limit_unavailable,                       |             | at once  |
+ * | rate_limit_unavailable, isolation_unavailable |             | at once  |
+ * | (a misconfigured API),                        |             |          |
  * | authentication_not_configured; 401, 403       |             |          |
  * | other 503, 429, 5xx but conversion_failed and | unavailable | counted  |
  * | output_verification_failed; no answer (DNS,   |             |          |
@@ -85,7 +86,7 @@ final class RemoteConverter implements ImageConverter
      * The API's error codes after which it takes no conversion for a
      * while: the breaker opens at once.
      */
-    private const TRIPPING_CODES = ['concurrency_unavailable', 'rate_limit_unavailable', 'authentication_not_configured', 'missing_api_key', 'invalid_api_key', 'ip_not_allowed', 'https_required'];
+    private const TRIPPING_CODES = ['concurrency_unavailable', 'rate_limit_unavailable', 'isolation_unavailable', 'authentication_not_configured', 'missing_api_key', 'invalid_api_key', 'ip_not_allowed', 'https_required'];
 
     /**
      * The 5xx error codes that are about the image, not the API.
