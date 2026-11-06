@@ -31,8 +31,11 @@ use Psr\Log\LoggerInterface;
  * Peers are reached over https only, their certificate always verified
  * (against CLUSTER_CA_FILE when set), without redirects, with a connect
  * timeout of at most one second and CLUSTER_TIMEOUT seconds for the whole
- * request; with ext-curl every peer is asked at once (MultiClient), so a
- * fan-out takes CLUSTER_TIMEOUT at most. A failing peer is logged and
+ * request. With ext-curl up to MAX_CONCURRENCY peers are asked at once
+ * (MultiClient), so a fan-out to n peers takes at most
+ * ceil(n / MAX_CONCURRENCY) times CLUSTER_TIMEOUT (CLUSTER_TIMEOUT up to
+ * 16 peers); without it the peers are asked in turn, n times
+ * CLUSTER_TIMEOUT at most. A failing peer is logged and
  * counted, and never undoes or delays the local purge: the caller runs
  * the fan-out after the response is sent.
  */

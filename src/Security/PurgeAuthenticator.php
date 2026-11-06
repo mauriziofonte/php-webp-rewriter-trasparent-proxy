@@ -41,8 +41,20 @@ use Symfony\Component\HttpFoundation\Request;
  * origin fetch per purged entry, which the circuit breaker bounds; a
  * Bearer secret is replayable for as long as it is valid anyway; and a
  * nonce store shared by every PHP worker would be new state to bound and
- * secure. A nonce becomes worth it if purges ever gain side effects that
- * are not idempotent (fan-out to peers, warm-up).
+ * secure.
+ *
+ * The fan-out to CLUSTER_PEERS (PRX-9) keeps that decision: no replay
+ * cache for fanned-out purges either. A replayed fan-out purge is not
+ * sent on (the marker is signed and a peer never fans out a fan-out),
+ * so it purges one entry of one peer again, idempotently. A replayed
+ * client purge makes its instance tell its n peers once more: n PURGE
+ * requests after the response, the same as one legitimate purge, never
+ * more, and only within MAX_CLOCK_SKEW of the signature. Replaying needs
+ * a signed request, which travels over TLS (verified between peers);
+ * whoever holds one can send it to every instance directly anyway, so a
+ * replay cache would add shared state without bounding anything that a
+ * holder of the request cannot already do. A nonce becomes worth it if
+ * purges ever gain side effects that are not idempotent (warm-up).
  *
  * Secrets are compared with hash_equals(). Immutable.
  */
