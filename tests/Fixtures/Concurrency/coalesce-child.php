@@ -8,8 +8,9 @@ declare(strict_types=1);
  * builds it, whose origin takes <delay> milliseconds and records each fetch
  * as a line of <fetch log>, then prints the status, X-Cache-Status and
  * SHA-256 of the body and the Location as JSON. The origin answers with
- * the stylesheet (mode "ok", the default), with a 503 ("fail"), with the
- * stylesheet marked "Cache-Control: private" ("private"), with a 302 to
+ * the stylesheet (mode "ok", the default), with a 503 ("fail"), with a
+ * refused connection ("transport"), with the stylesheet marked
+ * "Cache-Control: private" ("private"), with a 302 to
  * "/css/moved.css" ("redirect"), with a 404 ("notfound", with
  * NEGATIVE_CACHE_TTL 0, so that only the coalescer can share it), or with
  * a 404 for the ".webp" URLs and the stylesheet for any other ("legacy":
@@ -68,6 +69,9 @@ $origin = new class ($fetchLog, (int) $delay, $mode) implements OriginFetcher {
         usleep($this->delay * 1000);
         if ($this->mode === 'fail') {
             return OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 503);
+        }
+        if ($this->mode === 'transport') {
+            return OriginResponse::failure(OriginResponse::FAILURE_CONNECT, 0, 7, 'Connection refused');
         }
         if ($this->mode === 'redirect') {
             return OriginResponse::redirect(302, 'https://origin.example.test/css/moved.css');

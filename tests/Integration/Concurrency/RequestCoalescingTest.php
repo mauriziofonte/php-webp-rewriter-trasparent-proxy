@@ -8,6 +8,7 @@ use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -144,6 +145,43 @@ final class RequestCoalescingTest extends TestCase
     }
 
     /**
+     * A burst that lasts longer than the fetch of its leader: half of the
+     * requests reach the proxy after the leader has answered and released
+     * the lock, as they do when the workers are slow to start (it took a
+     * loaded machine to show it with simultaneous requests). They answer
+     * with the outcome the leader recorded instead of leading a fetch of
+     * their own, which used to erase that outcome and refetch.
+     *
+     * @dataProvider provideLeaderOutcomes
+     */
+    #[DataProvider('provideLeaderOutcomes')]
+    public function testTheLateRequestsOfABurstShareTheOutcomeOfItsLeaderP24(string $mode, int $status): void
+    {
+        $url = 'https://cdn.example.test/css/late-' . $mode . '.css';
+        $results = $this->burst($url, $mode, 2 * self::ORIGIN_DELAY_MS / 1000);
+
+        $fetches = file($this->directory->path('fetches.log'), FILE_IGNORE_NEW_LINES) ?: [];
+        self::assertSame(['https://origin.example.test/css/late-' . $mode . '.css'], $fetches, 'one origin fetch for the whole burst');
+        foreach ($results as $result) {
+            self::assertSame($status, $result['status']);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, int}>
+     */
+    public static function provideLeaderOutcomes(): array
+    {
+        return [
+            'stored' => ['ok', 200],
+            'server error' => ['fail', 503],
+            'transport error' => ['transport', 503],
+            'redirect' => ['redirect', 302],
+            'not found' => ['notfound', 404],
+        ];
+    }
+
+    /**
      * A legacy "X.webp" URL: the fetch of "X.webp" and of its raster
      * siblings happen once for the burst, under the lock of "X.webp".
      */
@@ -164,16 +202,18 @@ final class RequestCoalescingTest extends TestCase
      * Runs PROCESSES requests for $url at the same moment, each in its own
      * PHP process, and returns what each printed.
      *
-     * @param string $mode what the origin answers (see coalesce-child.php)
+     * @param string $mode   what the origin answers (see coalesce-child.php)
+     * @param float  $spread seconds over which the starts of the requests are spread evenly (0: all at once)
      *
      * @return list<array{status: int, cache: string, hash: string, location: string|null}>
      */
-    private function burst(string $url, string $mode = 'ok'): array
+    private function burst(string $url, string $mode = 'ok', float $spread = 0.0): array
     {
         $script = dirname(__DIR__, 2) . '/Fixtures/Concurrency/coalesce-child.php';
-        $start = sprintf('%.6F', microtime(true) + 1.5);
+        $first = microtime(true) + 1.5;
         $processes = [];
         for ($i = 0; $i < self::PROCESSES; ++$i) {
+            $start = sprintf('%.6F', $first + $spread * $i / self::PROCESSES);
             $command = implode(' ', array_map('escapeshellarg', [
                 PHP_BINARY,
                 $script,
