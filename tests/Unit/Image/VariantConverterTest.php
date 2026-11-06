@@ -101,7 +101,8 @@ final class VariantConverterTest extends TestCase
         self::assertFileDoesNotExist($this->location->getVariantFile('webp'));
         $records = $this->logger->recordsWithMessage('image conversion failed, the original is served');
         self::assertCount(1, $records);
-        self::assertSame('output_verification_failed', $records[0]['context']['error_code'] ?? null);
+        self::assertSame('output_verification_failed', $records[0]['context']['conversion_error_code'] ?? null);
+        self::assertArrayNotHasKey('error_code', $records[0]['context']);
         self::assertSame('/images/a.png', $records[0]['context']['path'] ?? null);
     }
 
@@ -130,7 +131,7 @@ final class VariantConverterTest extends TestCase
         $records = $this->logger->recordsWithMessage('image conversion failed, the original is served');
         self::assertCount(1, $records);
         self::assertFalse($records[0]['context']['transient'] ?? null);
-        self::assertSame('conversion_failed', $records[0]['context']['error_code'] ?? null);
+        self::assertSame('conversion_failed', $records[0]['context']['conversion_error_code'] ?? null);
         self::assertSame(422, $records[0]['context']['status'] ?? null);
     }
 

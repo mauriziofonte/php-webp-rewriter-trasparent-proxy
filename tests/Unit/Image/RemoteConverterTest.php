@@ -136,7 +136,7 @@ final class RemoteConverterTest extends TestCase
      * @dataProvider provideUnreadableHealthz
      */
     #[DataProvider('provideUnreadableHealthz')]
-    public function testUnreadableCapabilitiesMeanUnavailable(int $status, string $body, string $errorCode): void
+    public function testUnreadableCapabilitiesMeanUnavailable(int $status, string $body, string $errorCode, string $logKey = 'error_code'): void
     {
         $this->api->answer('/healthz', $status, ['Content-Type' => 'application/json'], $body);
         $converter = $this->converter();
@@ -145,14 +145,14 @@ final class RemoteConverterTest extends TestCase
         $failure = $this->convertFailure($converter);
         self::assertTrue($failure->isTransient());
         self::assertSame('capabilities_unavailable', $failure->getErrorCode());
-        self::assertSame($errorCode, $this->logger->getRecords()[0]['context']['error_code'] ?? null);
+        self::assertSame($errorCode, $this->logger->getRecords()[0]['context'][$logKey] ?? null);
         // Remembered: a new request does not ask again.
         self::assertNull($this->converter()->getCapabilities());
         self::assertSame(['/healthz'], array_column($this->api->getRequests(), 'path'));
     }
 
     /**
-     * @return array<string, array{int, string, string}>
+     * @return array<string, array{0: int, 1: string, 2: string, 3?: string}>
      */
     public static function provideUnreadableHealthz(): array
     {
@@ -163,7 +163,7 @@ final class RemoteConverterTest extends TestCase
             'another schema' => [200, (string) json_encode(['status' => 'ok', 'capabilities' => ['schema' => 2] + $capabilities]), 'invalid_capabilities'],
             'unknown key' => [200, (string) json_encode(['status' => 'ok', 'capabilities' => $capabilities + ['lossless' => true]]), 'invalid_capabilities'],
             'not JSON' => [200, '<html>', 'invalid_capabilities'],
-            'unavailable' => [503, '{"status":"unavailable","error":{"code":"internal_error","message":"down"}}', 'internal_error'],
+            'unavailable' => [503, '{"status":"unavailable","error":{"code":"internal_error","message":"down"}}', 'internal_error', 'conversion_error_code'],
         ];
     }
 
@@ -184,7 +184,7 @@ final class RemoteConverterTest extends TestCase
         $failure = $this->convertFailure($this->converter());
 
         self::assertFalse($failure->isTransient());
-        self::assertSame('file_too_large', $failure->getErrorCode());
+        self::assertSame('file_too_large', $failure->getConversionErrorCode());
         self::assertSame(['/healthz'], array_column($this->api->getRequests(), 'path'));
     }
 
@@ -194,7 +194,7 @@ final class RemoteConverterTest extends TestCase
 
         $failure = $this->convertFailure($this->converter());
 
-        self::assertSame('unsupported_format', $failure->getErrorCode());
+        self::assertSame('unsupported_format', $failure->getConversionErrorCode());
         self::assertSame(['/healthz'], array_column($this->api->getRequests(), 'path'));
     }
 
@@ -214,7 +214,7 @@ final class RemoteConverterTest extends TestCase
         $again = $this->convertFailure($this->converter());
 
         self::assertTrue($failure->isTransient());
-        self::assertSame($code, $failure->getErrorCode());
+        self::assertSame($code, $failure->getErrorCode() ?? $failure->getConversionErrorCode());
         self::assertSame($status, $failure->getStatus());
         self::assertSame('circuit_open', $again->getErrorCode());
         self::assertSame(['/healthz', '/v2/convert'], array_column($this->api->getRequests(), 'path'));
@@ -242,7 +242,7 @@ final class RemoteConverterTest extends TestCase
         $second = $this->convertFailure($this->converter());
         $third = $this->convertFailure($this->converter());
 
-        self::assertSame(['internal_error', 'internal_error', 'circuit_open'], [$first->getErrorCode(), $second->getErrorCode(), $third->getErrorCode()]);
+        self::assertSame(['internal_error', 'internal_error', 'circuit_open'], [$first->getConversionErrorCode(), $second->getConversionErrorCode(), $third->getErrorCode()]);
         self::assertTrue($first->isTransient());
         self::assertSame('The conversion API answered 500: Backend exploded', $first->getMessage());
     }
@@ -259,7 +259,7 @@ final class RemoteConverterTest extends TestCase
         $failure = $this->convertFailure($this->converter());
 
         self::assertFalse($failure->isTransient());
-        self::assertSame($code, $failure->getErrorCode());
+        self::assertSame($code, $failure->getErrorCode() ?? $failure->getConversionErrorCode());
         self::assertFileDoesNotExist($this->outputFile());
         // The API is up: the next conversion is sent.
         $this->convertFailure($this->converter());

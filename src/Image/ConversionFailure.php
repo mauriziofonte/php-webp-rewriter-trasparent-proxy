@@ -22,15 +22,16 @@ use Mfonte\SecureImageConverter\Contract\Exception\ExceptionInterface as Library
  *   malformed input, a limit exceeded, an output that failed its
  *   verification); trying again would fail the same way.
  *
- * The error code of an exception the conversion library threw in this
- * process (fromLibrary()) is getConversionErrorCode() (an ErrorCode
- * constant); the error code the conversion API answered
- * (concurrency_unavailable, rate_limited, conversion_failed...), or that
- * the proxy gave the failure (unreachable, redirected, not_smaller,
- * output_verification_failed...), is getErrorCode(). The shared log
- * schema keeps them apart: logContext() puts them under
- * "conversion_error_code" and "error_code". Messages never hold a path, a
- * key or a signature.
+ * The codes follow the shared log schema of the conversion API: a code of
+ * the conversion library (one of ErrorCode::all(): invalid_image,
+ * conversion_failed, file_too_large, output_verification_failed,
+ * isolation_unavailable...) is getConversionErrorCode(), logged under
+ * "conversion_error_code", whether the library threw it in this process
+ * (fromLibrary()), the API answered it, or the proxy raised it itself;
+ * any other code, of the API (concurrency_unavailable,
+ * rate_limit_unavailable, invalid_api_key...) or of the proxy
+ * (unreachable, redirected, not_smaller...), is getErrorCode(), logged
+ * under "error_code". Messages never hold a path, a key or a signature.
  */
 final class ConversionFailure extends \RuntimeException implements ExceptionInterface
 {
@@ -98,7 +99,7 @@ final class ConversionFailure extends \RuntimeException implements ExceptionInte
      */
     public static function unavailable(string $converter, string $message, ?string $code = null, int $status = 0, ?\Throwable $previous = null): self
     {
-        return new self(true, $converter, $message, $code, null, $status, $previous);
+        return new self(true, $converter, $message, self::isLibraryCode($code) ? null : $code, self::isLibraryCode($code) ? $code : null, $status, $previous);
     }
 
     /**
@@ -111,7 +112,19 @@ final class ConversionFailure extends \RuntimeException implements ExceptionInte
      */
     public static function rejected(string $converter, string $message, ?string $code = null, int $status = 0, ?\Throwable $previous = null): self
     {
-        return new self(false, $converter, $message, $code, null, $status, $previous);
+        return new self(false, $converter, $message, self::isLibraryCode($code) ? null : $code, self::isLibraryCode($code) ? $code : null, $status, $previous);
+    }
+
+    /**
+     * The log context of an error code, under the key of the shared log
+     * schema: LOG_CONVERSION_ERROR_CODE for a code of the conversion
+     * library, LOG_ERROR_CODE for any other.
+     *
+     * @return array<string, string>
+     */
+    public static function codeContext(string $code): array
+    {
+        return [self::isLibraryCode($code) ? self::LOG_CONVERSION_ERROR_CODE : self::LOG_ERROR_CODE => $code];
     }
 
     /**
@@ -124,6 +137,14 @@ final class ConversionFailure extends \RuntimeException implements ExceptionInte
         $code = $exception->getErrorCode();
 
         return new self(in_array($code, self::TRANSIENT_LIBRARY_CODES, true), $converter, $exception->getMessage(), null, $code, 0, $exception);
+    }
+
+    /**
+     * Whether $code is one of the error codes of the conversion library.
+     */
+    private static function isLibraryCode(?string $code): bool
+    {
+        return $code !== null && in_array($code, ErrorCode::all(), true);
     }
 
     /**
@@ -143,7 +164,8 @@ final class ConversionFailure extends \RuntimeException implements ExceptionInte
     }
 
     /**
-     * The error code of the conversion library (an ErrorCode constant);
+     * The error code of the conversion library (an ErrorCode constant),
+     * thrown in this process, answered by the API or raised by the proxy;
      * null when the failure has none.
      */
     public function getConversionErrorCode(): ?string
@@ -152,8 +174,9 @@ final class ConversionFailure extends \RuntimeException implements ExceptionInte
     }
 
     /**
-     * The error code of the conversion API, or of the proxy's client of
-     * it; null when the failure has none.
+     * The error code of the conversion API, or of the proxy, that is not
+     * one of the conversion library (getConversionErrorCode()); null when
+     * the failure has none.
      */
     public function getErrorCode(): ?string
     {

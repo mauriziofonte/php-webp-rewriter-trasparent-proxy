@@ -37,6 +37,32 @@ final class ConversionFailureTest extends TestCase
         );
     }
 
+    /**
+     * A code of the library is a conversion_error_code whoever raised it:
+     * the API that answered it, or the proxy itself; every other code,
+     * of the API or of the proxy, is an error_code.
+     */
+    public function testALibraryCodeIsAConversionErrorCodeWhoeverRaisedIt(): void
+    {
+        $answered = ConversionFailure::rejected('remote', 'The conversion API answered 422', ErrorCode::INVALID_IMAGE, 422);
+        $raised = ConversionFailure::rejected('remote', 'too large', ErrorCode::FILE_TOO_LARGE);
+        $isolation = ConversionFailure::unavailable('remote', 'The conversion API answered 503', ErrorCode::ISOLATION_UNAVAILABLE, 503);
+        $proxy = ConversionFailure::unavailable('remote', 'unreachable', 'unreachable');
+
+        foreach ([$answered, $raised, $isolation] as $failure) {
+            self::assertNull($failure->getErrorCode());
+            self::assertArrayNotHasKey('error_code', $failure->logContext());
+        }
+        self::assertSame([ErrorCode::INVALID_IMAGE, ErrorCode::FILE_TOO_LARGE, ErrorCode::ISOLATION_UNAVAILABLE], [
+            $answered->logContext()['conversion_error_code'] ?? null,
+            $raised->logContext()['conversion_error_code'] ?? null,
+            $isolation->getConversionErrorCode(),
+        ]);
+        self::assertSame(['unreachable', null], [$proxy->logContext()['error_code'] ?? null, $proxy->getConversionErrorCode()]);
+        self::assertSame(['conversion_error_code' => 'invalid_image'], ConversionFailure::codeContext('invalid_image'));
+        self::assertSame(['error_code' => 'rate_limit_unavailable'], ConversionFailure::codeContext('rate_limit_unavailable'));
+    }
+
     public function testTheBusyLibraryCodesAreTransient(): void
     {
         self::assertTrue(ConversionFailure::fromLibrary('local', ConcurrencyLimitException::afterWaiting(1.0, 'busy'))->isTransient());

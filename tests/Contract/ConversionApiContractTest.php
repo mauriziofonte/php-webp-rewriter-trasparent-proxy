@@ -166,7 +166,9 @@ final class ConversionApiContractTest extends TestCase
         $records = $this->logger->recordsWithMessage('image conversion failed, the original is served');
         self::assertNotEmpty($records);
         self::assertFalse($records[0]['context']['transient'] ?? null);
-        self::assertIsString($records[0]['context']['error_code'] ?? null);
+        // A code of the library (invalid_image, conversion_failed), as the API
+        // logs it.
+        self::assertIsString($records[0]['context']['conversion_error_code'] ?? null);
         self::assertSame(422, $records[0]['context']['status'] ?? null);
     }
 
@@ -183,7 +185,7 @@ final class ConversionApiContractTest extends TestCase
             self::fail('The image was sent');
         } catch (ConversionFailure $failure) {
             self::assertFalse($failure->isTransient());
-            self::assertSame('file_too_large', $failure->getErrorCode());
+            self::assertSame('file_too_large', $failure->getConversionErrorCode());
         }
     }
 

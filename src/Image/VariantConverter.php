@@ -236,7 +236,7 @@ final class VariantConverter
     {
         $format = self::formatOf($source);
         if ($format === null) {
-            $this->logger->warning('image resize failed', ['path' => $logPath, 'width' => $width, ConversionFailure::LOG_ERROR_CODE => ErrorCode::UNSUPPORTED_FORMAT, 'reason' => 'The image is of no known format']);
+            $this->logger->warning('image resize failed', ['path' => $logPath, 'width' => $width, 'reason' => 'The image is of no known format'] + ConversionFailure::codeContext(ErrorCode::UNSUPPORTED_FORMAT));
 
             return self::REJECTED;
         }
