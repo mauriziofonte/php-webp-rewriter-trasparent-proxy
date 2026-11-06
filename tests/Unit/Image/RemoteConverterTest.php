@@ -15,6 +15,8 @@ use Mfonte\ProxyCdn\Tests\Fixtures\FakeApi\FakeApiServer;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeImageConverter;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
+use Mfonte\SecureImageConverter\Concurrency\KeyedLock;
+use Mfonte\SecureImageConverter\Concurrency\LockDirectory;
 use Mfonte\SecureImageConverter\Contract\Capabilities;
 use Mfonte\SecureImageConverter\Contract\ConversionRequest;
 use PHPUnit\Framework\Attributes\CoversClass;
@@ -359,6 +361,51 @@ final class RemoteConverterTest extends TestCase
         self::assertStringNotContainsString(self::KEY, $failure->getMessage() . json_encode($this->logger->getRecords()));
     }
 
+    /**
+     * While the breaker is open, /healthz is not asked: a hanging API is
+     * not waited for again by every cold request.
+     */
+    public function testNoDiscoveryWhileTheBreakerIsOpen(): void
+    {
+        $this->healthz();
+        (new OriginCircuitBreaker($this->directory->path('state/breaker'), 30, 1))->recordFailure($this->api->getBaseUrl());
+
+        self::assertNull($this->converter()->getCapabilities());
+        self::assertSame('circuit_open', $this->convertFailure($this->converter())->getErrorCode());
+        self::assertSame([], $this->api->getRequests());
+    }
+
+    /**
+     * One request discovers at a time: the others do not wait for
+     * /healthz, see remote conversion as unavailable, and their failure
+     * is not remembered.
+     */
+    public function testOneRequestDiscoversAtATime(): void
+    {
+        $this->healthz();
+        $this->converted();
+        $lock = $this->discoveryLock();
+        $held = $lock->tryAcquire('discovery-' . hash('sha256', $this->api->getBaseUrl()));
+        self::assertNotNull($held);
+
+        $waiting = $this->converter(1048576, $lock);
+        self::assertNull($waiting->getCapabilities());
+        $failure = $this->convertFailure($waiting);
+        self::assertSame([], $this->api->getRequests());
+        self::assertTrue($failure->isTransient());
+        self::assertFalse($failure->shouldBeRemembered());
+        self::assertSame('discovery_pending', $failure->getErrorCode());
+
+        $held->release();
+        self::assertNotNull($this->converter(1048576, $lock)->getCapabilities());
+        self::assertSame(['/healthz'], array_column($this->api->getRequests(), 'path'));
+    }
+
+    private function discoveryLock(): KeyedLock
+    {
+        return new KeyedLock(new LockDirectory($this->directory->path('state/locks')), RemoteConverter::DISCOVERY_LOCK_NAME);
+    }
+
     private function healthz(?Capabilities $capabilities = null): void
     {
         $capabilities = $capabilities ?? FakeImageConverter::capabilities(['webp', 'avif']);
@@ -383,7 +430,7 @@ final class RemoteConverterTest extends TestCase
         ], null, self::WEBP);
     }
 
-    private function converter(int $maxOutputBytes = 1048576): RemoteConverter
+    private function converter(int $maxOutputBytes = 1048576, ?KeyedLock $lock = null): RemoteConverter
     {
         $url = $this->api->getBaseUrl();
 
@@ -396,7 +443,8 @@ final class RemoteConverterTest extends TestCase
             new CapabilityCache(new FilesystemStorage(), $this->directory->path('state'), $url),
             30,
             $maxOutputBytes,
-            $this->logger
+            $this->logger,
+            $lock
         );
     }
 

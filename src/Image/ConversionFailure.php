@@ -77,6 +77,11 @@ final class ConversionFailure extends \RuntimeException implements ExceptionInte
     private $status;
 
     /**
+     * @var bool
+     */
+    private $remembered = true;
+
+    /**
      * @param string $message without paths, keys or signatures
      */
     private function __construct(bool $transient, string $converter, string $message, ?string $errorCode, ?string $conversionErrorCode, int $status, ?\Throwable $previous)
@@ -100,6 +105,24 @@ final class ConversionFailure extends \RuntimeException implements ExceptionInte
     public static function unavailable(string $converter, string $message, ?string $code = null, int $status = 0, ?\Throwable $previous = null): self
     {
         return new self(true, $converter, $message, self::isLibraryCode($code) ? null : $code, self::isLibraryCode($code) ? $code : null, $status, $previous);
+    }
+
+    /**
+     * The converter cannot convert in this request only, because another
+     * request is doing what this one would need (the discovery of the
+     * conversion API): transient, and not remembered (shouldBeRemembered()),
+     * so that the next request tries again.
+     *
+     * @param string $converter ImageConverter::getName()
+     * @param string $message   why, without paths, keys or signatures
+     * @param string $code      the error code of the proxy
+     */
+    public static function pending(string $converter, string $message, string $code): self
+    {
+        $failure = new self(true, $converter, $message, $code, null, 0, null);
+        $failure->remembered = false;
+
+        return $failure;
     }
 
     /**
@@ -145,6 +168,15 @@ final class ConversionFailure extends \RuntimeException implements ExceptionInte
     private static function isLibraryCode(?string $code): bool
     {
         return $code !== null && in_array($code, ErrorCode::all(), true);
+    }
+
+    /**
+     * Whether the failure is remembered (ConversionFailures), so that the
+     * conversion is not tried again for a while; false for pending().
+     */
+    public function shouldBeRemembered(): bool
+    {
+        return $this->remembered;
     }
 
     /**

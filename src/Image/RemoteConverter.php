@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Image;
 
 use Mfonte\ProxyCdn\Origin\CircuitBreaker;
+use Mfonte\SecureImageConverter\Concurrency\KeyedLockInterface;
+use Mfonte\SecureImageConverter\Concurrency\LeaseInterface;
 use Mfonte\SecureImageConverter\Contract\Capabilities;
 use Mfonte\SecureImageConverter\Contract\ConversionRequest;
 use Mfonte\SecureImageConverter\Contract\ConversionResult;
@@ -24,7 +26,12 @@ use Psr\Log\LoggerInterface;
  * for CapabilityCache::SUCCESS_TTL seconds. An answer that cannot be read,
  * or that Capabilities::fromArray() refuses, means that remote conversion
  * is unavailable (getCapabilities() returns null), for $unavailableTtl
- * seconds; it never escapes as an exception.
+ * seconds; it never escapes as an exception. Discovery is skipped while
+ * the breaker is open, and made by one request at a time (the discovery
+ * lock, taken without waiting): while one request discovers, the others
+ * see remote conversion as unavailable for this request only, without
+ * waiting for /healthz, and their failure (discovery_pending) is not
+ * remembered.
  *
  * A conversion is refused before anything is sent when the image is
  * larger than the max_bytes the API advertises, or of a format it does
@@ -76,6 +83,11 @@ final class RemoteConverter implements ImageConverter
      * seconds (the API caches the result).
      */
     public const DISCOVERY_TIMEOUT = 30;
+
+    /**
+     * The name of the KeyedLock of the discovery in its lock directory.
+     */
+    public const DISCOVERY_LOCK_NAME = 'conversion-api';
 
     /**
      * The request IDs sent in X-Request-Id: the ones the API adopts.
@@ -139,6 +151,19 @@ final class RemoteConverter implements ImageConverter
     private $logger;
 
     /**
+     * @var KeyedLockInterface|null
+     */
+    private $discoveryLock;
+
+    /**
+     * Whether another request was discovering the capabilities when this
+     * one asked for them.
+     *
+     * @var bool
+     */
+    private $discoveryPending = false;
+
+    /**
      * The capabilities read during this request: false until read.
      *
      * @var Capabilities|false|null
@@ -146,12 +171,14 @@ final class RemoteConverter implements ImageConverter
     private $capabilities = false;
 
     /**
-     * @param string         $baseUrl        IMAGE_API_URL, without trailing slash
-     * @param string         $apiKey         IMAGE_API_KEY
-     * @param CircuitBreaker $breaker        the breaker of the API, with CIRCUIT_BREAKER_THRESHOLD
-     * @param CircuitBreaker $trip           the same breaker state with threshold 1, which opens at once
-     * @param int            $unavailableTtl seconds a failed discovery is remembered (NETWORK_ERROR_TTL)
-     * @param int            $maxOutputBytes the largest converted image accepted (UPSTREAM_MAX_SIZE)
+     * @param string                  $baseUrl        IMAGE_API_URL, without trailing slash
+     * @param string                  $apiKey         IMAGE_API_KEY
+     * @param CircuitBreaker          $breaker        the breaker of the API, with CIRCUIT_BREAKER_THRESHOLD
+     * @param CircuitBreaker          $trip           the same breaker state with threshold 1, which opens at once
+     * @param int                     $unavailableTtl seconds a failed discovery is remembered (NETWORK_ERROR_TTL)
+     * @param int                     $maxOutputBytes the largest converted image accepted (UPSTREAM_MAX_SIZE)
+     * @param KeyedLockInterface|null $discoveryLock  the lock of the discovery, shared by the PHP processes; null
+     *                                                to discover without one
      */
     public function __construct(
         string $baseUrl,
@@ -162,7 +189,8 @@ final class RemoteConverter implements ImageConverter
         CapabilityCache $capabilityCache,
         int $unavailableTtl,
         int $maxOutputBytes,
-        LoggerInterface $logger
+        LoggerInterface $logger,
+        ?KeyedLockInterface $discoveryLock = null
     ) {
         $this->baseUrl = rtrim($baseUrl, '/');
         $this->apiKey = $apiKey;
@@ -173,6 +201,7 @@ final class RemoteConverter implements ImageConverter
         $this->unavailableTtl = $unavailableTtl;
         $this->maxOutputBytes = $maxOutputBytes;
         $this->logger = $logger;
+        $this->discoveryLock = $discoveryLock;
     }
 
     public function getName(): string
@@ -190,15 +219,59 @@ final class RemoteConverter implements ImageConverter
         if ($cached !== null) {
             return $this->capabilities = $cached === false ? null : $cached;
         }
+        if ($this->breaker->isOpen($this->breakerKey())) {
+            // The API failed lately: no /healthz until the breaker closes.
+            return $this->capabilities = null;
+        }
 
-        $this->capabilities = $this->discover();
-        if ($this->capabilities === null) {
-            $this->capabilityCache->storeUnavailable($now, $this->unavailableTtl);
-        } else {
-            $this->capabilityCache->storeCapabilities($this->capabilities, $now);
+        $lease = $this->tryLockDiscovery();
+        if ($lease === false) {
+            $this->discoveryPending = true;
+
+            return $this->capabilities = null;
+        }
+        try {
+            // Discovered by another request while this one took the lock.
+            $cached = $this->capabilityCache->load($now);
+            if ($cached !== null) {
+                return $this->capabilities = $cached === false ? null : $cached;
+            }
+            $this->capabilities = $this->discover();
+            if ($this->capabilities === null) {
+                $this->capabilityCache->storeUnavailable($now, $this->unavailableTtl);
+            } else {
+                $this->capabilityCache->storeCapabilities($this->capabilities, $now);
+            }
+        } finally {
+            if ($lease !== null) {
+                $lease->release();
+            }
         }
 
         return $this->capabilities;
+    }
+
+    /**
+     * The lease of the discovery; false when another request holds it;
+     * null without a lock, or when the lock fails (then this request
+     * discovers without it).
+     *
+     * @return LeaseInterface|false|null
+     */
+    private function tryLockDiscovery()
+    {
+        if ($this->discoveryLock === null) {
+            return null;
+        }
+        try {
+            $lease = $this->discoveryLock->tryAcquire('discovery-' . hash('sha256', $this->baseUrl));
+        } catch (LibraryException $exception) {
+            $this->logger->warning('conversion API discovery lock unavailable', ['reason' => $exception->getMessage()]);
+
+            return null;
+        }
+
+        return $lease ?? false;
     }
 
     public function convert(string $inputPath, string $outputPath, ConversionRequest $request, ?string $requestId = null): ConversionResult
@@ -207,6 +280,9 @@ final class RemoteConverter implements ImageConverter
             throw ConversionFailure::unavailable(self::NAME, 'The circuit breaker of the conversion API is open', 'circuit_open');
         }
         $capabilities = $this->getCapabilities();
+        if ($capabilities === null && $this->discoveryPending) {
+            throw ConversionFailure::pending(self::NAME, 'Another request is discovering the capabilities of the conversion API', 'discovery_pending');
+        }
         if ($capabilities === null) {
             throw ConversionFailure::unavailable(self::NAME, 'The capabilities of the conversion API are unavailable', 'capabilities_unavailable');
         }

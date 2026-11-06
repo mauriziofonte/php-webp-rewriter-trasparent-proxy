@@ -120,6 +120,9 @@ final class FakeImageConverter implements ImageConverter
     {
         $input = (string) file_get_contents($inputPath);
         $this->calls[] = [$request->getFormat(), $input, $request->getWidth(), $requestId];
+        if ($this->capabilities === null) {
+            throw ConversionFailure::unavailable('fake', 'The fake converter has no capabilities', 'converter_unavailable');
+        }
         if ($this->unavailable || strpos($input, 'busy') !== false) {
             throw ConversionFailure::unavailable('fake', 'The fake converter is busy', 'concurrency_unavailable', 503);
         }

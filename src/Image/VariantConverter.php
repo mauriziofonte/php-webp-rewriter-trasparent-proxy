@@ -161,16 +161,18 @@ final class VariantConverter
      */
     public function convertAll(CacheLocation $location, string $source, ?string $requestId): void
     {
-        $unavailable = false;
+        $unavailable = null;
         foreach ($this->negotiator->getEnabledFormats() as $format) {
             $variant = $location->getVariantFile($format);
-            if ($unavailable) {
-                $this->failures->remember($variant, $this->transientRetry);
+            if ($unavailable !== null) {
+                if ($unavailable->shouldBeRemembered()) {
+                    $this->failures->remember($variant, $this->transientRetry);
+                }
                 continue;
             }
             $this->failures->forget($variant);
             $failure = $this->make($location, $format, $source, $requestId);
-            $unavailable = $failure !== null && $failure->isTransient();
+            $unavailable = $failure !== null && $failure->isTransient() ? $failure : null;
         }
     }
 
@@ -266,9 +268,7 @@ final class VariantConverter
         $variant = $location->getVariantFile($format);
         $path = SignedUrlVerifier::mask('/' . $location->getRelativePath());
         $capabilities = $this->converter->getCapabilities();
-        if ($capabilities === null) {
-            $failure = ConversionFailure::unavailable($this->converter->getName(), 'The converter is unavailable', 'converter_unavailable');
-        } elseif (!$capabilities->supportsOutput($format)) {
+        if ($capabilities !== null && !$capabilities->supportsOutput($format)) {
             // Not a failure: this converter makes no such variant. It is
             // remembered all the same, so that the hits PHP serves to the
             // clients that accept the format do not ask the converter
@@ -277,9 +277,9 @@ final class VariantConverter
             $this->failures->remember($variant, self::UNSUPPORTED_RETRY);
 
             return null;
-        } else {
-            $failure = $this->run($source, $variant, new ConversionRequest($format), $format, $requestId);
         }
+        // Without capabilities, the converter says why it cannot convert.
+        $failure = $this->run($source, $variant, new ConversionRequest($format), $format, $requestId);
         if ($failure === null) {
             return null;
         }
@@ -289,7 +289,9 @@ final class VariantConverter
         } else {
             $this->logger->warning('image conversion failed, the original is served', ['path' => $path, 'format' => $format] + $failure->logContext());
         }
-        $this->failures->remember($variant, $failure->isTransient() ? $this->transientRetry : self::PERMANENT_RETRY);
+        if ($failure->shouldBeRemembered()) {
+            $this->failures->remember($variant, $failure->isTransient() ? $this->transientRetry : self::PERMANENT_RETRY);
+        }
 
         return $failure;
     }

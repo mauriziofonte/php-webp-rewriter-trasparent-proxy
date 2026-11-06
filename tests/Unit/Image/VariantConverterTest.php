@@ -7,12 +7,17 @@ namespace Mfonte\ProxyCdn\Tests\Unit\Image;
 use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\CacheLocation;
 use Mfonte\ProxyCdn\Cache\FilesystemStorage;
+use Mfonte\ProxyCdn\Image\ConversionFailure;
 use Mfonte\ProxyCdn\Image\ConversionFailures;
 use Mfonte\ProxyCdn\Image\FormatNegotiator;
+use Mfonte\ProxyCdn\Image\ImageConverter;
 use Mfonte\ProxyCdn\Image\VariantConverter;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeImageConverter;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
+use Mfonte\SecureImageConverter\Contract\Capabilities;
+use Mfonte\SecureImageConverter\Contract\ConversionRequest;
+use Mfonte\SecureImageConverter\Contract\ConversionResult;
 use PHPUnit\Framework\Attributes\CoversClass;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -196,7 +201,40 @@ final class VariantConverterTest extends TestCase
         $records = $this->logger->recordsWithMessage('image conversion failed, the original is served');
         self::assertTrue($records[0]['context']['transient'] ?? null);
         self::assertSame('converter_unavailable', $records[0]['context']['error_code'] ?? null);
-        self::assertSame([], $this->converter->getCalls());
+        self::assertCount(1, $this->converter->getCalls(), 'asked once, then remembered');
+    }
+
+    /**
+     * A failure of this request only (another request is discovering the
+     * API) is not remembered: the next request converts.
+     */
+    public function testAPendingFailureIsNotRemembered(): void
+    {
+        $pending = new class () implements ImageConverter {
+            public function getName(): string
+            {
+                return 'remote';
+            }
+
+            public function getCapabilities(): ?Capabilities
+            {
+                return null;
+            }
+
+            public function convert(string $inputPath, string $outputPath, ConversionRequest $request, ?string $requestId = null): ConversionResult
+            {
+                throw ConversionFailure::pending('remote', 'Another request is discovering', 'discovery_pending');
+            }
+        };
+        $source = $this->directory->write('source.png', 'PNG-BYTES');
+
+        (new VariantConverter($pending, new FormatNegotiator(['avif', 'webp']), $this->failures(), new FilesystemStorage(), $this->directory->path('_cache/.work'), 30, 1048576, $this->logger))
+            ->convertAll($this->location, $source, null);
+
+        self::assertFalse($this->failures()->isRemembered($this->location->getVariantFile('avif')));
+        self::assertFalse($this->failures()->isRemembered($this->location->getVariantFile('webp')));
+        $this->variants()->convertAll($this->location, $source, null);
+        self::assertFileExists($this->location->getVariantFile('webp'));
     }
 
     public function testADisabledFormatIsNotConvertedOnHit(): void

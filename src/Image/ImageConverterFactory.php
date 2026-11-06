@@ -10,6 +10,8 @@ use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Origin\HttpClientOptions;
 use Mfonte\ProxyCdn\Origin\OriginCircuitBreaker;
 use Mfonte\SecureImageConverter\Backend\BackendOptions;
+use Mfonte\SecureImageConverter\Concurrency\KeyedLock;
+use Mfonte\SecureImageConverter\Concurrency\LockDirectory;
 use Mfonte\SecureImageConverter\Contract\Exception\ExceptionInterface as LibraryException;
 use Mfonte\SecureImageConverter\Isolation\IsolationDetector;
 use Mfonte\SecureImageConverter\Isolation\ProcessOptions;
@@ -163,8 +165,25 @@ final class ImageConverterFactory
             new CapabilityCache($storage, $directory, $url),
             $config->getNetworkErrorTtl(),
             $config->getUpstreamMaxSize(),
-            $logger
+            $logger,
+            self::discoveryLock($stateDirectory . '/locks', $logger)
         );
+    }
+
+    /**
+     * The lock of the discovery of the conversion API, in the lock
+     * directory of the state directory; null, and the requests discover
+     * without it, when the library refuses the directory.
+     */
+    private static function discoveryLock(string $directory, LoggerInterface $logger): ?KeyedLock
+    {
+        try {
+            return new KeyedLock(new LockDirectory($directory), RemoteConverter::DISCOVERY_LOCK_NAME);
+        } catch (LibraryException $exception) {
+            $logger->warning('conversion API discovery lock unavailable', ['directory' => $directory, 'reason' => $exception->getMessage()]);
+
+            return null;
+        }
     }
 
     /**
