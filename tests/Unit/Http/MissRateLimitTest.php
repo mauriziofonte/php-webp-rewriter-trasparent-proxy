@@ -72,6 +72,21 @@ final class MissRateLimitTest extends TestCase
     }
 
     /**
+     * An IPv4 client behind an IPv4-mapped or NAT64 address has the bucket
+     * of its IPv4 address, not one bucket shared by every IPv4 client.
+     */
+    public function testMappedAndNat64AddressesAreKeyedByTheirIpv4Address(): void
+    {
+        self::assertNotSame(MissRateLimit::keyOf('::ffff:1.2.3.4'), MissRateLimit::keyOf('::ffff:9.9.9.9'));
+        self::assertSame(MissRateLimit::keyOf('1.2.3.4'), MissRateLimit::keyOf('::ffff:1.2.3.4'));
+        self::assertSame(MissRateLimit::keyOf('1.2.3.4'), MissRateLimit::keyOf('::ffff:102:304'));
+        self::assertNotSame(MissRateLimit::keyOf('64:ff9b::1.2.3.4'), MissRateLimit::keyOf('64:ff9b::9.9.9.9'));
+        self::assertSame(MissRateLimit::keyOf('1.2.3.4'), MissRateLimit::keyOf('64:ff9b::1.2.3.4'));
+        // Other addresses of the same /64 still share one bucket.
+        self::assertSame(MissRateLimit::keyOf('64:ff9b:1::1'), MissRateLimit::keyOf('64:ff9b:1::2'));
+    }
+
+    /**
      * A store that cannot be updated lets the miss through: the limit
      * protects the origin, it never decides who may read an asset. Each
      * such miss is logged and counted, so that a limit that silently stopped
