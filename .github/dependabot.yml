@@ -47,11 +47,14 @@ updates:
       github-actions:
         update-types: [minor, patch]
 
-  # Images of the integration harness. There is no Dockerfile yet, so the
-  # docker-compose ecosystem tracks the pinned tags of compose.yaml (the
-  # PHP-FPM tag is chosen at runtime by run.sh and is not tracked).
+  # Images of the integration harness and of the cluster example. There is
+  # no Dockerfile yet, so the docker-compose ecosystem tracks the pinned
+  # tags of their compose.yaml (the PHP-FPM tag is chosen at runtime by
+  # run.sh, or by PHP_VERSION in the example, and is not tracked).
   - package-ecosystem: docker-compose
-    directory: /tests/Integration/docker
+    directories:
+      - /docker/cluster
+      - /tests/Integration/docker
     schedule:
       interval: weekly
     commit-message:

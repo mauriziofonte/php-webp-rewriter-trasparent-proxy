@@ -57,6 +57,7 @@ final class GitAttributesTest extends TestCase
     {
         $paths = [
             '/.github',
+            '/docker',
             '/tests',
             '/tools',
             '/.editorconfig',
