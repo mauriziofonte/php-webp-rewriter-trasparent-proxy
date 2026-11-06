@@ -224,6 +224,25 @@ final class VariantConverterTest extends TestCase
         self::assertSame('concurrency_unavailable', $this->logger->recordsWithMessage('image resize failed')[0]['context']['error_code'] ?? null);
     }
 
+    /**
+     * A resize URL as the first request of an empty cache: the cache root
+     * that the work directory creates keeps the mode of the directories
+     * of the cache (the web server must enter it); only the work
+     * directory is private.
+     */
+    public function testTheWorkDirectoryDoesNotMakeTheCacheRootPrivate(): void
+    {
+        self::assertDirectoryDoesNotExist($this->directory->path('_cache'));
+        $resized = (new CacheKeyResolver($this->directory->path('_cache')))->resolve('cdn.example.test', '/_resize/320/' . str_repeat('a', 32) . '/images/a.png', '');
+
+        $this->variants()->resizeEntry($resized, self::FIXTURES . 'image.png', 320, null);
+
+        (new FilesystemStorage())->ensureDirectory($this->directory->path('reference'));
+        $expected = fileperms($this->directory->path('reference')) & 0777;
+        self::assertSame($expected, fileperms($this->directory->path('_cache')) & 0777);
+        self::assertSame(0700, fileperms($this->directory->path('_cache/.work')) & 0777);
+    }
+
     private function variants(): VariantConverter
     {
         return new VariantConverter($this->converter, new FormatNegotiator(['avif', 'webp']), $this->failures(), new FilesystemStorage(), $this->directory->path('_cache/.work'), 30, 1048576, $this->logger);

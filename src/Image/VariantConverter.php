@@ -357,11 +357,18 @@ final class VariantConverter
 
     /**
      * A new private directory (mode 0700) of the work directory; null when
-     * it cannot be created.
+     * it cannot be created. The parents of the work directory, the cache
+     * root among them, are created as the cache creates its directories
+     * (CacheStorage::ensureDirectory(), mode 0755): the web server serves
+     * the cache root, and must be able to enter it even when a conversion
+     * creates it first. Only the work directory itself is private.
      */
     private function privateDirectory(): ?string
     {
-        if (!is_dir($this->workDirectory) && !@mkdir($this->workDirectory, 0700, true) && !is_dir($this->workDirectory)) {
+        if (!is_dir($this->workDirectory)
+            && (!$this->storage->ensureDirectory(dirname($this->workDirectory)) || !@mkdir($this->workDirectory, 0700))
+            && !is_dir($this->workDirectory)
+        ) {
             return null;
         }
         $directory = $this->workDirectory . '/' . bin2hex(random_bytes(8));
