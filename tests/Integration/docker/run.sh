@@ -554,6 +554,14 @@ smoke() {
     expect "$s: PHP-path hit is a hit" "$(cache_status "$workdir/$s/phphit.headers")" HIT
     via_php "$s: PHP-path hit went through PHP-FPM" "$mark"
     hit_headers "$s: PHP-path hit" "$workdir/$s/phphit.headers"
+    # The request ID PHP answers with reaches the client on the PHP path,
+    # through X-Accel-Redirect too, once: the one the client sent, else a
+    # new one (as on the first request, a miss).
+    expect "$s: PHP-path hit with a request ID" "$(fetch "$base$asset?v=3&zz=1" "$workdir/$s/reqid" -H 'X-Request-Id: harness-request-1')" 200
+    expect "$s: PHP-path hit carries the request ID" "$(header_of X-Request-Id "$workdir/$s/reqid.headers")" harness-request-1
+    header_of X-Request-Id "$workdir/$s/first.headers" | grep -Eq '^[0-9a-f]{32}$' \
+        || die "$s: the miss carries no generated X-Request-Id: $(header_of X-Request-Id "$workdir/$s/first.headers")"
+    pass "$s: the miss carries a generated X-Request-Id"
     # nginx passes on the Content-Length of PHP, which is the length of the
     # file it measured. Apache drops it (CVE-2024-24795, public/.htaccess)
     # and frames the body itself: a counted length or chunked, and no
