@@ -3,11 +3,21 @@
 # each node in tls/, the data directories of each node in data/, the
 # runtime directories of the project that the nodes mount over, and .env
 # (the user PHP runs as). Run it again to renew the certificates.
+#
+# CLUSTER_UID and CLUSTER_GID: the user and group the PHP-FPM containers
+# run as, which own data/. Default: the user running this script, or, when
+# that is root, www-data of the php image (33:33): PHP-FPM started as root
+# runs its workers as www-data, which could not write a data/ owned by root.
 set -eu
 cd "$(dirname "$0")"
 
-uid=${CLUSTER_UID:-$(id -u)}
-gid=${CLUSTER_GID:-$(id -g)}
+if [ "$(id -u)" = 0 ]; then
+    uid=${CLUSTER_UID:-33}
+    gid=${CLUSTER_GID:-33}
+else
+    uid=${CLUSTER_UID:-$(id -u)}
+    gid=${CLUSTER_GID:-$(id -g)}
+fi
 
 mkdir -p tls ../../public/_cache ../../var ../../logs
 for node in node-a node-b; do

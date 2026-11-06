@@ -18,7 +18,9 @@ name: proxy-cdn-cluster
 
 x-php: &php
   image: php:${PHP_VERSION:-8.5}-fpm
-  # The owner of data/, so that PHP can write the cache and its state.
+  # The owner of data/, so that PHP can write the cache and its state:
+  # CLUSTER_UID and CLUSTER_GID, written to .env by setup.sh (www-data of
+  # the image when setup.sh runs as root; set them to choose another).
   user: ${CLUSTER_UID:?run ./setup.sh}:${CLUSTER_GID:?run ./setup.sh}
   env_file: node.env
   networks: [cluster]
