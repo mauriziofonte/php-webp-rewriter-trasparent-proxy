@@ -7,7 +7,8 @@
 # through PHP-FPM, and every later one is served from the cache by the web
 # server without reaching PHP-FPM (as the route log of the server says) or the
 # origin: the entry, its WEBP and AVIF variants, its gzip encoding and the
-# entry of a query string, each with the headers PHP sends, once. PURGE,
+# entry of a query string, each with the headers PHP sends, once (the first
+# request is a resize URL, which must leave the cache enterable). PURGE,
 # OPTIONS and unlisted hosts reach PHP, and only a trusted proxy can tell
 # that the client used https. Then 500 concurrent requests for one cold
 # entry cause exactly one origin fetch (request coalescing).
@@ -691,9 +692,36 @@ client() {
     done <<<"$output"
 }
 
+# resize_first <stack>: a signed resize URL is the first request of an
+# empty cache, so that the work directory of the conversions creates
+# public/_cache/. Only that directory may be private: the web server,
+# which runs as another user than PHP-FPM, must still enter the cache to
+# serve the hits. Conversion is off in the harness: the step turns the
+# local converter and the resize URLs on for its request only (the
+# official images have no backend, so the image is not resized).
+resize_first() {
+    local s="$1" base env="$workdir/$1/app/.env" cache="$workdir/$1/app/public/_cache" path status
+    base="http://127.0.0.1:$(port_of "$s")"
+    log "Resize first: $s"
+    [ ! -e "$cache" ] || die "$s: the cache exists before the first request"
+    cp "$env" "$env.saved"
+    sed -i 's/^IMAGE_CONVERTER = .*/IMAGE_CONVERTER = "local"/' "$env"
+    printf 'RESIZE_WIDTHS = "8"\nRESIZE_KEY = "harness-resize-key-0123456789abcdef"\n' >>"$env"
+    path="$(compose exec -T "fpm-$s" php -r '
+        require "/app/vendor/autoload.php";
+        echo (new Mfonte\ProxyCdn\Image\SignedUrlVerifier($argv[1], [8]))->pathOf("127.0.0.1", 8, $argv[2], "");' \
+        harness-resize-key-0123456789abcdef "$asset")"
+    status="$(fetch "$base$path" "$workdir/$s/resize")"
+    mv "$env.saved" "$env"
+    expect "$s: the resize URL is answered" "$status" 200
+    expect "$s: public/_cache stays enterable" "$(stat -c %a "$cache")" 755
+    expect "$s: the work directory is private" "$(stat -c %a "$cache/.work")" 700
+}
+
 burst_size=500
 for s in "${stacks[@]}"; do
     client "$s"
+    resize_first "$s"
     smoke "$s"
     burst "$s"
 done
