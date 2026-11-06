@@ -248,20 +248,35 @@ final class VariantConverterTest extends TestCase
         self::assertSame([], $this->converter->getCalls());
     }
 
-    public function testAResizedEntryIsStoredWithItsVariants(): void
+    public function testAResizedEntryIsStoredThenItsVariantsMade(): void
     {
         $resized = (new CacheKeyResolver($this->directory->path('_cache')))->resolve('cdn.example.test', '/_resize/320/' . str_repeat('a', 32) . '/images/a.png', '');
+        $variants = $this->variants();
 
-        $outcome = $this->variants()->resizeEntry($resized, self::FIXTURES . 'image.png', 320, 'req-2');
+        $outcome = $variants->resizeEntry($resized, self::FIXTURES . 'image.png', 320, 'req-2');
 
         self::assertSame(VariantConverter::RESIZED, $outcome);
         self::assertFileEquals(self::FIXTURES . 'resized.png', $resized->getFile());
+        self::assertFileDoesNotExist($resized->getVariantFile('webp'), 'the variants are made after the response');
+        $calls = $this->converter->getCalls();
+        self::assertSame([['original', 320, 'req-2']], [[$calls[0][0], $calls[0][2], $calls[0][3]]]);
+        self::assertCount(1, $calls);
+
+        $variants->convertAll($resized, $resized->getFile(), 'req-2');
         self::assertFileExists($resized->getVariantFile('webp'));
         self::assertFileExists($resized->getVariantFile('avif'));
-        $calls = $this->converter->getCalls();
-        self::assertSame(['original', 320, 'req-2'], [$calls[0][0], $calls[0][2], $calls[0][3]]);
         // The variants are made from the resized image.
-        self::assertSame((string) file_get_contents(self::FIXTURES . 'resized.png'), $calls[1][1]);
+        self::assertSame((string) file_get_contents(self::FIXTURES . 'resized.png'), $this->converter->getCalls()[1][1]);
+    }
+
+    public function testNoConversionStartsAfterTheDeadline(): void
+    {
+        $source = $this->directory->write('source.png', 'PNG-BYTES');
+
+        $this->variants()->convertAll($this->location, $source, null, microtime(true) - 1);
+
+        self::assertSame([], $this->converter->getCalls());
+        self::assertFalse($this->failures()->isRemembered($this->location->getVariantFile('avif')));
     }
 
     public function testAnImageOfNoKnownFormatIsNotResized(): void

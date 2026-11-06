@@ -89,20 +89,20 @@ final class ImageConverterFactoryTest extends TestCase
      */
     public function testTheWorstCaseOfTheConversionsOfAnEntry(): void
     {
+        $resize = ['RESIZE_WIDTHS' => '320', 'RESIZE_KEY' => str_repeat('k', 32)];
         self::assertSame(0, ImageConverterFactory::worstCaseSeconds(TestConfig::create()));
-        // Two formats, 55 seconds each.
-        self::assertSame(110, ImageConverterFactory::worstCaseSeconds(TestConfig::create(['IMAGE_CONVERTER' => 'local'])));
-        // Two formats of 55 + 5 (connect), one discovery of 30 + 5.
-        self::assertSame(155, ImageConverterFactory::worstCaseSeconds(TestConfig::create(self::REMOTE)));
-        // With the local fallback, a resize width, and WEBP only: 2 x (60 + 55) + 35.
-        self::assertSame(265, ImageConverterFactory::worstCaseSeconds(TestConfig::create([
-            'IMAGE_API_FALLBACK' => 'true',
-            'IMAGE_FORMATS' => 'webp',
-            'RESIZE_WIDTHS' => '320',
-            'RESIZE_KEY' => str_repeat('k', 32),
-        ] + self::REMOTE)));
+        // The variants are made after the response: nothing is waited for.
+        self::assertSame(0, ImageConverterFactory::worstCaseSeconds(TestConfig::create(['IMAGE_CONVERTER' => 'local'])));
+        self::assertSame(0, ImageConverterFactory::worstCaseSeconds(TestConfig::create(self::REMOTE)));
+        // The resized image is made before the answer: 55 seconds.
+        self::assertSame(55, ImageConverterFactory::worstCaseSeconds(TestConfig::create(['IMAGE_CONVERTER' => 'local'] + $resize)));
+        // Remotely: 55 + 5 (connect), one discovery of 30 + 5.
+        self::assertSame(95, ImageConverterFactory::worstCaseSeconds(TestConfig::create($resize + self::REMOTE)));
+        // With the local fallback: 95 + 55.
+        self::assertSame(150, ImageConverterFactory::worstCaseSeconds(TestConfig::create(['IMAGE_API_FALLBACK' => 'true'] + $resize + self::REMOTE)));
 
         self::assertSame(60, ProxyKernelFactory::coalescingTimeout(TestConfig::create(), false));
-        self::assertSame(60 + 155, ProxyKernelFactory::coalescingTimeout(TestConfig::create(self::REMOTE), true));
+        self::assertSame(60, ProxyKernelFactory::coalescingTimeout(TestConfig::create(self::REMOTE), true));
+        self::assertSame(60 + 150, ProxyKernelFactory::coalescingTimeout(TestConfig::create(['IMAGE_API_FALLBACK' => 'true'] + $resize + self::REMOTE), true));
     }
 }

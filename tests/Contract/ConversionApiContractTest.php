@@ -133,16 +133,21 @@ final class ConversionApiContractTest extends TestCase
     }
 
     /**
-     * The whole proxy: a miss of a PNG stores and serves its AVIF and WEBP
-     * variants, made by the API and verified.
+     * The whole proxy: a miss of a PNG serves the original, then makes its
+     * AVIF and WEBP variants with the API after the response, verified,
+     * and the next request gets the AVIF one.
      */
     public function testTheProxyServesTheVariantsMadeByTheApi(): void
     {
         $request = Request::create('https://cdn.example.test/images/photo.png', 'GET', [], [], [], ['HTTP_ACCEPT' => 'image/avif,image/webp,*/*']);
         $request->attributes->set(ProxyKernel::REQUEST_ID_ATTRIBUTE, self::env('CONTRACT_REQUEST_ID'));
 
-        $response = $this->kernel()->handle($request);
+        $kernel = $this->kernel();
 
+        $miss = $this->respond($kernel, $request);
+        $response = $kernel->handle($request);
+
+        self::assertSame('image/png', $miss->headers->get('content-type'));
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('image/avif', $response->headers->get('content-type'));
         self::assertSame('avif', (new FormatSniffer())->detect(self::body($response)));
@@ -159,7 +164,7 @@ final class ConversionApiContractTest extends TestCase
         $broken = substr((string) file_get_contents(self::PHOTO), 0, 200);
         $this->origin->serve(self::ORIGIN . '/images/broken.png', $broken, ['content-type' => 'image/png']);
 
-        $response = $this->kernel()->handle(Request::create('https://cdn.example.test/images/broken.png', 'GET', [], [], [], ['HTTP_ACCEPT' => 'image/webp']));
+        $response = $this->respond($this->kernel(), Request::create('https://cdn.example.test/images/broken.png', 'GET', [], [], [], ['HTTP_ACCEPT' => 'image/webp']));
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame($broken, self::body($response));
@@ -195,7 +200,7 @@ final class ConversionApiContractTest extends TestCase
      */
     public function testARefusedKeyServesTheOriginal(): void
     {
-        $response = $this->kernel(['IMAGE_API_KEY' => 'not-the-key-0123456789'])->handle(Request::create('https://cdn.example.test/images/photo.png', 'GET', [], [], [], ['HTTP_ACCEPT' => 'image/webp']));
+        $response = $this->respond($this->kernel(['IMAGE_API_KEY' => 'not-the-key-0123456789']), Request::create('https://cdn.example.test/images/photo.png', 'GET', [], [], [], ['HTTP_ACCEPT' => 'image/webp']));
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('image/png', $response->headers->get('content-type'));
@@ -211,7 +216,7 @@ final class ConversionApiContractTest extends TestCase
      */
     public function testThePlainHttpRedirectIsNotFollowed(): void
     {
-        $response = $this->kernel(['IMAGE_API_URL' => self::env('CONTRACT_API_HTTP_URL')])->handle(Request::create('https://cdn.example.test/images/photo.png', 'GET', [], [], [], ['HTTP_ACCEPT' => 'image/webp']));
+        $response = $this->respond($this->kernel(['IMAGE_API_URL' => self::env('CONTRACT_API_HTTP_URL')]), Request::create('https://cdn.example.test/images/photo.png', 'GET', [], [], [], ['HTTP_ACCEPT' => 'image/webp']));
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('image/png', $response->headers->get('content-type'));
@@ -261,6 +266,18 @@ final class ConversionApiContractTest extends TestCase
         $converter = ImageConverterFactory::create($config, $directory . '/' . TestKernel::STATE_DIRECTORY, $this->logger);
 
         return TestKernel::create($config, $directory, $this->origin, $converter, $this->logger);
+    }
+
+    /**
+     * The response of $kernel to $request, once the work left for after
+     * the response (the conversions) is done.
+     */
+    private function respond(ProxyKernel $kernel, Request $request): Response
+    {
+        $response = $kernel->handle($request);
+        $kernel->terminate();
+
+        return $response;
     }
 
     private function cachePath(string $relativePath): string

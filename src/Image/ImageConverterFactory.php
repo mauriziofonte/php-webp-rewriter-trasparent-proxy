@@ -95,29 +95,27 @@ final class ImageConverterFactory
     }
 
     /**
-     * The longest time, in seconds, that the conversions of one stored
-     * entry may take: every enabled format, plus the resized image of a
-     * resize URL, each within IMAGE_CONVERSION_TIMEOUT (plus the connect
-     * timeout for the API), twice when a remote conversion may fall back
-     * to a local one, plus one discovery of the API capabilities. 0
-     * without converter. The requests that wait for the request that
-     * stores an entry wait this long on top of UPSTREAM_TIMEOUT.
+     * The longest time, in seconds, that a request may convert before it
+     * answers, while the requests for the same entry wait for it: the
+     * resized image of a resize URL, within IMAGE_CONVERSION_TIMEOUT (plus
+     * the connect timeout and one discovery of the capabilities for the
+     * API, plus a local conversion when the API may fall back to one). The
+     * AVIF and WEBP variants are made after the response, so they count
+     * for nothing; 0 without converter, or without RESIZE_WIDTHS.
      */
     public static function worstCaseSeconds(Config $config): int
     {
         $converter = $config->getImageConverter();
-        if ($converter === Config::CONVERTER_NONE) {
+        if ($converter === Config::CONVERTER_NONE || $config->getResizeWidths() === []) {
             return 0;
         }
-        $conversions = count($config->getImageFormats()) + ($config->getResizeWidths() === [] ? 0 : 1);
         $timeout = $config->getImageConversionTimeout();
         if ($converter === Config::CONVERTER_LOCAL) {
-            return $conversions * $timeout;
+            return $timeout;
         }
-        $remote = $timeout + $config->getUpstreamConnectTimeout();
-        $local = $config->shouldFallBackToLocalConversion() ? $timeout : 0;
+        $remote = $timeout + $config->getUpstreamConnectTimeout() + self::DISCOVERY_SECONDS + $config->getUpstreamConnectTimeout();
 
-        return $conversions * ($remote + $local) + self::DISCOVERY_SECONDS + $config->getUpstreamConnectTimeout();
+        return $remote + ($config->shouldFallBackToLocalConversion() ? $timeout : 0);
     }
 
     private static function local(Config $config, string $stateDirectory, LoggerInterface $logger): LocalConverter

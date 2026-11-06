@@ -153,17 +153,22 @@ final class VariantConverter
      * the entry are forgotten first, since $source is a new version. Once
      * the converter fails as unavailable (a timeout, an open breaker), the
      * remaining formats are not tried in this request but remembered as
-     * transient failures too: the request that stores the entry waits for
-     * one conversion timeout at most, not one per format.
+     * transient failures too: one conversion timeout at most is spent on
+     * an unavailable converter, not one per format. No conversion starts
+     * after $deadline: the formats left are not tried, nor remembered.
      *
-     * @param string      $source    the image: the body about to be stored, or the stored entry
+     * @param string      $source    the image: the stored entry, or the resized image about to be stored
      * @param string|null $requestId the ID of the client request, for the API
+     * @param float|null  $deadline  the microtime(true) after which no conversion starts; null for none
      */
-    public function convertAll(CacheLocation $location, string $source, ?string $requestId): void
+    public function convertAll(CacheLocation $location, string $source, ?string $requestId, ?float $deadline = null): void
     {
         $unavailable = null;
         foreach ($this->negotiator->getEnabledFormats() as $format) {
             $variant = $location->getVariantFile($format);
+            if ($unavailable === null && $deadline !== null && microtime(true) >= $deadline) {
+                return;
+            }
             if ($unavailable !== null) {
                 if ($unavailable->shouldBeRemembered()) {
                     $this->failures->remember($variant, $this->transientRetry);
@@ -177,8 +182,22 @@ final class VariantConverter
     }
 
     /**
-     * Makes the variant $format of the stored entry of $location, on a hit
-     * PHP serves, unless it is not enabled or a failure of it is
+     * Whether the variant $format of the stored entry of $location is
+     * missing and may be made: its format is enabled, and no failure of
+     * it is remembered. It asks the converter nothing, so a hit may call
+     * it: the conversion itself is made after the response
+     * (convertOnHit()).
+     */
+    public function shouldConvert(CacheLocation $location, string $format): bool
+    {
+        $variant = $location->getVariantFile($format);
+
+        return $this->negotiator->isEnabled($format) && !$this->storage->isFile($variant) && !$this->failures->isRemembered($variant);
+    }
+
+    /**
+     * Makes the variant $format of the stored entry of $location, missing
+     * on a hit PHP served, unless it is not enabled or a failure of it is
      * remembered. Whether the variant exists afterwards.
      *
      * @param string|null $requestId the ID of the client request, for the API
@@ -186,7 +205,7 @@ final class VariantConverter
     public function convertOnHit(CacheLocation $location, string $format, ?string $requestId): bool
     {
         $variant = $location->getVariantFile($format);
-        if (!$this->negotiator->isEnabled($format) || $this->failures->isRemembered($variant)) {
+        if (!$this->shouldConvert($location, $format) || !$this->storage->isFile($location->getFile())) {
             return $this->storage->isFile($variant);
         }
 
@@ -198,11 +217,11 @@ final class VariantConverter
     /**
      * Stores $source resized to $width pixels wide (at most: a smaller
      * image is not enlarged), in its own format, as the entry of
-     * $location, the entry of a resize URL, with its variants: the
-     * resized image is made and verified in a private directory, its
-     * variants are made from it, and it is moved into place last, so that
-     * the web server never serves it without its variants. One of
-     * RESIZED, REJECTED and UNAVAILABLE; nothing is stored unless RESIZED.
+     * $location, the entry of a resize URL: the resized image is made and
+     * verified in a private directory, then moved into place. Its
+     * variants are made like those of any entry, after the response
+     * (convertAll()). One of RESIZED, REJECTED and UNAVAILABLE; nothing is
+     * stored unless RESIZED.
      *
      * @param string|null $requestId the ID of the client request, for the API
      */
@@ -221,7 +240,6 @@ final class VariantConverter
             if ($outcome !== self::RESIZED) {
                 return $outcome;
             }
-            $this->convertAll($location, $resized, $requestId);
             if (!$this->storage->ensureDirectory($location->getDirectory()) || !@rename($resized, $location->getFile())) {
                 $this->logger->warning('image resize failed', ['path' => $logPath, 'width' => $width, ConversionFailure::LOG_ERROR_CODE => 'cache_write', 'reason' => 'The resized image cannot be moved into the cache']);
 

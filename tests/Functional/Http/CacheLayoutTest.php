@@ -204,12 +204,16 @@ final class CacheLayoutTest extends TestCase
         $converter = new FakeImageConverter();
         $webp = (string) file_get_contents(dirname(__DIR__, 2) . '/Fixtures/Image/files/variant.webp');
 
-        $first = $this->kernel(['IMAGE_CONVERTER' => 'local'], $converter)->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        $kernel = $this->kernel(['IMAGE_CONVERTER' => 'local'], $converter);
+        $first = $kernel->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        // The variants are made after the response.
+        $kernel->terminate();
         $second = $this->kernel(['IMAGE_CONVERTER' => 'local'], $converter)->handle(Request::create('https://cdn.example.test/images/a.webp'));
 
-        self::assertSame($webp, self::body($first));
-        self::assertSame('image/webp', $first->headers->get('content-type'));
+        self::assertSame('PNG', self::body($first));
+        self::assertSame('image/png', $first->headers->get('content-type'));
         self::assertSame('MISS', $first->headers->get('x-cache-status'));
+        self::assertStringContainsString('max-age=0', (string) $first->headers->get('cache-control'));
         self::assertSame($webp, self::body($second));
         self::assertSame('HIT', $second->headers->get('x-cache-status'));
         self::assertSame([

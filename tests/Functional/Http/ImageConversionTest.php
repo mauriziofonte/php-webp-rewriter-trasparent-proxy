@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
 use Mfonte\ProxyCdn\Http\ProxyKernel;
+use Mfonte\ProxyCdn\Image\ImageConverter;
 use Mfonte\ProxyCdn\Image\ImageConverterFactory;
 use Mfonte\ProxyCdn\Image\SignedUrlVerifier;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
@@ -14,6 +15,9 @@ use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
 use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeImageConverter;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
 use Mfonte\ProxyCdn\Tests\Fixtures\Origin\FakeOriginFetcher;
+use Mfonte\SecureImageConverter\Contract\Capabilities;
+use Mfonte\SecureImageConverter\Contract\ConversionRequest;
+use Mfonte\SecureImageConverter\Contract\ConversionResult;
 use PHPUnit\Framework\Attributes\CoversClass;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -75,30 +79,46 @@ final class ImageConversionTest extends TestCase
         parent::tear_down();
     }
 
-    public function testAMissIsServedAsTheBestVariantTheClientAccepts(): void
+    /**
+     * Finding P-10, decision (a) of the review: a miss stores and serves
+     * the original at once, with "Vary: Accept" and "max-age=0,
+     * must-revalidate" so that no cache keeps it for a client that will
+     * get a variant; the variants are made after the response, and served
+     * from the next request on.
+     */
+    public function testAMissServesTheOriginalAndTheVariantsFollow(): void
     {
-        $avif = $this->kernel()->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
-        $webp = $this->kernel()->handle(self::request('/images/photo.png', 'image/webp,*/*'));
+        $kernel = $this->kernel();
+        $miss = $kernel->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
 
-        self::assertSame(200, $avif->getStatusCode());
-        self::assertSame('image/avif', $avif->headers->get('content-type'));
+        self::assertSame(200, $miss->getStatusCode());
+        self::assertSame(['MISS', 'image/png', 'PNG-BYTES'], [$miss->headers->get('x-cache-status'), $miss->headers->get('content-type'), self::body($miss)]);
+        self::assertSame('Accept', $miss->headers->get('vary'));
+        self::assertSame('max-age=0, must-revalidate, public', $miss->headers->get('cache-control'));
+        self::assertSame([], $this->converter->getCalls(), 'nothing is converted before the response');
+        self::assertFileExists($this->cachePath('images/logo.png'));
+
+        $kernel->terminate();
+        $avif = $this->kernel()->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        $webp = $this->kernel()->handle(self::request('/images/logo.png', 'image/webp,*/*'));
+
+        self::assertSame(['HIT', 'image/avif'], [$avif->headers->get('x-cache-status'), $avif->headers->get('content-type')]);
         self::assertStringEqualsFile(self::FIXTURES . 'variant.avif', self::body($avif));
-        self::assertSame('Accept', $avif->headers->get('vary'));
-        self::assertSame('MISS', $avif->headers->get('x-cache-status'));
+        self::assertStringNotContainsString('max-age=0', (string) $avif->headers->get('cache-control'));
         self::assertSame('image/webp', $webp->headers->get('content-type'));
         self::assertStringEqualsFile(self::FIXTURES . 'variant.webp', self::body($webp));
         self::assertFileExists($this->cachePath('.avif/images/logo.png.avif'));
         self::assertFileExists($this->cachePath('.webp/images/logo.png.webp'));
-        self::assertSame('PNG-BYTES', file_get_contents($this->cachePath('images/logo.png')));
     }
 
     public function testOtherClientsGetTheOriginalAndTheVariantsAreStillMade(): void
     {
-        $response = $this->kernel()->handle(self::request('/images/logo.png', 'image/*'));
+        $response = $this->respond(self::request('/images/logo.png', 'image/*'));
 
         self::assertSame('PNG-BYTES', self::body($response));
         self::assertSame('image/png', $response->headers->get('content-type'));
         self::assertSame('Accept', $response->headers->get('vary'), 'finding P-1: the variant depends on Accept');
+        self::assertStringNotContainsString('max-age=0', (string) $response->headers->get('cache-control'), 'no variant is for this client');
         self::assertFileExists($this->cachePath('.webp/images/logo.png.webp'));
     }
 
@@ -110,7 +130,7 @@ final class ImageConversionTest extends TestCase
         $request = self::request('/images/logo.png', '');
         $request->attributes->set(ProxyKernel::REQUEST_ID_ATTRIBUTE, 'req-42');
 
-        $this->kernel()->handle($request);
+        $this->respond($request);
 
         self::assertSame(['req-42', 'req-42'], array_column($this->converter->getCalls(), 3));
     }
@@ -123,14 +143,15 @@ final class ImageConversionTest extends TestCase
     {
         $this->origin->serve(self::ORIGIN . '/images/broken.png?v=1', 'broken PNG', ['content-type' => 'image/png']);
 
-        $miss = $this->kernel(['QUERY_STRING_ALLOWLIST' => 'v'])->handle(self::request('/images/broken.png?v=1', self::ACCEPT_ALL));
-        $hit = $this->kernel(['QUERY_STRING_ALLOWLIST' => 'v'])->handle(self::request('/images/broken.png?v=1', self::ACCEPT_ALL));
+        $miss = $this->respond(self::request('/images/broken.png?v=1', self::ACCEPT_ALL), ['QUERY_STRING_ALLOWLIST' => 'v']);
+        $hit = $this->respond(self::request('/images/broken.png?v=1', self::ACCEPT_ALL), ['QUERY_STRING_ALLOWLIST' => 'v']);
 
         self::assertSame(200, $miss->getStatusCode());
         self::assertSame('broken PNG', self::body($miss));
         self::assertSame('MISS', $miss->headers->get('x-cache-status'));
         self::assertSame(200, $hit->getStatusCode());
         self::assertSame('HIT', $hit->headers->get('x-cache-status'));
+        self::assertStringNotContainsString('max-age=0', (string) $hit->headers->get('cache-control'), 'no variant is coming');
         self::assertSame(['avif', 'webp'], $this->converter->getFormats(), 'one attempt per variant');
         self::assertCount(2, $this->logger->recordsWithMessage('image conversion failed, the original is served'));
     }
@@ -152,14 +173,72 @@ final class ImageConversionTest extends TestCase
         TestKernel::create(TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN, 'QUERY_STRING_ALLOWLIST' => 'v']), $this->directory->path(), $this->origin, null, $this->logger)
             ->handle(self::request('/images/logo.png?v=2', ''));
 
-        $first = $this->kernel(['QUERY_STRING_ALLOWLIST' => 'v'])->handle(self::request('/images/logo.png?v=2', 'image/webp'));
-        $second = $this->kernel(['QUERY_STRING_ALLOWLIST' => 'v'])->handle(self::request('/images/logo.png?v=2', 'image/webp'));
+        $first = $this->respond(self::request('/images/logo.png?v=2', 'image/webp'), ['QUERY_STRING_ALLOWLIST' => 'v']);
+        $second = $this->respond(self::request('/images/logo.png?v=2', 'image/webp'), ['QUERY_STRING_ALLOWLIST' => 'v']);
 
-        self::assertSame('image/webp', $first->headers->get('content-type'));
+        // The first hit is answered at once; its variant follows it.
+        self::assertSame('image/png', $first->headers->get('content-type'));
         self::assertSame('HIT', $first->headers->get('x-cache-status'));
+        self::assertStringContainsString('max-age=0', (string) $first->headers->get('cache-control'));
         self::assertSame('image/webp', $second->headers->get('content-type'));
         self::assertSame(['webp'], $this->converter->getFormats());
         self::assertCount(1, $this->origin->getRequests());
+    }
+
+    /**
+     * The conversions of one entry are made by one request at a time: a
+     * request that finds them under way when its response is sent (here,
+     * a hit that misses the AVIF variant while the request that stored
+     * the entry makes it) leaves them to that request.
+     */
+    public function testTheVariantsOfAnEntryAreMadeByOneRequestAtATime(): void
+    {
+        $config = TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN, 'IMAGE_CONVERTER' => 'local']);
+        $other = TestKernel::create($config, $this->directory->path(), $this->origin, $this->converter, $this->logger);
+        $converter = new class ($this->converter, $other) implements ImageConverter {
+            /** @var FakeImageConverter */
+            private $converter;
+
+            /** @var ProxyKernel|null */
+            private $other;
+
+            public function __construct(FakeImageConverter $converter, ProxyKernel $other)
+            {
+                $this->converter = $converter;
+                $this->other = $other;
+            }
+
+            public function convert(string $inputPath, string $outputPath, ConversionRequest $request, ?string $requestId = null): ConversionResult
+            {
+                if ($this->other !== null) {
+                    // The other request ends while this one converts.
+                    $other = $this->other;
+                    $this->other = null;
+                    $other->terminate();
+                }
+
+                return $this->converter->convert($inputPath, $outputPath, $request, $requestId);
+            }
+
+            public function getCapabilities(): ?Capabilities
+            {
+                return $this->converter->getCapabilities();
+            }
+
+            public function getName(): string
+            {
+                return $this->converter->getName();
+            }
+        };
+        $storing = TestKernel::create($config, $this->directory->path(), $this->origin, $converter, $this->logger);
+
+        $storing->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        $hit = $other->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        $storing->terminate();
+
+        self::assertSame(['HIT', 'image/png'], [$hit->headers->get('x-cache-status'), $hit->headers->get('content-type')]);
+        self::assertSame(['avif', 'webp'], $this->converter->getFormats(), 'the hit converted nothing');
+        self::assertFileExists($this->cachePath('.avif/images/logo.png.avif'));
     }
 
     /**
@@ -171,7 +250,7 @@ final class ImageConversionTest extends TestCase
     public function testAHitAndANonImageMissNeverAskTheConverter(): void
     {
         $this->origin->serve(self::ORIGIN . '/css/site.css', 'body{}', ['content-type' => 'text/css']);
-        $this->kernel()->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        $this->respond(self::request('/images/logo.png', self::ACCEPT_ALL));
         $asked = [$this->converter->getCapabilityCalls(), count($this->converter->getCalls())];
 
         $css = $this->kernel()->handle(self::request('/css/site.css', self::ACCEPT_ALL));
@@ -191,11 +270,11 @@ final class ImageConversionTest extends TestCase
     public function testHitsDoNotAskForAFormatTheConverterCannotMake(): void
     {
         $this->converter->setCapabilities(FakeImageConverter::capabilities(['webp']));
-        $this->kernel()->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        $this->respond(self::request('/images/logo.png', self::ACCEPT_ALL));
         $asked = $this->converter->getCapabilityCalls();
 
         for ($hit = 0; $hit < 3; ++$hit) {
-            $response = $this->kernel()->handle(self::request('/images/logo.png', 'image/avif'));
+            $response = $this->respond(self::request('/images/logo.png', 'image/avif'));
             self::assertSame(['HIT', 'image/png'], [$response->headers->get('x-cache-status'), $response->headers->get('content-type')]);
         }
 
@@ -256,7 +335,9 @@ final class ImageConversionTest extends TestCase
     {
         $path = $this->resizePath(320, '/images/photo.png');
 
-        $miss = $this->resizingKernel()->handle(self::request($path, ''));
+        $kernel = $this->resizingKernel();
+        $miss = $kernel->handle(self::request($path, ''));
+        $kernel->terminate();
         $hit = $this->resizingKernel()->handle(self::request($path, ''));
         $webp = $this->resizingKernel()->handle(self::request($path, 'image/webp'));
 
@@ -328,6 +409,21 @@ final class ImageConversionTest extends TestCase
             $this->converter,
             $this->logger
         );
+    }
+
+    /**
+     * The response of a kernel, which then runs the work left for after
+     * the response, as the front controller does.
+     *
+     * @param array<string, string|null> $overrides
+     */
+    private function respond(Request $request, array $overrides = []): Response
+    {
+        $kernel = $this->kernel($overrides);
+        $response = $kernel->handle($request);
+        $kernel->terminate();
+
+        return $response;
     }
 
     private function resizingKernel(): ProxyKernel

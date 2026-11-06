@@ -105,8 +105,11 @@ final class ProxyKernelFactory
     /**
      * Seconds a request waits for the request that fetches its entry:
      * the fetch (UPSTREAM_TIMEOUT), storing and compressing
-     * (COALESCING_MARGIN), and with a converter the worst case of the
-     * conversions of the entry, which are made before it is stored.
+     * (COALESCING_MARGIN), and with a converter the resize made before
+     * the answer (ImageConverterFactory::worstCaseSeconds()); the variants
+     * are made after the answer and count for nothing. 60 s with the
+     * defaults. The read timeout of the web server towards PHP must be
+     * above it (config/: 300 s).
      */
     public static function coalescingTimeout(Config $config, bool $converts): int
     {

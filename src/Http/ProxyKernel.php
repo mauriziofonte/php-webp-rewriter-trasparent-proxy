@@ -72,10 +72,11 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *    origin forbids storing (no-store, private) is streamed to the client
  *    only; any other is stored as the origin sent it, streamed from its
  *    temporary file (finding P-17), in the tier its lifetime calls for,
- *    with its compressed siblings and, for a raster, its AVIF and WEBP
- *    variants (VariantConverter: a conversion that fails leaves the
- *    original to be served, finding P-10), and the asset is served from
- *    the cache;
+ *    with its compressed siblings, and the asset is served from the
+ *    cache; the AVIF and WEBP variants of a raster are made after the
+ *    response, within IMAGE_CONVERSION_TIMEOUT (VariantConverter: until
+ *    one exists, or when a conversion fails, the original is served,
+ *    finding P-10, with "max-age=0" while a variant is pending);
  * 7. a signed resize URL (SignedUrlVerifier, opportunity O-I) is verified
  *    before anything else is done for it: one that is not signed, or
  *    whose width is not listed, gets a 403 without touching the origin;
@@ -88,7 +89,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * everything else, with the same headers. It only builds the response: it
  * never sends it, never exits and reads nothing but the Request, so that a
  * host framework can mount it; terminate() runs the background
- * revalidations once the response is sent.
+ * revalidations and conversions once the response is sent.
  */
 final class ProxyKernel
 {
@@ -243,6 +244,15 @@ final class ProxyKernel
      * @var int|null
      */
     private $fetchStartedAt;
+
+    /**
+     * The conversions left for after the response (terminate()), by entry
+     * key: the entry, the formats to make (null for every enabled format
+     * of a new version) and the request ID.
+     *
+     * @var array<string, array{CacheLocation, list<string>|null, string|null}>
+     */
+    private $pendingConversions = [];
 
     /**
      * @param VariantConverter|null  $variants null when IMAGE_CONVERTER is "none"
@@ -632,9 +642,8 @@ final class ProxyKernel
 
             return $this->files->respondUncached($request, $body, $extension, $freshness->isNoStore());
         }
-        if ($outcome === VariantConverter::REJECTED && $this->variants !== null) {
+        if ($outcome === VariantConverter::REJECTED) {
             // Stored as it is, with the variants of the image.
-            $this->variants->convertAll($location, $body->getPath(), $requestId);
             if (!$this->storage->ensureDirectory($location->getDirectory()) || !$this->storage->import($location->getFile(), $body->getPath())) {
                 $fetched->release();
                 $body->delete();
@@ -642,6 +651,7 @@ final class ProxyKernel
                 return $this->sharedError($location, $logPath, ResponseFactory::ERROR_CACHE_FILE);
             }
         }
+        $this->scheduleConversion($location, null, $requestId);
         $fetched->release();
         $body->delete();
         $this->negativeCache->forget($location->getFile());
@@ -654,11 +664,25 @@ final class ProxyKernel
     /**
      * Runs the work left for after the response was sent: the background
      * revalidations of the expired entries served stale
-     * (stale-while-revalidate). The front controller calls it once the
-     * client has its response (fastcgi_finish_request()); a host
+     * (stale-while-revalidate), then the AVIF and WEBP variants of the
+     * entries this request stored or served without them (finding P-10:
+     * no client, and no request waiting for an entry, waits for a
+     * conversion). The front controller calls it once the client has its
+     * response (fastcgi_finish_request() under PHP-FPM; under a SAPI
+     * without it, the response is sent and flushed first, and the
+     * connection is held for the conversion budget at most); a host
      * application calls it from its own terminate hook.
      */
     public function terminate(): void
+    {
+        $this->runRevalidations();
+        $this->runConversions();
+    }
+
+    /**
+     * The background revalidations of terminate().
+     */
+    private function runRevalidations(): void
     {
         $pending = $this->pendingRevalidations;
         $this->pendingRevalidations = [];
@@ -994,11 +1018,11 @@ final class ProxyKernel
     /**
      * Writes the body of $fetched as the entry of $location, replacing the
      * entry and the siblings of an older version, and writes its
-     * compressed siblings, or for a raster its AVIF and WEBP variants
-     * (VariantConverter), before the entry itself: the web server never
-     * serves the new entry without them, and the requests waiting for it
-     * find them. The body is copied from its temporary file in chunks
-     * (finding P-17), which is then deleted.
+     * compressed siblings; the AVIF and WEBP variants of a raster are made
+     * after the response (terminate()), so that neither the client nor
+     * the requests waiting for the entry wait for a conversion. The body
+     * is copied from its temporary file in chunks (finding P-17), which is
+     * then deleted.
      *
      * @param string|null $requestId the ID of the client request, for the conversion API
      *
@@ -1017,34 +1041,30 @@ final class ProxyKernel
             }
         }
         $body = $fetched->getBodyFile();
-        if ($this->variants !== null && $this->isRaster($extension)) {
-            $body = $body ?? ResponseBody::fromString($fetched->getBody(), sys_get_temp_dir());
-            if ($body !== null) {
-                $this->variants->convertAll($location, $body->getPath(), $requestId);
-            }
-        }
         $written = $body === null
             ? $this->storage->write($location->getFile(), $fetched->getBody())
             : $this->storage->import($location->getFile(), $body->getPath());
         $fetched->release();
-        if ($body !== null && $body !== $fetched->getBodyFile()) {
-            $body->delete();
-        }
         if (!$written) {
             return ResponseFactory::ERROR_CACHE_FILE;
         }
         $this->precompressor->compress($location, $extension);
+        if ($this->isRaster($extension)) {
+            $this->scheduleConversion($location, null, $requestId);
+        }
 
         return null;
     }
 
     /**
      * The response of the entry of $location when it is on disk: a raster
-     * as its AVIF or WEBP variant when the client accepts it (converted
-     * first when the variant is missing and its format is enabled, unless
-     * a failure of it is remembered), any other entry as its Brotli or
-     * gzip sibling when the client accepts it; null when the entry is not
-     * on disk.
+     * as its AVIF or WEBP variant when the client accepts it, any other
+     * entry as its Brotli or gzip sibling when the client accepts it; null
+     * when the entry is not on disk. A variant the client prefers that is
+     * missing, enabled and not remembered as failed is made after the
+     * response (convertLater()); meanwhile the response says
+     * "max-age=0, must-revalidate", so that no cache keeps the original,
+     * or a variant the client likes less, for CACHE_EXPIRY.
      *
      * @param string   $cacheStatus one of the ResponseFactory::CACHE_* constants
      * @param int|null $maxAge      the max-age of a managed entry; null for CACHE_EXPIRY
@@ -1068,38 +1088,107 @@ final class ProxyKernel
             return $this->files->respond($request, $file, $extension, $cacheStatus, $encoded, [], $maxAge);
         }
 
+        $pending = false;
         foreach ($this->negotiator->acceptedFormats((string) $request->headers->get('Accept', '')) as $format) {
             $variant = $location->getVariantFile($format);
-            if ($this->storage->isFile($variant) || $this->convertOnHit($request, $location, $format)) {
-                return $this->files->respond($request, $variant, $format, $cacheStatus, [], ['Accept'], $maxAge);
+            if ($this->storage->isFile($variant)) {
+                return $this->files->respond($request, $variant, $format, $cacheStatus, [], ['Accept'], $pending ? 0 : $maxAge);
             }
+            $pending = $this->convertLater($request, $location, $format) || $pending;
         }
 
-        return $this->files->respond($request, $file, $extension, $cacheStatus, [], ['Accept'], $maxAge);
+        return $this->files->respond($request, $file, $extension, $cacheStatus, [], ['Accept'], $pending ? 0 : $maxAge);
     }
 
     /**
-     * Makes the missing variant $format of the stored entry of $location
-     * on a hit PHP serves (VariantConverter::convertOnHit()), by one
-     * request at a time: the others serve what is on disk meanwhile.
-     * Whether the variant exists afterwards.
-     *
-     * @phpstan-impure
+     * Leaves the missing variant $format of the stored entry of $location
+     * to be made after the response, when it may be made
+     * (VariantConverter::shouldConvert(), which asks the converter
+     * nothing). Whether it will be.
      */
-    private function convertOnHit(Request $request, CacheLocation $location, string $format): bool
+    private function convertLater(Request $request, CacheLocation $location, string $format): bool
+    {
+        $scheduled = $this->pendingConversions[$location->getKey()] ?? null;
+        if ($scheduled !== null && $scheduled[1] === null) {
+            // A new version: every enabled format is made.
+            return $this->variants !== null && $this->variants->getNegotiator()->isEnabled($format);
+        }
+        if ($this->variants === null || !$this->variants->shouldConvert($location, $format)) {
+            return false;
+        }
+        $this->scheduleConversion($location, [$format], self::requestIdOf($request));
+
+        return true;
+    }
+
+    /**
+     * Leaves conversions of the entry of $location for after the
+     * response: $formats, or with null every enabled format of a new
+     * version (which forgets the failures of the former one).
+     *
+     * @param list<string>|null $formats
+     */
+    private function scheduleConversion(CacheLocation $location, ?array $formats, ?string $requestId): void
     {
         if ($this->variants === null) {
-            return false;
+            return;
         }
-        $lease = $this->coalescer->tryEnter($location->getKey() . '#' . $format);
-        if ($lease === null && $this->coalescer->isEnabled()) {
-            return false;
+        $key = $location->getKey();
+        $scheduled = $this->pendingConversions[$key] ?? null;
+        if ($scheduled !== null) {
+            $formats = $scheduled[1] === null || $formats === null
+                ? null
+                : array_values(array_unique(array_merge($scheduled[1], $formats)));
         }
-        try {
-            return $this->variants->convertOnHit($location, $format, self::requestIdOf($request));
-        } finally {
-            if ($lease !== null) {
-                $lease->release();
+        $this->pendingConversions[$key] = [$location, $formats, $requestId];
+    }
+
+    /**
+     * Makes the conversions left for after the response, within one
+     * IMAGE_CONVERSION_TIMEOUT per format of IMAGE_FORMATS (as long as
+     * the conversions of one entry may take): no conversion starts once
+     * it is spent, and one that runs is bounded by the timeout. Each
+     * entry is converted by one request at a time, under a lock of its
+     * own: a request that finds it taken leaves the entry to the request
+     * that holds it.
+     */
+    private function runConversions(): void
+    {
+        $pending = $this->pendingConversions;
+        $this->pendingConversions = [];
+        if ($this->variants === null || $pending === []) {
+            return;
+        }
+        $budget = $this->config->getImageConversionTimeout() * max(1, count($this->config->getImageFormats()));
+        $deadline = microtime(true) + $budget;
+        foreach ($pending as $key => $conversion) {
+            list($location, $formats, $requestId) = $conversion;
+            if (microtime(true) >= $deadline) {
+                $this->logger->notice('image conversions left for a later request', ['path' => SignedUrlVerifier::mask('/' . $location->getRelativePath())]);
+                continue;
+            }
+            $lease = $this->coalescer->tryEnter($key . '#variants');
+            if ($lease === null && $this->coalescer->isEnabled()) {
+                continue;
+            }
+            try {
+                if (!$this->storage->isFile($location->getFile())) {
+                    continue;
+                }
+                if ($formats === null) {
+                    $this->variants->convertAll($location, $location->getFile(), $requestId, $deadline);
+                    continue;
+                }
+                foreach ($formats as $format) {
+                    if (microtime(true) >= $deadline) {
+                        break;
+                    }
+                    $this->variants->convertOnHit($location, $format, $requestId);
+                }
+            } finally {
+                if ($lease !== null) {
+                    $lease->release();
+                }
             }
         }
     }
@@ -1161,11 +1250,12 @@ final class ProxyKernel
     private function serveLegacy(Request $request, CacheLocation $location, string $extension, string $cacheStatus, ?int $maxAge = null): Response
     {
         $webp = $location->getVariantFile(CacheLocation::FORMAT_WEBP);
-        if ($this->storage->isFile($webp) || $this->convertOnHit($request, $location, CacheLocation::FORMAT_WEBP)) {
+        if ($this->storage->isFile($webp)) {
             return $this->files->respond($request, $webp, CacheLocation::FORMAT_WEBP, $cacheStatus, [], [], $maxAge);
         }
+        $pending = $this->convertLater($request, $location, CacheLocation::FORMAT_WEBP);
 
-        return $this->files->respond($request, $location->getFile(), $extension, $cacheStatus, [], [], $maxAge);
+        return $this->files->respond($request, $location->getFile(), $extension, $cacheStatus, [], [], $pending ? 0 : $maxAge);
     }
 
     /**
