@@ -16,6 +16,7 @@ use Mfonte\ProxyCdn\Cache\QueryStringPolicy;
 use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Compression\Precompressor;
 use Mfonte\ProxyCdn\Config\Config;
+use Mfonte\ProxyCdn\Image\FormatNegotiator;
 use Mfonte\ProxyCdn\Image\SignedUrlVerifier;
 use Mfonte\ProxyCdn\Image\VariantConverter;
 use Mfonte\ProxyCdn\Origin\CircuitBreaker;
@@ -191,6 +192,14 @@ final class ProxyKernel
     private $variants;
 
     /**
+     * The negotiator of the variants: the one of $variants, or one that
+     * makes no variant but still serves those on disk.
+     *
+     * @var FormatNegotiator
+     */
+    private $negotiator;
+
+    /**
      * @var SignedUrlVerifier|null
      */
     private $resize;
@@ -272,6 +281,7 @@ final class ProxyKernel
         $this->purger = $purger;
         $this->origin = $origin;
         $this->variants = $variants;
+        $this->negotiator = $variants === null ? new FormatNegotiator([]) : $variants->getNegotiator();
         $this->resize = $resize;
         $this->precompressor = $precompressor;
         $this->responses = $responses;
@@ -1058,12 +1068,9 @@ final class ProxyKernel
             return $this->files->respond($request, $file, $extension, $cacheStatus, $encoded, [], $maxAge);
         }
 
-        $accept = (string) $request->headers->get('Accept', '');
-        foreach (CacheLocation::FORMATS as $format) {
+        foreach ($this->negotiator->acceptedFormats((string) $request->headers->get('Accept', '')) as $format) {
             $variant = $location->getVariantFile($format);
-            if (AcceptHeader::accepts($accept, MediaTypes::of($format))
-                && ($this->storage->isFile($variant) || $this->convertOnHit($request, $location, $format))
-            ) {
+            if ($this->storage->isFile($variant) || $this->convertOnHit($request, $location, $format)) {
                 return $this->files->respond($request, $variant, $format, $cacheStatus, [], ['Accept'], $maxAge);
             }
         }
