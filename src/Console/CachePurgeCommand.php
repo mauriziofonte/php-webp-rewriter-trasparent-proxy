@@ -9,6 +9,7 @@ use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
 use Mfonte\ProxyCdn\Cluster\PeerNotifier;
 use Mfonte\ProxyCdn\Config\Config;
+use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
 use Mfonte\ProxyCdn\Http\RequestId;
@@ -169,11 +170,13 @@ final class CachePurgeCommand extends Command
      * segment; anything else is refused.
      *
      * @psalm-taint-escape file
+     *
+     * @throws InvalidArgumentException when $host is not a host name: the allowlist matched something else
      */
     private static function directoryName(string $host): string
     {
         if (preg_match(HostAllowlist::HOST_PATTERN, $host) !== 1) {
-            throw new \UnexpectedValueException('Not a host name of the allowlist');
+            throw new InvalidArgumentException('Not a host name of the allowlist');
         }
 
         return $host;

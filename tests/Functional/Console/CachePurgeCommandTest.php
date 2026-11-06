@@ -10,6 +10,7 @@ use Mfonte\ProxyCdn\Config\ConfigLoader;
 use Mfonte\ProxyCdn\Console\CachePurgeCommand;
 use Mfonte\ProxyCdn\Console\Installation;
 use Mfonte\ProxyCdn\Console\ProxyUrls;
+use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
 use Mfonte\ProxyCdn\Origin\MockTransport;
 use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
@@ -206,6 +207,23 @@ final class CachePurgeCommandTest extends TestCase
         self::assertSame(1, $this->purge(['--all' => true])[0]);
         self::assertSame(1, $this->purge([])[0]);
         self::assertSame([], $this->transport->getRequests());
+    }
+
+    /**
+     * The guard on the directory of --all --host throws an exception of
+     * the package (InvalidArgumentException, an ExceptionInterface), never
+     * a bare SPL one.
+     */
+    public function testANameThatIsNoHostIsRefusedWithAPackageException(): void
+    {
+        $directoryName = \Closure::bind(static function (string $host): string {
+            return CachePurgeCommand::directoryName($host);
+        }, null, CachePurgeCommand::class);
+        self::assertSame('cdn.example.test', $directoryName('cdn.example.test'));
+
+        $this->expectException(InvalidArgumentException::class);
+
+        $directoryName('../outside');
     }
 
     /**
