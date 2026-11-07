@@ -103,9 +103,12 @@ final class ProxyKernel
     /**
      * The request attribute that holds the ID of the request (risk L-20),
      * when the front controller or a host application set one: it is sent
-     * to the conversion API in X-Request-Id.
+     * to the conversion API in X-Request-Id, also by the conversions made
+     * after the response. It is the attribute of RequestId, which the
+     * front controller and EdgeKernel fill (RequestId::of(): the valid ID
+     * the client sent, else a generated one).
      */
-    public const REQUEST_ID_ATTRIBUTE = '_proxy_cdn_request_id';
+    public const REQUEST_ID_ATTRIBUTE = RequestId::ATTRIBUTE;
 
     /**
      * Seconds a raster entry waits, pending, for its variants before it is
