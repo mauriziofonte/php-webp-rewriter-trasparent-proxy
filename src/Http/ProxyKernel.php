@@ -101,6 +101,14 @@ final class ProxyKernel
     ];
 
     /**
+     * How many times a request enters the coalescer of its entry
+     * (RequestCoalescer::enter()) when what it was told to look for is
+     * gone each time it looks; then it answers 503 rather than fetch
+     * without the lock.
+     */
+    private const MAX_ENTRIES = 3;
+
+    /**
      * @var Config
      */
     private $config;
@@ -389,48 +397,63 @@ final class ProxyKernel
         // cold entry, also while the origin fails it; for "X.webp", the
         // fetches of its raster siblings too.
         $key = $location->getKey();
-        $lease = $this->coalescer->isRecentlyUncacheable($key) ? null : $this->coalescer->enter($key, function () use ($location, $file, $legacy): bool {
-            return $this->storage->isFile($file)
-                || $this->storage->isFile($location->managed()->getFile())
-                || $this->negativeCache->lookup($file) !== null
-                || $this->isLegacyStored($legacy);
-        });
-        if ($lease === false) {
-            return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
-        }
-        try {
-            // What the leader, or another request, has done meanwhile.
-            $legacyHit = $this->serveLegacyHit($request, $legacy);
-            if ($legacyHit !== null) {
-                return $legacyHit;
+        for ($entries = 1;; ++$entries) {
+            $uncacheable = $this->coalescer->isRecentlyUncacheable($key);
+            $lease = $uncacheable ? null : $this->coalescer->enter($key, function () use ($location, $file, $legacy): bool {
+                return $this->storage->isFile($file)
+                    || $this->storage->isFile($location->managed()->getFile())
+                    || $this->negativeCache->lookup($file) !== null
+                    || $this->isLegacyStored($legacy);
+            });
+            if ($lease === false) {
+                return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
             }
-            $remembered = $this->negativeCache->lookup($file);
-            if ($remembered !== null) {
-                return $this->notFound($path, $remembered);
-            }
-            $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT)
-                ?? $this->serveManaged($request, $location, $extension, $origin, $path, $query, $lease !== null);
-            if ($stored !== null) {
-                return $stored;
-            }
-            // A request that waited for a leader that stored nothing.
-            $shared = $lease === null ? $this->sharedOutcome($key, $path) : null;
-            if ($shared !== null) {
-                return $shared;
-            }
+            try {
+                // What the leader, or another request, has done meanwhile.
+                $legacyHit = $this->serveLegacyHit($request, $legacy);
+                if ($legacyHit !== null) {
+                    return $legacyHit;
+                }
+                $remembered = $this->negativeCache->lookup($file);
+                if ($remembered !== null) {
+                    return $this->notFound($path, $remembered);
+                }
+                $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT)
+                    ?? $this->serveManaged($request, $location, $extension, $origin, $path, $query, $lease !== null);
+                if ($stored !== null) {
+                    return $stored;
+                }
+                // A request that waited for a leader that stored nothing.
+                $shared = $lease === null ? $this->sharedOutcome($key, $path) : null;
+                if ($shared !== null) {
+                    return $shared;
+                }
+                if ($lease === null && !$uncacheable && $this->coalescer->isEnabled()) {
+                    // What enter() saw is gone (the outcome expired, the
+                    // entry or its outcome was purged, or the outcome of
+                    // another key replaced it in the slot): enter again
+                    // rather than fetch without the lock while the next
+                    // leader fetches.
+                    if ($entries < self::MAX_ENTRIES) {
+                        continue;
+                    }
 
-            $fetched = $this->fetch($request, $origin, $path, $query);
-            if ($fetched->isSuccessful()) {
-                return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
-            }
-            if ($legacy === [] || !$fetched->isNotFound()) {
-                return $this->failure($origin, $path, $location, $fetched);
-            }
+                    return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+                }
 
-            return $this->fetchLegacy($request, $origin, $path, $query, $legacy, $location);
-        } finally {
-            if ($lease !== null) {
-                $lease->release();
+                $fetched = $this->fetch($request, $origin, $path, $query);
+                if ($fetched->isSuccessful()) {
+                    return $this->storeAndServe($request, $origin, $location, $extension, $fetched);
+                }
+                if ($legacy === [] || !$fetched->isNotFound()) {
+                    return $this->failure($origin, $path, $location, $fetched);
+                }
+
+                return $this->fetchLegacy($request, $origin, $path, $query, $legacy, $location);
+            } finally {
+                if ($lease !== null) {
+                    $lease->release();
+                }
             }
         }
     }
@@ -511,38 +534,48 @@ final class ProxyKernel
         }
         // One lock per entry, in either tier: the one of the miss path.
         $key = $location->getKey();
-        $lease = $this->coalescer->enter($key, function () use ($managed): bool {
-            $current = $this->readMetadata($managed);
+        for ($entries = 1;; ++$entries) {
+            $lease = $this->coalescer->enter($key, function () use ($managed): bool {
+                $current = $this->readMetadata($managed);
 
-            return $current === null || $current->isFresh(time());
-        });
-        if ($lease === false) {
-            return $this->staleOrError($request, $managed, $extension, $path, $metadata, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
-        }
-        try {
-            $metadata = $this->readMetadata($managed);
-            $now = time();
-            if ($metadata !== null && $metadata->isFresh($now)) {
-                return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_HIT, $metadata->getRemainingLifetime($now));
+                return !$this->storage->isFile($managed->getFile()) || ($current !== null && $current->isFresh(time()));
+            });
+            if ($lease === false) {
+                return $this->staleOrError($request, $managed, $extension, $path, $metadata, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
             }
-            if (!$this->storage->isFile($managed->getFile())) {
-                // Purged, or found gone, meanwhile.
-                return null;
-            }
-            // A request that waited for a leader the origin failed.
-            $failed = $lease === null ? $this->coalescer->recentFailure($key) : null;
-            if ($failed !== null) {
-                return $this->staleOrError($request, $managed, $extension, $path, $metadata, $failed);
-            }
-            $redirect = $lease === null ? $this->coalescer->recentRedirect($key) : null;
-            if ($redirect !== null) {
-                return $this->responses->redirect($redirect[0], $redirect[1]);
-            }
+            try {
+                $metadata = $this->readMetadata($managed);
+                $now = time();
+                if ($metadata !== null && $metadata->isFresh($now)) {
+                    return $this->serve($request, $managed, $extension, ResponseFactory::CACHE_HIT, $metadata->getRemainingLifetime($now));
+                }
+                if (!$this->storage->isFile($managed->getFile())) {
+                    // Purged, or found gone, meanwhile.
+                    return null;
+                }
+                // A request that waited for a leader the origin failed.
+                $failed = $lease === null ? $this->coalescer->recentFailure($key) : null;
+                if ($failed !== null) {
+                    return $this->staleOrError($request, $managed, $extension, $path, $metadata, $failed);
+                }
+                $redirect = $lease === null ? $this->coalescer->recentRedirect($key) : null;
+                if ($redirect !== null) {
+                    return $this->responses->redirect($redirect[0], $redirect[1]);
+                }
+                if ($lease === null && $this->coalescer->isEnabled() && !$this->coalescer->isRecentlyUncacheable($key)) {
+                    // What enter() saw is gone, as on the miss path.
+                    if ($entries < self::MAX_ENTRIES) {
+                        continue;
+                    }
 
-            return $this->revalidate($request, $managed, $extension, $origin, $path, $query, $metadata);
-        } finally {
-            if ($lease !== null) {
-                $lease->release();
+                    return $this->staleOrError($request, $managed, $extension, $path, $metadata, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+                }
+
+                return $this->revalidate($request, $managed, $extension, $origin, $path, $query, $metadata);
+            } finally {
+                if ($lease !== null) {
+                    $lease->release();
+                }
             }
         }
     }

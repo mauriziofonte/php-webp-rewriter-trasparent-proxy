@@ -233,9 +233,14 @@ final class RequestCoalescerTest extends TestCase
         };
         $coalescer = $this->coalescer($lock, 1.0);
 
-        self::assertNull($coalescer->enter('key', static function (): bool {
+        // A lease that holds nothing: the request leads, without the lock.
+        $lease = $coalescer->enter('key', static function (): bool {
             return false;
-        }));
+        });
+        self::assertInstanceOf(LeaseInterface::class, $lease);
+        self::assertFalse($lease->isReleased());
+        $lease->release();
+        self::assertTrue($lease->isReleased());
         self::assertNull($coalescer->tryEnter('key'));
         $records = $this->logger->getRecords();
         self::assertCount(2, $records);

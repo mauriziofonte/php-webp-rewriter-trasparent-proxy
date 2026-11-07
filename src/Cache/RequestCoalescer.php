@@ -114,11 +114,17 @@ final class RequestCoalescer
     private $logger;
 
     /**
+     * @var callable(): int
+     */
+    private $clock;
+
+    /**
      * @param KeyedLockInterface|null $lock             null to never coalesce
      * @param float                   $timeout          the longest wait for a leader, in seconds: above the time a
      *                                                  fetch may take (UPSTREAM_TIMEOUT)
      * @param string                  $outcomeDirectory the directory of the outcomes the leaders record
      * @param int                     $outcomeWindow    seconds during which a recorded outcome holds
+     * @param (callable(): int)|null  $clock            the current Unix time; time() when null
      */
     public function __construct(
         ?KeyedLockInterface $lock,
@@ -127,7 +133,8 @@ final class RequestCoalescer
         CacheStorage $storage,
         string $outcomeDirectory,
         int $outcomeWindow = self::OUTCOME_WINDOW,
-        ?Backoff $backoff = null
+        ?Backoff $backoff = null,
+        ?callable $clock = null
     ) {
         $this->lock = $lock;
         $this->timeout = max(0.0, min($timeout, Backoff::MAX_TIMEOUT));
@@ -136,6 +143,7 @@ final class RequestCoalescer
         $this->outcomeDirectory = rtrim($outcomeDirectory, '/');
         $this->outcomeWindow = max(1, $outcomeWindow);
         $this->backoff = $backoff ?? new Backoff(0.005, 0.1);
+        $this->clock = $clock ?? 'time';
     }
 
     /**
@@ -144,9 +152,15 @@ final class RequestCoalescer
      * @param string           $key   the entry (CacheLocation::getKey())
      * @param callable(): bool $ready whether another request has made the entry available
      *
-     * @return LeaseInterface|false|null the lock to release once the entry is stored, when this request leads; null
-     *                                   when it must look for the entry, and for an outcome, again; false when it
-     *                                   waited longer than the timeout
+     * A request told to look again that finds neither the entry nor an
+     * outcome (it expired, was purged or was replaced in its slot in
+     * between) enters again rather than fetch: another request may lead by
+     * then.
+     *
+     * @return LeaseInterface|false|null the lock to release once the entry is stored, when this request leads (a
+     *                                   lease that holds nothing when the lock fails: the request fetches by itself);
+     *                                   null when it must look for the entry, and for an outcome, again, or without
+     *                                   a lock; false when it waited longer than the timeout
      */
     public function enter(string $key, callable $ready)
     {
@@ -189,7 +203,7 @@ final class RequestCoalescer
         } catch (ExceptionInterface $exception) {
             $this->logger->warning('request coalescing unavailable', ['error' => $exception->getMessage()]);
 
-            return null;
+            return self::unlocked();
         }
         if ($outcome === null) {
             $this->logger->warning('request coalescing timed out', ['timeout' => $this->timeout]);
@@ -322,7 +336,7 @@ final class RequestCoalescer
         }
         $outcome = $this->recordedIn($key);
         $recordedAt = $outcome === null ? null : $this->storage->modifiedAt($this->slotOf($key));
-        if ($recordedAt === null || time() - $recordedAt >= $this->outcomeWindow) {
+        if ($recordedAt === null || ($this->clock)() - $recordedAt >= $this->outcomeWindow) {
             return null;
         }
 
@@ -349,6 +363,29 @@ final class RequestCoalescer
         }
 
         return [$match[1], (int) $match[2], $target];
+    }
+
+    /**
+     * The lease of a request that leads without the lock, which failed.
+     */
+    private static function unlocked(): LeaseInterface
+    {
+        return new class () implements LeaseInterface {
+            /**
+             * @var bool
+             */
+            private $released = false;
+
+            public function release(): void
+            {
+                $this->released = true;
+            }
+
+            public function isReleased(): bool
+            {
+                return $this->released;
+            }
+        };
     }
 
     private function slotOf(string $key): string
