@@ -130,8 +130,8 @@ The web server serves the hits; the official configurations are [public/.htacces
 
 **HTTPS redirect behind a proxy.** Plain-HTTP requests are redirected to https. Behind a TLS-terminating reverse proxy, the web server must believe the `X-Forwarded-Proto` of that proxy only, as PHP does with `TRUSTED_PROXIES`; 2.x believed any client. List the same addresses in the web server:
 
-- Apache, in the virtual host: `SetEnvIfExpr "-R '10.0.0.0/8' && %{HTTP:X-Forwarded-Proto} == 'https'" PROXYCDN_HTTPS=on`.
-- nginx, in the `geo $proxycdn_trusted_proxy` block of `proxy-cdn.conf`: `10.0.0.0/8 1;`.
+- Apache, in both virtual hosts of `config/apache/proxy-cdn.conf` (a load balancer usually forwards to `:80`, which includes the redirect rule too): `SetEnvIfExpr "-R '10.0.0.0/8' && %{HTTP:X-Forwarded-Proto} == 'https'" PROXYCDN_HTTPS=on`.
+- nginx, in the `geo $proxycdn_trusted_proxy` block of `proxy-cdn.conf`, which covers its one server block on `:80` and `:443`: `10.0.0.0/8 1;`. [docker/cluster/](docker/cluster/) is a worked example: the load balancer forwards to port 80 of each node, whose `geo` block and `TRUSTED_PROXIES` list it.
 
 Without them `X-Forwarded-Proto` is ignored, which is the safe default: a TLS-terminating proxy then gets redirect loops until it is listed.
 
