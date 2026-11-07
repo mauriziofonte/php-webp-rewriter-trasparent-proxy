@@ -206,6 +206,14 @@ final class ProxyKernel
     private $pendingRevalidations = [];
 
     /**
+     * When the last origin fetch started (Unix time), for the circuit
+     * breaker; null before the first.
+     *
+     * @var int|null
+     */
+    private $fetchStartedAt;
+
+    /**
      * @param WebpConverter|null $converter null when IMAGE_CONVERSION_MODE is "none"
      */
     public function __construct(
@@ -621,7 +629,7 @@ final class ProxyKernel
                 : $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
 
-        $fetched = $this->origin->fetch($this->originRequest($request, $origin, $path, $query, $metadata === null ? [] : $metadata->conditionalHeaders()));
+        $fetched = $this->fetchFromOrigin($this->originRequest($request, $origin, $path, $query, $metadata === null ? [] : $metadata->conditionalHeaders()));
         $now = time();
         if ($fetched->isNotModified() && $metadata !== null) {
             $renewed = $metadata->revalidated($fetched->getHeaders(), $now, $this->config->getStaleWhileRevalidate(), $this->config->getStaleIfError());
@@ -660,7 +668,7 @@ final class ProxyKernel
         } elseif ($mayServeStale && (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429)) {
             // The outcome first, then the breaker: see failure().
             $this->coalescer->recordFailure($web->getKey(), ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
-            $this->circuitBreaker->recordFailure($breakerKey);
+            $this->circuitBreaker->recordFailure($breakerKey, $this->fetchStartedAt);
             $this->logger->warning('stale entry served, origin unavailable', ['path' => $path, 'reason' => $reason]);
 
             return $request === null ? null : $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0);
@@ -688,7 +696,19 @@ final class ProxyKernel
      */
     private function fetch(Request $request, string $origin, string $path, QueryString $query): OriginResponse
     {
-        return $this->origin->fetch($this->originRequest($request, $origin, $path, $query, []));
+        return $this->fetchFromOrigin($this->originRequest($request, $origin, $path, $query, []));
+    }
+
+    /**
+     * Every origin fetch of the kernel, which notes when it started: the
+     * circuit breaker measures the pause between failures up to the start
+     * of the fetch that failed, not to its end.
+     */
+    private function fetchFromOrigin(OriginRequest $request): OriginResponse
+    {
+        $this->fetchStartedAt = time();
+
+        return $this->origin->fetch($request);
     }
 
     /**
@@ -1078,11 +1098,12 @@ final class ProxyKernel
         if (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429) {
             // The outcome is recorded before the failure is counted: the
             // next fetch of the entry comes once the outcome expired, so
-            // the breaker sees the failures of one URL at most the window
-            // apart, which ProxyKernelFactory keeps within
-            // NETWORK_ERROR_TTL (the pause that starts the count again).
+            // the next failing fetch starts at most the window after this
+            // failure is counted, and ProxyKernelFactory keeps the window
+            // within NETWORK_ERROR_TTL (the pause that starts the count
+            // again, up to the start of a failing fetch).
             $response = $this->sharedError($shared, $path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
-            $this->circuitBreaker->recordFailure($breakerKey);
+            $this->circuitBreaker->recordFailure($breakerKey, $this->fetchStartedAt);
 
             return $response;
         }

@@ -8,7 +8,9 @@ use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\EntryMetadata;
 use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
+use Mfonte\ProxyCdn\Origin\CircuitBreaker;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
+use Mfonte\ProxyCdn\Origin\OriginRequest;
 use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
@@ -394,6 +396,72 @@ final class OriginSemanticsTest extends TestCase
         self::assertSame('STALE', $response->headers->get('x-cache-status'));
         self::assertSame(12, $looks, 'three entries');
         self::assertCount(2, $this->origin->getRequests(), 'no revalidation without the lock');
+    }
+
+    /**
+     * The kernel tells the breaker when each failed fetch started, on the
+     * miss path and on the revalidation path, so that the time a failure
+     * takes (a timeout) is not counted as a pause between failures.
+     */
+    public function testTheBreakerIsToldWhenAFailedFetchStarted(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(500);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_TIMEOUT, 0, 28, 'timed out'));
+        $this->origin->respond(self::ORIGIN . '/js/miss.js', OriginResponse::failure(OriginResponse::FAILURE_TIMEOUT, 0, 28, 'timed out'));
+        $origin = new class ($this->origin) implements OriginFetcher {
+            /** @var list<int> */
+            public $startedAt = [];
+
+            /** @var OriginFetcher */
+            private $origin;
+
+            public function __construct(OriginFetcher $origin)
+            {
+                $this->origin = $origin;
+            }
+
+            public function fetch(OriginRequest $request): OriginResponse
+            {
+                $this->startedAt[] = time();
+
+                return $this->origin->fetch($request);
+            }
+        };
+        $breaker = new class () implements CircuitBreaker {
+            /** @var list<int|null> */
+            public $startedAt = [];
+
+            public function isOpen(string $origin): bool
+            {
+                return false;
+            }
+
+            public function recordFailure(string $origin, ?int $startedAt = null): void
+            {
+                $this->startedAt[] = $startedAt;
+            }
+
+            public function reset(string $origin): void
+            {
+            }
+        };
+        $kernel = $this->kernel([], $origin);
+        $replace = \Closure::bind(static function (ProxyKernel $kernel, CircuitBreaker $breaker): void {
+            $kernel->circuitBreaker = $breaker;
+        }, null, ProxyKernel::class);
+        $replace($kernel, $breaker);
+
+        self::assertSame('STALE', $kernel->handle(Request::create(self::URL))->headers->get('x-cache-status'));
+        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/miss.js'))->getStatusCode());
+
+        self::assertCount(2, $breaker->startedAt);
+        foreach ($breaker->startedAt as $i => $startedAt) {
+            self::assertNotNull($startedAt, 'fetch ' . $i);
+            // The kernel notes the time just before the origin does.
+            self::assertContains($startedAt, [$origin->startedAt[$i], $origin->startedAt[$i] - 1], 'fetch ' . $i);
+        }
     }
 
     public function testAnEntryGoneFromTheOriginIsRemoved(): void

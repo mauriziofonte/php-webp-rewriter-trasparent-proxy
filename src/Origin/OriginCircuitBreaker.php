@@ -11,7 +11,8 @@ namespace Mfonte\ProxyCdn\Origin;
  *
  * - Closed: fetches go through. Each failure that means the origin is
  *   unavailable is counted; a success, or a pause longer than the open
- *   time since the last failure, starts the count again. The requests of
+ *   time between the end of the last failure and the start of the fetch
+ *   that fails next, starts the count again. The requests of
  *   one URL share a failure for the outcome window of RequestCoalescer,
  *   so one URL counts one failure per window; ProxyKernelFactory keeps
  *   the window within the open time, else one failing URL could never
@@ -89,14 +90,17 @@ final class OriginCircuitBreaker implements CircuitBreaker
         return $open;
     }
 
-    public function recordFailure(string $origin): void
+    public function recordFailure(string $origin, ?int $startedAt = null): void
     {
         if ($this->openSeconds <= 0) {
             return;
         }
-        $this->update($origin, function (array $state, int $now): array {
+        $this->update($origin, function (array $state, int $now) use ($startedAt): array {
             $halfOpen = $state['opened_at'] !== 0;
-            if (!$halfOpen && $state['last_failure_at'] !== 0 && $now - $state['last_failure_at'] > $this->openSeconds) {
+            // The pause runs from the end of the last failure to the start
+            // of this one.
+            $pause = min($startedAt ?? $now, $now) - $state['last_failure_at'];
+            if (!$halfOpen && $state['last_failure_at'] !== 0 && $pause > $this->openSeconds) {
                 $state['failures'] = 0;
             }
             ++$state['failures'];

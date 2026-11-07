@@ -22,8 +22,12 @@ interface CircuitBreaker
 
     /**
      * Counts a fetch that failed because $origin is unavailable.
+     *
+     * @param int|null $startedAt when the failed fetch started (Unix time); now when null. The pause after
+     *                            which the count starts again is measured up to it, so that the time a
+     *                            failure takes (a timeout) does not count as a pause.
      */
-    public function recordFailure(string $origin): void;
+    public function recordFailure(string $origin, ?int $startedAt = null): void;
 
     /**
      * Closes the breaker of $origin once the origin answered: a success,

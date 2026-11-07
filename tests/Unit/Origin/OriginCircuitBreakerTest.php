@@ -90,6 +90,37 @@ final class OriginCircuitBreakerTest extends TestCase
         self::assertFalse($breaker->isOpen(self::ORIGIN));
     }
 
+    /**
+     * The pause runs from the end of the last failure to the start of the
+     * fetch that fails next: a failure that took long (a timeout) is not
+     * a pause, so one URL whose fetches time out, each the outcome window
+     * after the last, still opens the breaker.
+     */
+    public function testThePauseEndsWhenTheFailingFetchStarted(): void
+    {
+        $breaker = $this->breaker();
+        for ($failure = 0; $failure < 3; ++$failure) {
+            // Each fetch started 5 seconds after the last failure and took
+            // 60 seconds (UPSTREAM_TIMEOUT), more than the 30-second open time.
+            $this->shiftTimes(-65);
+            $breaker->recordFailure(self::ORIGIN, time() - 60);
+        }
+
+        self::assertTrue($breaker->isOpen(self::ORIGIN));
+    }
+
+    public function testAPauseUpToTheStartOfTheFailingFetchStartsTheCountAgain(): void
+    {
+        $breaker = $this->breaker();
+        $breaker->recordFailure(self::ORIGIN);
+        $breaker->recordFailure(self::ORIGIN);
+        $this->shiftTimes(-41);
+
+        $breaker->recordFailure(self::ORIGIN, time() - 10);
+
+        self::assertFalse($breaker->isOpen(self::ORIGIN), 'a 31-second pause');
+    }
+
     public function testItLetsOneProbeThroughAfterTheOpenTime(): void
     {
         $breaker = $this->opened();
