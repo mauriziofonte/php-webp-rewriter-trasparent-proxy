@@ -35,10 +35,14 @@ use Symfony\Component\Console\Output\OutputInterface;
  * Without --force nothing changes: the plan is printed, every path it
  * would move or delete and every path it leaves. --wipe deletes the 2.x
  * cache instead of moving it (the documented alternative: 3.x fills its
- * cache again from the origin): what can be told to be 2.x cache only,
- * that is _qs/, the markers, .cached.env.php, the entries ProxyUrls
- * accepts and their X.webp. Every other file stays, in both modes:
- * robots.txt, .well-known/, a directory of another application.
+ * cache again from the origin): what is taken as 2.x cache only, that
+ * is _qs/, the markers of entries, .cached.env.php, the entries and
+ * their X.webp. An entry is told by its name alone: any file with a
+ * cacheable extension and a path the rules of live traffic accept
+ * (ProxyUrls) is taken as 2.x cache, in both modes, even in a directory
+ * of another application; review the dry run, which lists every path.
+ * Every other file stays: robots.txt, .well-known/, files with an
+ * extension that is not cacheable.
  */
 final class CacheMigrate2xCommand extends Command
 {

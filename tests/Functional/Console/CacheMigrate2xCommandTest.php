@@ -143,6 +143,33 @@ final class CacheMigrate2xCommandTest extends TestCase
     }
 
     /**
+     * An entry is told by its name alone: a file with a cacheable extension
+     * and a path the proxy accepts is taken as 2.x cache wherever it is,
+     * the directory of another application included. The dry run says so
+     * for each file, before anything changes.
+     */
+    public function testCacheableFilesAreTakenAsCacheWherever(): void
+    {
+        $this->directory->write('public/other-app/app.js', 'app');
+        $this->directory->write('public/other-app/logo.png', 'logo');
+
+        list(, $wipeDryRun) = $this->migrate(['--wipe' => true]);
+        list(, $moveDryRun) = $this->migrate([]);
+
+        foreach (['app.js', 'logo.png'] as $name) {
+            self::assertStringContainsString('delete: ' . $this->directory->path('public/other-app/' . $name) . "\n", $wipeDryRun);
+            self::assertStringContainsString('move: ' . $this->directory->path('public/other-app/' . $name) . ' -> ' . $this->directory->path(self::HOST . '/other-app/' . $name) . "\n", $moveDryRun);
+            self::assertFileExists($this->directory->path('public/other-app/' . $name));
+        }
+
+        list($exitCode, $display) = $this->migrate(['--force' => true]);
+
+        self::assertSame(0, $exitCode, $display);
+        self::assertSame('app', file_get_contents($this->directory->path(self::HOST . '/other-app/app.js')));
+        self::assertFileDoesNotExist($this->directory->path('public/other-app/logo.png'));
+    }
+
+    /**
      * The dry run of a wipe names every path it would delete, and deletes
      * none.
      */
