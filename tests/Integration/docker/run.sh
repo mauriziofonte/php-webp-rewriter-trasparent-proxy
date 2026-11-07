@@ -8,7 +8,8 @@
 # server without reaching PHP-FPM (as the route log of the server says) or the
 # origin: the entry, its WEBP and AVIF variants, its gzip encoding and the
 # entry of a query string, each with the headers PHP sends, once (the first
-# request is a resize URL, which must leave the cache enterable). PURGE,
+# request is a resize URL, which must leave the cache enterable, and an
+# image whose variants cannot be made yet is answered by PHP only). PURGE,
 # OPTIONS and unlisted hosts reach PHP, and only a trusted proxy can tell
 # that the client used https. Then 500 concurrent requests for one cold
 # entry cause exactly one origin fetch (request coalescing).
@@ -718,10 +719,53 @@ resize_first() {
     expect "$s: the work directory is private" "$(stat -c %a "$cache/.work")" 700
 }
 
+# pending_entry <stack>: a raster stored while its variants cannot be
+# made yet (the conversion API is unreachable) stays out of the reach of
+# the web server: a client that accepts AVIF and WEBP gets the original
+# from PHP, with "max-age=0", never a hit of the web server with the
+# max-age of CACHE_EXPIRY that browsers and shared caches would keep in
+# the place of the variant. The step turns the conversion API on for its
+# requests only.
+pending_entry() {
+    local s="$1" base env="$workdir/$1/app/.env" host="$workdir/$1/app/public/_cache/127.0.0.1"
+    local fpm_log="$workdir/$1/logs/php-fpm-access.log" url lines pending
+    base="http://127.0.0.1:$(port_of "$s")"
+    url="$base$asset?v=pending"
+    log "Pending entry: $s"
+    cp "$env" "$env.saved"
+    sed -i 's/^IMAGE_CONVERTER = .*/IMAGE_CONVERTER = "remote"/' "$env"
+    printf 'IMAGE_API_URL = "https://origin:1"\nIMAGE_API_KEY = "harness-api-key-0123456789"\n' >>"$env"
+    expect "$s: pending entry, first request" "$(fetch "$url" "$workdir/$s/pending1" -H 'Accept: image/avif,image/webp,*/*')" 200
+    expect "$s: pending entry, first request is a miss" "$(cache_status "$workdir/$s/pending1.headers")" MISS
+    cmp -s "$workdir/$s/pending1.body" "$fixture" || die "$s: the pending entry differs from the origin file"
+    case "$(cache_directives "$workdir/$s/pending1.headers")" in
+        *max-age=0,*) pass "$s: pending entry, first request has max-age=0" ;;
+        *) die "$s: pending entry, first request: Cache-Control $(header_of Cache-Control "$workdir/$s/pending1.headers")" ;;
+    esac
+    # PHP-FPM tries the conversions after the response, and fails them.
+    sleep 2
+    pending="$(find "$host/.q" -path '*/.pending/*' -name 'gradient.png' | head -n 1)"
+    [ -n "$pending" ] || die "$s: no pending file of the entry"
+    pass "$s: the entry waits in ${pending#"$workdir/$s/app/public/"}"
+    [ -z "$(find "$host/.q" -path '*/.pending' -prune -o -name 'gradient.png' -print)" ] ||
+        die "$s: the entry was published before its variants"
+    pass "$s: the entry is not published"
+    lines="$(lines_of "$fpm_log")"
+    expect "$s: pending entry, second request" "$(fetch "$url" "$workdir/$s/pending2" -H 'Accept: image/avif,image/webp,*/*')" 200
+    cmp -s "$workdir/$s/pending2.body" "$fixture" || die "$s: the second response differs from the origin file"
+    wait_for "$s: pending entry, second request answered by PHP-FPM" 10 has_lines "$fpm_log" $((lines + 1))
+    case "$(cache_directives "$workdir/$s/pending2.headers")" in
+        *max-age=0,*) pass "$s: pending entry, second request has max-age=0" ;;
+        *) die "$s: pending entry, second request: Cache-Control $(header_of Cache-Control "$workdir/$s/pending2.headers")" ;;
+    esac
+    mv "$env.saved" "$env"
+}
+
 burst_size=500
 for s in "${stacks[@]}"; do
     client "$s"
     resize_first "$s"
+    pending_entry "$s"
     smoke "$s"
     burst "$s"
 done
