@@ -4,22 +4,19 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
-use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
 use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
-use Mfonte\ProxyCdn\Origin\OriginFetcher;
-use Mfonte\ProxyCdn\Origin\OriginRequest;
 use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
+use Mfonte\ProxyCdn\Tests\Fixtures\Http\CoalescerSeam;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
 use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeWebpConverter;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
 use Mfonte\ProxyCdn\Tests\Fixtures\Origin\FakeOriginFetcher;
-use Mfonte\SecureImageConverter\Concurrency\KeyedLock;
-use Mfonte\SecureImageConverter\Concurrency\LockDirectory;
+use Mfonte\ProxyCdn\Tests\Fixtures\Origin\LockProbingOrigin;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
@@ -421,43 +418,7 @@ final class ProxyKernelTest extends TestCase
     public function testARequestWhoseSharedOutcomeExpiresMeanwhileFetchesWithTheLock(): void
     {
         $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 500));
-        $state = $this->directory->path(TestKernel::STATE_DIRECTORY);
-        $origin = new class ($this->origin, $state) implements OriginFetcher {
-            /**
-             * Whether the lock of the entry was held, for each fetch.
-             *
-             * @var list<bool>
-             */
-            public $locked = [];
-
-            /** @var OriginFetcher */
-            private $origin;
-
-            /** @var string */
-            private $state;
-
-            public function __construct(OriginFetcher $origin, string $state)
-            {
-                $this->origin = $origin;
-                $this->state = $state;
-            }
-
-            public function fetch(OriginRequest $request): OriginResponse
-            {
-                $held = false;
-                foreach (glob($this->state . '/coalescing/*.outcome') ?: [] as $slot) {
-                    $hash = explode(' ', (string) file_get_contents($slot))[2] ?? '';
-                    $handle = fopen($this->state . '/locks/keyed.' . RequestCoalescer::LOCK_NAME . '.' . trim($hash) . '.lock', 'c');
-                    $held = $handle !== false && !flock($handle, LOCK_EX | LOCK_NB);
-                    if ($handle !== false) {
-                        fclose($handle);
-                    }
-                }
-                $this->locked[] = $held;
-
-                return $this->origin->fetch($request);
-            }
-        };
+        $origin = new LockProbingOrigin($this->origin, $this->directory->path(TestKernel::STATE_DIRECTORY));
         $config = TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'CIRCUIT_BREAKER_THRESHOLD' => '10']);
         $kernel = TestKernel::create($config, $this->directory->path(), $origin, null, $this->logger);
         self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
@@ -472,7 +433,7 @@ final class ProxyKernelTest extends TestCase
 
         self::assertGreaterThan(2, $looks, 'the outcome was looked up again');
         self::assertCount(2, $this->origin->getRequests());
-        self::assertSame([false, true], $origin->locked, 'the second fetch holds the lock');
+        self::assertSame([false, true], $origin->getLocked(), 'the second fetch holds the lock');
     }
 
     /**
@@ -1093,20 +1054,13 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
-     * Gives $kernel a coalescer of its own lock and outcome directories
-     * that reads the time from $clock.
+     * Gives $kernel a coalescer that reads the time from $clock.
      *
      * @param callable(): int $clock
      */
     private function replaceCoalescer(ProxyKernel $kernel, callable $clock): void
     {
-        $state = $this->directory->path(TestKernel::STATE_DIRECTORY);
-        $lock = new KeyedLock(new LockDirectory($state . '/locks'), RequestCoalescer::LOCK_NAME);
-        $coalescer = new RequestCoalescer($lock, 5.0, $this->logger, new FilesystemStorage(), $state . '/coalescing', RequestCoalescer::OUTCOME_WINDOW, null, $clock);
-        $replace = \Closure::bind(static function (ProxyKernel $kernel, RequestCoalescer $coalescer): void {
-            $kernel->coalescer = $coalescer;
-        }, null, ProxyKernel::class);
-        $replace($kernel, $coalescer);
+        CoalescerSeam::replace($kernel, $this->directory->path(TestKernel::STATE_DIRECTORY), $this->logger, $clock);
     }
 
     /**

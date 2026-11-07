@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
+use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\EntryMetadata;
+use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
+use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
+use Mfonte\ProxyCdn\Tests\Fixtures\Http\CoalescerSeam;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
 use Mfonte\ProxyCdn\Tests\Fixtures\Origin\FakeOriginFetcher;
+use Mfonte\ProxyCdn\Tests\Fixtures\Origin\LockProbingOrigin;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Group;
 use Symfony\Component\HttpFoundation\Request;
@@ -305,6 +310,92 @@ final class OriginSemanticsTest extends TestCase
         self::assertSame(503, $this->kernel(['STALE_IF_ERROR' => '100'])->handle(Request::create(self::URL))->getStatusCode());
     }
 
+    /**
+     * Finding P-24 on the revalidation path: a request that the coalescer
+     * sends to look for an outcome, which expires before the request reads
+     * it, enters again and revalidates the expired entry as the leader,
+     * with the lock held. The clock of the coalescer moves past the window
+     * right after enter() has seen the outcome fresh.
+     */
+    public function testARevalidationWhoseSharedOutcomeExpiresMeanwhileHoldsTheLock(): void
+    {
+        $origin = new LockProbingOrigin($this->origin, $this->stateDirectory());
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60', 'etag' => '"v1"']);
+        $this->kernel([], $origin)->handle(Request::create(self::URL));
+        $this->age(500);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 503));
+        self::assertSame('STALE', $this->kernel([], $origin)->handle(Request::create(self::URL))->headers->get('x-cache-status'));
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::notModified(['cache-control' => 'max-age=60']));
+
+        // enter() sees the failure fresh; every later look finds it expired.
+        $kernel = $this->kernel([], $origin);
+        $looks = 0;
+        CoalescerSeam::replace($kernel, $this->stateDirectory(), $this->logger, static function () use (&$looks): int {
+            return ++$looks <= 1 ? time() : time() + RequestCoalescer::OUTCOME_WINDOW;
+        });
+        $response = $kernel->handle(Request::create(self::URL));
+
+        self::assertSame('REVALIDATED', $response->headers->get('x-cache-status'));
+        self::assertGreaterThan(1, $looks, 'the outcome was looked up again');
+        self::assertSame([false, false, true], $origin->getLocked(), 'the revalidation holds the lock');
+    }
+
+    /**
+     * An expired entry whose metadata is missing is not taken as ready
+     * (as it would be once purged): a request waits for the request that
+     * holds the lock of the entry, and serves the entry stale when that
+     * takes too long, without asking the origin.
+     */
+    public function testAnEntryWithoutMetadataWaitsForTheLock(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+        $this->kernel()->handle(Request::create(self::URL));
+        self::assertTrue(unlink($this->cachePath('.m/.meta/js/app.js.json')));
+        $key = (new CacheKeyResolver($this->directory->path('_cache')))->resolve('cdn.example.test', '/js/app.js', '')->getKey();
+        $leader = CoalescerSeam::lock($this->stateDirectory())->tryAcquire($key);
+        self::assertNotNull($leader);
+
+        $kernel = $this->kernel();
+        CoalescerSeam::replace($kernel, $this->stateDirectory(), $this->logger, static function (): int {
+            return time();
+        }, 0.3);
+        $response = $kernel->handle(Request::create(self::URL));
+        $leader->release();
+
+        self::assertSame('STALE', $response->headers->get('x-cache-status'));
+        self::assertSame('short();', self::body($response));
+        self::assertCount(1, $this->origin->getRequests(), 'no revalidation without the lock');
+        self::assertContains('request coalescing timed out', array_column($this->logger->getRecords(), 'message'), 'it waited');
+    }
+
+    /**
+     * A revalidation that never finds what the coalescer saw gives up after
+     * ProxyKernel::MAX_ENTRIES entries and serves the entry stale, without
+     * asking the origin.
+     */
+    public function testARevalidationThatNeverFindsWhatTheCoalescerSawServesStale(): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+        $this->kernel()->handle(Request::create(self::URL));
+        $this->age(500);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 503));
+        self::assertSame('STALE', $this->kernel()->handle(Request::create(self::URL))->headers->get('x-cache-status'));
+
+        // In each entry, enter() sees the failure fresh, and recentFailure(),
+        // recentRedirect() and isRecentlyUncacheable() find it expired.
+        $kernel = $this->kernel();
+        $looks = 0;
+        CoalescerSeam::replace($kernel, $this->stateDirectory(), $this->logger, static function () use (&$looks): int {
+            return $looks++ % 4 < 1 ? time() : time() + RequestCoalescer::OUTCOME_WINDOW;
+        });
+        $response = $kernel->handle(Request::create(self::URL));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('STALE', $response->headers->get('x-cache-status'));
+        self::assertSame(12, $looks, 'three entries');
+        self::assertCount(2, $this->origin->getRequests(), 'no revalidation without the lock');
+    }
+
     public function testAnEntryGoneFromTheOriginIsRemoved(): void
     {
         $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
@@ -384,15 +475,20 @@ final class OriginSemanticsTest extends TestCase
     /**
      * @param array<string, string|null> $overrides
      */
-    private function kernel(array $overrides = []): ProxyKernel
+    private function kernel(array $overrides = [], ?OriginFetcher $origin = null): ProxyKernel
     {
         return TestKernel::create(
             TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN] + $overrides),
             $this->directory->path(),
-            $this->origin,
+            $origin ?? $this->origin,
             null,
             $this->logger
         );
+    }
+
+    private function stateDirectory(): string
+    {
+        return $this->directory->path(TestKernel::STATE_DIRECTORY);
     }
 
     private function cachePath(string $relativePath): string
