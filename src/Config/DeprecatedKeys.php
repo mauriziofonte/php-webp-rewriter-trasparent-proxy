@@ -10,9 +10,10 @@ namespace Mfonte\ProxyCdn\Config;
  * environment or in .env (ConfigLoader::readSetKeys()).
  *
  * The list lives here, apart from ConfigLoader::KEYS, so that a release
- * that renames or drops a key adds one line: the image conversion keys
- * belong to PRX-8, which adds its renamed keys here. At 3.0.0 every 2.x
- * key is still read, so the list is empty.
+ * that renames or drops a key adds one line. At 3.0 it holds the 2.x
+ * conversion keys, which IMAGE_CONVERTER and the IMAGE_API_* keys replace
+ * (ConfigLoader::REMOVED_KEYS names the replacement of each; the advice
+ * says how to move the value).
  */
 final class DeprecatedKeys
 {
@@ -21,7 +22,15 @@ final class DeprecatedKeys
      *
      * @var array<string, string>
      */
-    public const KEYS = [];
+    public const KEYS = [
+        'IMAGE_CONVERSION_MODE' => 'Use IMAGE_CONVERTER instead (see the Image conversion section of the README):'
+            . ' "native" becomes "local" (a backend of the conversion library in this host, no cwebp),'
+            . ' "api" becomes "remote" (the conversion API v2), "none" stays "none".',
+        'WEBP_API_SERVER' => 'Use IMAGE_API_URL instead (see the Image conversion section of the README):'
+            . ' the base URL of the conversion API v2, with IMAGE_CONVERTER="remote" and IMAGE_API_CA_FILE for a private CA.',
+        'WEBP_API_KEY' => 'Use IMAGE_API_KEY instead (see the Image conversion section of the README):'
+            . ' a key of 16 bytes or more of the conversion API v2, sent as "Authorization: Bearer".',
+    ];
 
     /**
      * The warning of each key of $deprecated that $loader finds set.
@@ -36,7 +45,7 @@ final class DeprecatedKeys
     {
         $warnings = [];
         foreach ($loader->readSetKeys(array_map('strval', array_keys($deprecated))) as $key) {
-            $warnings[] = 'WARNING: ' . $key . " is no longer read and has no effect.\n" . $deprecated[$key];
+            $warnings[] = 'WARNING: ' . $key . " is deprecated: it was removed in 3.0 and is ignored.\n" . $deprecated[$key];
         }
 
         return $warnings;

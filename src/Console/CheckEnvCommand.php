@@ -20,13 +20,12 @@ use Symfony\Component\Console\Output\OutputInterface;
  * "check-env": validates the configuration with the rules the proxy applies
  * at boot (ConfigValidator), plus the host requirements: the curl extension
  * and, in local conversion mode, a conversion backend and ext-posix (as
- * warnings); it warns about the 2.x keys that were removed
- * (ConfigLoader::REMOVED_KEYS). Prints the 2.x messages and exits with 1
- * on any error.
+ * warnings); it warns about the 2.x keys that were removed, once each,
+ * with how to move their value (DeprecatedKeys). Prints the 2.x messages
+ * and exits with 1 on any error.
  *
- * It also warns about the keys of DeprecatedKeys that are still set and,
- * with a project root, about the state directories, the log file and the
- * 2.x leftovers of the installation (OperationsCheck).
+ * With a project root, it also warns about the state directories, the
+ * log file and the 2.x leftovers of the installation (OperationsCheck).
  *
  * With --informational, used by the Composer install hooks, it always exits
  * with 0, so that installing the dependencies never fails because the proxy
@@ -179,12 +178,6 @@ final class CheckEnvCommand extends Command
         }
         if (!($this->extensionLoaded)('curl')) {
             $validation = $validation->withError('cURL extension is not installed');
-        }
-        foreach ($this->loader->readRemovedKeys() as $key) {
-            $validation = $validation->withWarning(
-                'WARNING: ' . $key . ' is deprecated: it was removed in 3.0 and is ignored.' . "\n"
-                . 'Use ' . ConfigLoader::REMOVED_KEYS[$key] . ' instead (see the Image conversion section of the README).'
-            );
         }
         if (in_array($values['IMAGE_CONVERTER'] ?? null, [Config::CONVERTER_LOCAL, Config::CONVERTER_REMOTE], true)) {
             $validation = $this->checkLocalConversion($validation, $values);

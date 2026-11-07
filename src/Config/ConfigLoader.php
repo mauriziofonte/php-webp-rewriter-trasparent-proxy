@@ -91,9 +91,10 @@ final class ConfigLoader
 
     /**
      * The 2.x keys that 3.0 no longer reads, each with what replaces it:
-     * the check-env command reports the ones still set as deprecated (risk
-     * L-5). The 2.x converters they configured, with their unverified TLS
-     * and their "-x-api-key" header, are gone (finding P-6).
+     * the check-env command reports the ones still set as deprecated, with
+     * the advice of DeprecatedKeys (risk L-5). The 2.x converters they
+     * configured, with their unverified TLS and their "-x-api-key" header,
+     * are gone (finding P-6).
      */
     public const REMOVED_KEYS = [
         'IMAGE_CONVERSION_MODE' => 'IMAGE_CONVERTER',
@@ -310,29 +311,6 @@ final class ConfigLoader
         }
 
         return $values;
-    }
-
-    /**
-     * The keys of REMOVED_KEYS that are still set, in the environment or
-     * in .env, in the order of REMOVED_KEYS: for check-env, which reports
-     * them as deprecated.
-     *
-     * @throws InvalidConfigurationException when .env exists but cannot be parsed
-     *
-     * @return list<string>
-     */
-    public function readRemovedKeys(): array
-    {
-        $fromFile = $this->readEnvFile();
-        $set = [];
-        foreach (array_keys(self::REMOVED_KEYS) as $key) {
-            $value = ($this->environment)($key) ?? $fromFile[$key] ?? null;
-            if (self::normalise($value) !== null) {
-                $set[] = $key;
-            }
-        }
-
-        return $set;
     }
 
     /**

@@ -164,7 +164,7 @@ final class ConfigLoaderTest extends TestCase
         $loader = $this->loader();
 
         self::assertSame(Config::CONVERTER_NONE, $loader->load()->getImageConverter());
-        self::assertSame(['IMAGE_CONVERSION_MODE', 'WEBP_API_SERVER'], $loader->readRemovedKeys());
+        self::assertSame(['IMAGE_CONVERSION_MODE', 'WEBP_API_SERVER'], $loader->readSetKeys(array_keys(ConfigLoader::REMOVED_KEYS)));
         self::assertArrayNotHasKey('WEBP_API_SERVER', $loader->readValues());
     }
 

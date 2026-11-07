@@ -193,11 +193,13 @@ final class CheckEnvCommandTest extends TestCase
         self::assertSame(0, $exitCode, $display);
         self::assertStringContainsString(
             "! WARNING: IMAGE_CONVERSION_MODE is deprecated: it was removed in 3.0 and is ignored.\n"
-            . "    Use IMAGE_CONVERTER instead (see the Image conversion section of the README).\n",
+            . '    Use IMAGE_CONVERTER instead (see the Image conversion section of the README): "native" becomes "local"',
             $display
         );
+        self::assertSame(1, substr_count($display, 'IMAGE_CONVERSION_MODE is deprecated'), 'one warning per key');
         self::assertStringContainsString('! WARNING: WEBP_API_KEY is deprecated', $display);
         self::assertStringContainsString('    Use IMAGE_API_KEY instead', $display);
+        self::assertStringNotContainsString('WEBP_API_SERVER', $display, 'a key that is not set is not reported');
     }
 
     public function testLocalConversionWithoutBackendOrPosixIsWarnedAbout(): void

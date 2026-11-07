@@ -144,10 +144,22 @@ final class OperationsCheckTest extends TestCase
         $warnings = DeprecatedKeys::warnings($loader, ['OLD_KEY' => 'Use NEW_KEY.', 'ENV_KEY' => 'Remove it.', 'EMPTY_KEY' => 'x', 'UNSET_KEY' => 'y']);
 
         self::assertSame([
-            "WARNING: OLD_KEY is no longer read and has no effect.\nUse NEW_KEY.",
-            "WARNING: ENV_KEY is no longer read and has no effect.\nRemove it.",
+            "WARNING: OLD_KEY is deprecated: it was removed in 3.0 and is ignored.\nUse NEW_KEY.",
+            "WARNING: ENV_KEY is deprecated: it was removed in 3.0 and is ignored.\nRemove it.",
         ], $warnings);
         self::assertSame([], DeprecatedKeys::warnings($loader));
+    }
+
+    /**
+     * Each 2.x key of ConfigLoader::REMOVED_KEYS has the advice of
+     * DeprecatedKeys, which names its replacement, a key that is read.
+     */
+    public function testTheDeprecatedKeysAreTheRemoved2xKeys(): void
+    {
+        foreach (ConfigLoader::REMOVED_KEYS as $key => $replacement) {
+            self::assertStringStartsWith('Use ' . $replacement . ' instead', DeprecatedKeys::KEYS[$key]);
+            self::assertContains($replacement, ConfigLoader::KEYS);
+        }
     }
 
     private function check(string $env): string
