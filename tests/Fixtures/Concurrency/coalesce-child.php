@@ -16,16 +16,25 @@ declare(strict_types=1);
  * a 404 for the ".webp" URLs and the stylesheet for any other ("legacy":
  * the raster sibling of a legacy WEBP URL; "legacy-short" sends that
  * sibling with "Cache-Control: max-age=60", so that it is stored in the
- * tier PHP revalidates).
+ * tier PHP revalidates). With "resize-hang", <url> is a signed resize
+ * URL (RESIZE_KEY of RESIZE_HANG_KEY), the origin answers with a PNG,
+ * and the converter hangs RESIZE_HANG_MS, then answers that it cannot
+ * convert now, as a conversion API that hangs does.
  *
  * Usage: php coalesce-child.php <directory> <fetch log> <url> <delay ms> <start time> [<mode>]
  */
 
+use Mfonte\ProxyCdn\Image\ConversionFailure;
+use Mfonte\ProxyCdn\Image\ImageConverter;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Origin\OriginRequest;
 use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
+use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeImageConverter;
+use Mfonte\SecureImageConverter\Contract\Capabilities;
+use Mfonte\SecureImageConverter\Contract\ConversionRequest;
+use Mfonte\SecureImageConverter\Contract\ConversionResult;
 use Psr\Log\NullLogger;
 use Symfony\Component\HttpFoundation\Request;
 
@@ -44,6 +53,9 @@ set_error_handler(static function (int $level, string $message, string $file, in
 });
 
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
+
+const RESIZE_HANG_KEY = 'resize-hang-key-0123456789abcdef0123';
+const RESIZE_HANG_MS = 3000;
 
 list(, $directory, $fetchLog, $url, $delay, $start) = $argv;
 $mode = $argv[6] ?? 'ok';
@@ -82,6 +94,9 @@ $origin = new class ($fetchLog, (int) $delay, $mode) implements OriginFetcher {
         if ($this->mode === 'notfound' || ($legacy && substr($request->getUrl(), -5) === '.webp')) {
             return OriginResponse::failure(OriginResponse::FAILURE_NOT_FOUND, 404);
         }
+        if ($this->mode === 'resize-hang') {
+            return OriginResponse::success(['content-type' => 'image/png'], (string) file_get_contents(dirname(__DIR__) . '/Image/files/image.png'));
+        }
         $headers = ['content-type' => 'text/css'];
         if ($this->mode === 'private') {
             $headers['cache-control'] = 'private, max-age=60';
@@ -94,11 +109,41 @@ $origin = new class ($fetchLog, (int) $delay, $mode) implements OriginFetcher {
     }
 };
 
+$converter = null;
+$overrides = $mode === 'notfound' ? ['NEGATIVE_CACHE_TTL' => '0'] : [];
+if ($mode === 'resize-hang') {
+    $converter = new class () implements ImageConverter {
+        public function convert(string $inputPath, string $outputPath, ConversionRequest $request, ?string $requestId = null): ConversionResult
+        {
+            usleep(RESIZE_HANG_MS * 1000);
+
+            throw ConversionFailure::unavailable('hang', 'The converter timed out', 'timeout');
+        }
+
+        public function getCapabilities(): Capabilities
+        {
+            return FakeImageConverter::capabilities(['webp', 'avif', 'png']);
+        }
+
+        public function getName(): string
+        {
+            return 'hang';
+        }
+    };
+    $overrides = [
+        'IMAGE_CONVERTER' => 'local',
+        'RESIZE_WIDTHS' => '8',
+        'RESIZE_KEY' => RESIZE_HANG_KEY,
+        'UPSTREAM_TIMEOUT' => '1',
+        'IMAGE_CONVERSION_TIMEOUT' => '1',
+    ];
+}
+
 $kernel = TestKernel::create(
-    TestConfig::create(['SOURCE_ORIGIN' => 'https://origin.example.test'] + ($mode === 'notfound' ? ['NEGATIVE_CACHE_TTL' => '0'] : [])),
+    TestConfig::create(['SOURCE_ORIGIN' => 'https://origin.example.test'] + $overrides),
     $directory,
     $origin,
-    null,
+    $converter,
     new NullLogger()
 );
 

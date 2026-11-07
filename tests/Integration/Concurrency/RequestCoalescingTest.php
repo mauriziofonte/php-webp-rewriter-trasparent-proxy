@@ -6,6 +6,7 @@ namespace Mfonte\ProxyCdn\Tests\Integration\Concurrency;
 
 use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
+use Mfonte\ProxyCdn\Image\SignedUrlVerifier;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -226,6 +227,30 @@ final class RequestCoalescingTest extends TestCase
             self::assertSame(200, $result['status']);
             self::assertSame($hash, $result['hash']);
         }
+    }
+
+    /**
+     * Review F2: when the converter cannot resize now (here it hangs for
+     * 3 s, then gives up), the leader streams the image without storing
+     * it and tells its waiters to do the same, in parallel: none of them
+     * resizes in turn after another, which made the last ones wait past
+     * the coalescing timeout (32 s here) and answer 503.
+     */
+    public function testAResizeBurstWhileTheConverterHangsStreamsInParallel(): void
+    {
+        $url = 'https://cdn.example.test' . (new SignedUrlVerifier('resize-hang-key-0123456789abcdef0123', [8]))->pathOf('cdn.example.test', 8, '/img/photo.png', '');
+        $started = microtime(true);
+
+        $results = $this->burst($url, 'resize-hang', 0.0, 12);
+
+        $elapsed = microtime(true) - $started;
+        $png = hash('sha256', (string) file_get_contents(dirname(__DIR__, 2) . '/Fixtures/Image/files/image.png'));
+        foreach ($results as $result) {
+            self::assertSame(200, $result['status'], 'no request waited past the coalescing timeout');
+            self::assertSame('BYPASS', $result['cache']);
+            self::assertSame($png, $result['hash']);
+        }
+        self::assertLessThan(20.0, $elapsed, 'two conversion attempts in a row at most, not one per request');
     }
 
     /**

@@ -564,7 +564,10 @@ final class ProxyKernel
      * resized as asked is stored as it is, so that it is not tried again;
      * when the converter cannot resize now, the image is streamed as it
      * is without being stored, and so is an image the origin forbids
-     * storing. A failure of the conversion never fails the request.
+     * storing: either way the requests that waited for it, and those of
+     * the coalescer window, fetch and stream it in parallel rather than
+     * one after another. A failure of the conversion never fails the
+     * request.
      *
      * @param string $path      the decoded path of the resize URL
      * @param string $imagePath the decoded path of the image on the origin
@@ -662,9 +665,14 @@ final class ProxyKernel
             ? VariantConverter::UNAVAILABLE
             : $variants->resizeEntry($location, $body->getPath(), $width, $requestId);
         if ($outcome === VariantConverter::UNAVAILABLE || $variants === null) {
-            if (!$freshness->isStorable()) {
-                $this->coalescer->recordUncacheable($location->getKey());
-            }
+            // Nothing is stored: the requests waiting for this one stream
+            // the image too, in parallel, as for a response the origin
+            // forbids storing, instead of resizing in turn after one
+            // another (review F2: a converter that hangs made the last
+            // of them wait past the coalescing timeout, then answer 503).
+            // The outcome expires with the coalescer window, after which
+            // a request resizes again; a stored entry forgets it.
+            $this->coalescer->recordUncacheable($location->getKey());
 
             return $this->files->respondUncached($request, $body, $extension, $freshness->isNoStore());
         }

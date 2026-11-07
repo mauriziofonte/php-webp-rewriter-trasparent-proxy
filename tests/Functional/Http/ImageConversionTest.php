@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
+use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
+use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
 use Mfonte\ProxyCdn\Image\ImageConverter;
@@ -524,6 +526,29 @@ final class ImageConversionTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertStringEqualsFile(self::FIXTURES . 'image.png', self::body($response));
         self::assertFileDoesNotExist($this->cachePath(ltrim($path, '/')));
+        // Review F2: the waiters stream it too, in parallel, until the
+        // outcome expires or an entry is stored.
+        $key = (new CacheKeyResolver($this->directory->path('_cache')))->resolve('cdn.example.test', $path, '')->getKey();
+        self::assertTrue($this->coalescer()->isRecentlyUncacheable($key));
+
+        $this->converter->setUnavailable(false);
+        $kernel = $this->resizingKernel();
+        $retried = $kernel->handle(self::request($path, ''));
+        $kernel->terminate();
+
+        self::assertSame('MISS', $retried->headers->get('x-cache-status'), 'resized again');
+        self::assertFileExists($this->cachePath(ltrim($path, '/')));
+        self::assertFalse($this->coalescer()->isRecentlyUncacheable($key), 'forgotten once stored');
+    }
+
+    /**
+     * A coalescer of the state directory of the kernels of the test.
+     */
+    private function coalescer(): RequestCoalescer
+    {
+        $state = $this->directory->path(TestKernel::STATE_DIRECTORY);
+
+        return new RequestCoalescer(CoalescerSeam::lock($state), 1.0, $this->logger, new FilesystemStorage(), $state . '/coalescing');
     }
 
     /**
