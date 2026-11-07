@@ -84,7 +84,9 @@ final class ImageConversionTest extends TestCase
      * the original at once, with "Vary: Accept" and "max-age=0,
      * must-revalidate" so that no cache keeps it for a client that will
      * get a variant; the variants are made after the response, and served
-     * from the next request on.
+     * from the next request on. Until they are, the entry is pending, out
+     * of the reach of the web server, which would serve the original as
+     * a hit for CACHE_EXPIRY: it is published once they are made.
      */
     public function testAMissServesTheOriginalAndTheVariantsFollow(): void
     {
@@ -96,9 +98,12 @@ final class ImageConversionTest extends TestCase
         self::assertSame('Accept', $miss->headers->get('vary'));
         self::assertSame('max-age=0, must-revalidate, public', $miss->headers->get('cache-control'));
         self::assertSame([], $this->converter->getCalls(), 'nothing is converted before the response');
-        self::assertFileExists($this->cachePath('images/logo.png'));
+        self::assertFileDoesNotExist($this->cachePath('images/logo.png'), 'not published before its variants');
+        self::assertFileExists($this->cachePath('.pending/images/logo.png'));
 
         $kernel->terminate();
+        self::assertFileExists($this->cachePath('images/logo.png'), 'published with its variants');
+        self::assertFileDoesNotExist($this->cachePath('.pending/images/logo.png'));
         $avif = $this->kernel()->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
         $webp = $this->kernel()->handle(self::request('/images/logo.png', 'image/webp,*/*'));
 
@@ -118,8 +123,13 @@ final class ImageConversionTest extends TestCase
         self::assertSame('PNG-BYTES', self::body($response));
         self::assertSame('image/png', $response->headers->get('content-type'));
         self::assertSame('Accept', $response->headers->get('vary'), 'finding P-1: the variant depends on Accept');
-        self::assertStringNotContainsString('max-age=0', (string) $response->headers->get('cache-control'), 'no variant is for this client');
+        self::assertStringContainsString('max-age=0', (string) $response->headers->get('cache-control'), 'not published yet');
         self::assertFileExists($this->cachePath('.webp/images/logo.png.webp'));
+
+        $hit = $this->kernel()->handle(self::request('/images/logo.png', 'image/*'));
+
+        self::assertSame('image/png', $hit->headers->get('content-type'));
+        self::assertStringNotContainsString('max-age=0', (string) $hit->headers->get('cache-control'), 'no variant is for this client');
     }
 
     /**
@@ -160,11 +170,68 @@ final class ImageConversionTest extends TestCase
     {
         $this->converter->setUnavailable(true);
 
-        $response = $this->kernel()->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        $response = $this->respond(self::request('/images/logo.png', self::ACCEPT_ALL));
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('PNG-BYTES', self::body($response));
-        self::assertFileExists($this->cachePath('images/logo.png'));
+        self::assertFileExists($this->cachePath('.pending/images/logo.png'), 'kept from the web server');
+        self::assertFileDoesNotExist($this->cachePath('images/logo.png'));
+    }
+
+    /**
+     * Review N1: a variant the converter could not make now is tried again
+     * by a later request, which PHP answers since the entry is pending,
+     * once the transient TTL has passed; the entry is then published.
+     */
+    public function testATransientFailureIsRetriedByALaterHitThenPublished(): void
+    {
+        $this->converter->setUnavailable(true);
+        $this->respond(self::request('/images/logo.png', self::ACCEPT_ALL), ['NETWORK_ERROR_TTL' => '1']);
+        $this->converter->setUnavailable(false);
+
+        $soon = $this->respond(self::request('/images/logo.png', self::ACCEPT_ALL), ['NETWORK_ERROR_TTL' => '1']);
+
+        self::assertSame(['HIT', 'image/png'], [$soon->headers->get('x-cache-status'), $soon->headers->get('content-type')]);
+        self::assertStringContainsString('max-age=0', (string) $soon->headers->get('cache-control'));
+        self::assertFileDoesNotExist($this->cachePath('images/logo.png'), 'still within the transient TTL');
+
+        sleep(2);
+        $later = $this->respond(self::request('/images/logo.png', 'image/png'), ['NETWORK_ERROR_TTL' => '1']);
+        $avif = $this->kernel()->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+
+        self::assertSame('image/png', $later->headers->get('content-type'));
+        self::assertStringContainsString('max-age=0', (string) $later->headers->get('cache-control'), 'answered before publication');
+        self::assertFileExists($this->cachePath('images/logo.png'), 'published');
+        self::assertFileDoesNotExist($this->cachePath('.pending/images/logo.png'));
+        self::assertFileExists($this->cachePath('.avif/images/logo.png.avif'));
+        self::assertFileExists($this->cachePath('.webp/images/logo.png.webp'));
+        self::assertSame('image/avif', $avif->headers->get('content-type'));
+    }
+
+    /**
+     * Review N1: an entry whose variants cannot be made for good (a
+     * refusal of the image) is published without them at once; one that
+     * only failed transiently is published without them after
+     * PENDING_HOLD_SECONDS, so that no entry is kept from the web server
+     * for ever.
+     */
+    public function testAnEntryIsPublishedOnceItsVariantsAreSettledOrItsHoldIsOver(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/images/broken.png', 'broken PNG', ['content-type' => 'image/png']);
+        $this->respond(self::request('/images/broken.png', self::ACCEPT_ALL));
+
+        self::assertFileExists($this->cachePath('images/broken.png'), 'settled by final failures');
+
+        $this->converter->setUnavailable(true);
+        $this->respond(self::request('/images/photo.png', self::ACCEPT_ALL));
+        self::assertFileExists($this->cachePath('.pending/images/photo.png'));
+        touch($this->cachePath('.pending/images/photo.png'), time() - ProxyKernel::PENDING_HOLD_SECONDS);
+
+        $this->respond(self::request('/images/photo.png', self::ACCEPT_ALL));
+
+        self::assertFileExists($this->cachePath('images/photo.png'), 'published once the hold is over');
+        self::assertFileDoesNotExist($this->cachePath('.avif/images/photo.png.avif'));
+        self::assertCount(1, $this->logger->recordsWithMessage('image entry published without all its variants'));
     }
 
     public function testABucketHitIsConvertedOnce(): void
@@ -176,12 +243,13 @@ final class ImageConversionTest extends TestCase
         $first = $this->respond(self::request('/images/logo.png?v=2', 'image/webp'), ['QUERY_STRING_ALLOWLIST' => 'v']);
         $second = $this->respond(self::request('/images/logo.png?v=2', 'image/webp'), ['QUERY_STRING_ALLOWLIST' => 'v']);
 
-        // The first hit is answered at once; its variant follows it.
+        // The first hit is answered at once; its variants follow it, every
+        // enabled one, whatever the client accepted.
         self::assertSame('image/png', $first->headers->get('content-type'));
         self::assertSame('HIT', $first->headers->get('x-cache-status'));
         self::assertStringContainsString('max-age=0', (string) $first->headers->get('cache-control'));
         self::assertSame('image/webp', $second->headers->get('content-type'));
-        self::assertSame(['webp'], $this->converter->getFormats());
+        self::assertSame(['avif', 'webp'], $this->converter->getFormats());
         self::assertCount(1, $this->origin->getRequests());
     }
 
@@ -239,6 +307,28 @@ final class ImageConversionTest extends TestCase
         self::assertSame(['HIT', 'image/png'], [$hit->headers->get('x-cache-status'), $hit->headers->get('content-type')]);
         self::assertSame(['avif', 'webp'], $this->converter->getFormats(), 'the hit converted nothing');
         self::assertFileExists($this->cachePath('.avif/images/logo.png.avif'));
+    }
+
+    /**
+     * Review N1: whichever request wins the lock of the conversions of an
+     * entry makes every enabled format of it, here a request whose client
+     * accepts WEBP only, which ends before the one that stored the entry;
+     * the entry is then published.
+     */
+    public function testTheRequestThatWinsTheLockMakesEveryFormat(): void
+    {
+        $storing = $this->kernel();
+        $storing->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        $hitting = $this->kernel();
+        $hitting->handle(self::request('/images/logo.png', 'image/webp'));
+
+        $hitting->terminate();
+
+        self::assertSame(['avif', 'webp'], $this->converter->getFormats());
+        self::assertFileExists($this->cachePath('.avif/images/logo.png.avif'));
+        self::assertFileExists($this->cachePath('images/logo.png'), 'published');
+        $storing->terminate();
+        self::assertFileExists($this->cachePath('images/logo.png'));
     }
 
     /**
@@ -357,7 +447,9 @@ final class ImageConversionTest extends TestCase
     public function testAPurgeOfTheImageRemovesItsResizedEntries(): void
     {
         $path = $this->resizePath(320, '/images/photo.png');
-        $this->resizingKernel()->handle(self::request($path, ''));
+        $kernel = $this->resizingKernel();
+        $kernel->handle(self::request($path, ''));
+        $kernel->terminate();
         self::assertFileExists($this->cachePath(ltrim($path, '/')));
 
         $response = $this->resizingKernel()->handle(Request::create('https://cdn.example.test/images/photo.png', 'PURGE', [], [], [], ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET]));
@@ -371,7 +463,9 @@ final class ImageConversionTest extends TestCase
     {
         $path = $this->resizePath(640, '/images/logo.png');
 
-        $response = $this->resizingKernel()->handle(self::request($path, ''));
+        $kernel = $this->resizingKernel();
+        $response = $kernel->handle(self::request($path, ''));
+        $kernel->terminate();
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('PNG-BYTES', self::body($response));

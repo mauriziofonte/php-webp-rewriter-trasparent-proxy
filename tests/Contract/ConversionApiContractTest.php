@@ -152,6 +152,8 @@ final class ConversionApiContractTest extends TestCase
         self::assertSame('image/avif', $response->headers->get('content-type'));
         self::assertSame('avif', (new FormatSniffer())->detect(self::body($response)));
         self::assertFileExists($this->cachePath('.webp/images/photo.png.webp'));
+        self::assertFileExists($this->cachePath('images/photo.png'), 'published once its variants are made');
+        self::assertFileDoesNotExist($this->cachePath('.pending/images/photo.png'));
         self::assertSame([], $this->logger->recordsWithMessage('image conversion failed, the original is served'));
     }
 

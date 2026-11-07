@@ -124,13 +124,25 @@ final class CacheLocation
     }
 
     /**
-     * Every file of the entry: the entry, its variants and its encodings.
+     * Where a raster entry of the tier the web server serves waits for
+     * its variants before it is published at getFile(): a "." directory,
+     * which the web server never maps a URL to, so that only PHP serves
+     * it meanwhile (see ProxyKernel::publish()).
+     */
+    public function getPendingFile(): string
+    {
+        return $this->siblingDirectory('pending') . DIRECTORY_SEPARATOR . $this->path;
+    }
+
+    /**
+     * Every file of the entry: the entry, its variants and its encodings,
+     * its metadata and its pending copy.
      *
      * @return list<string>
      */
     public function getFiles(): array
     {
-        $files = [$this->getFile(), $this->getMetadataFile()];
+        $files = [$this->getFile(), $this->getMetadataFile(), $this->getPendingFile()];
         foreach (self::FORMATS as $format) {
             $files[] = $this->getVariantFile($format);
         }

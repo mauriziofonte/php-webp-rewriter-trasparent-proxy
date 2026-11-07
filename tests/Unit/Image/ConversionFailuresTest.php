@@ -54,6 +54,25 @@ final class ConversionFailuresTest extends TestCase
         self::assertFalse($this->failures->isRemembered('/cache/.webp/a.png.webp'));
     }
 
+    public function testOnlyAFinalFailureIsFinal(): void
+    {
+        $this->failures->remember('/cache/.webp/a.png.webp', 60);
+        $this->failures->remember('/cache/.avif/a.png.avif', 60, true);
+
+        self::assertFalse($this->failures->isFinal('/cache/.webp/a.png.webp'));
+        self::assertTrue($this->failures->isFinal('/cache/.avif/a.png.avif'));
+        self::assertTrue($this->failures->isRemembered('/cache/.avif/a.png.avif'));
+        self::assertFalse($this->failures->isFinal('/cache/.avif/b.png.avif'));
+        $slots = glob($this->directory->path('failures/*.failed'));
+        self::assertIsArray($slots);
+        foreach ($slots as $slot) {
+            if (strpos((string) file_get_contents($slot), 'final') !== false) {
+                file_put_contents($slot, (time() - 1) . ' ' . hash('sha256', '/cache/.avif/a.png.avif') . " final\n");
+            }
+        }
+        self::assertFalse($this->failures->isFinal('/cache/.avif/a.png.avif'), 'an expired marker is no longer final');
+    }
+
     public function testAZeroTtlRemembersNothing(): void
     {
         $this->failures->remember('/cache/.webp/a.png.webp', 0);

@@ -39,6 +39,12 @@ use Psr\Log\LoggerInterface;
  * convert now. A variant that would not be smaller than the original (the
  * library then answers the original, finding P-12) is remembered the
  * same way, as an expected outcome. Nothing it does throws.
+ *
+ * A new raster entry of the tier the web server serves is written to its
+ * pending file (newEntryFile()), which only PHP serves, until its
+ * variants are settled (isSettled()): a variant is settled once made, or
+ * once it failed for good; a failure because the converter could not
+ * convert now settles nothing, so the variant is tried again.
  */
 final class VariantConverter
 {
@@ -205,20 +211,81 @@ final class VariantConverter
     public function convertOnHit(CacheLocation $location, string $format, ?string $requestId): bool
     {
         $variant = $location->getVariantFile($format);
-        if (!$this->shouldConvert($location, $format) || !$this->storage->isFile($location->getFile())) {
+        $source = $this->storedFileOf($location);
+        if ($source === null || !$this->shouldConvert($location, $format)) {
             return $this->storage->isFile($variant);
         }
 
-        $this->make($location, $format, $location->getFile(), $requestId);
+        $this->make($location, $format, $source, $requestId);
 
         return $this->storage->isFile($variant);
+    }
+
+    /**
+     * Whether every enabled variant of the entry of $location is settled:
+     * made, or failed for good (a refusal of the image, a format the
+     * converter does not make: ConversionFailures::isFinal()). A variant
+     * the converter could not make now, or did not try yet, is not.
+     */
+    public function isSettled(CacheLocation $location): bool
+    {
+        foreach ($this->negotiator->getEnabledFormats() as $format) {
+            $variant = $location->getVariantFile($format);
+            if (!$this->storage->isFile($variant) && !$this->failures->isFinal($variant)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Forgets the failures of the variants of the entry of $location, for
+     * a new version of it: the origin may have sent another image.
+     */
+    public function forgetFailures(CacheLocation $location): void
+    {
+        foreach ($this->negotiator->getEnabledFormats() as $format) {
+            $this->failures->forget($location->getVariantFile($format));
+        }
+    }
+
+    /**
+     * Where a new version of the raster entry of $location is written: in
+     * the tier the web server serves, when a variant is enabled, its
+     * pending file (CacheLocation::getPendingFile()), which only PHP
+     * serves until the variants are settled and the entry is published
+     * (ProxyKernel); else the entry itself.
+     */
+    public function newEntryFile(CacheLocation $location): string
+    {
+        return $location->isManaged() || $this->negotiator->getEnabledFormats() === []
+            ? $location->getFile()
+            : $location->getPendingFile();
+    }
+
+    /**
+     * The stored entry of $location: the published one, else the pending
+     * one; null when neither exists.
+     *
+     * @phpstan-impure
+     */
+    public function storedFileOf(CacheLocation $location): ?string
+    {
+        foreach ([$location->getFile(), $location->getPendingFile()] as $file) {
+            if ($this->storage->isFile($file)) {
+                return $file;
+            }
+        }
+
+        return null;
     }
 
     /**
      * Stores $source resized to $width pixels wide (at most: a smaller
      * image is not enlarged), in its own format, as the entry of
      * $location, the entry of a resize URL: the resized image is made and
-     * verified in a private directory, then moved into place. Its
+     * verified in a private directory, then moved to newEntryFile(). Its
      * variants are made like those of any entry, after the response
      * (convertAll()). One of RESIZED, REJECTED and UNAVAILABLE; nothing is
      * stored unless RESIZED.
@@ -240,7 +307,7 @@ final class VariantConverter
             if ($outcome !== self::RESIZED) {
                 return $outcome;
             }
-            if (!$this->storage->ensureDirectory($location->getDirectory()) || !@rename($resized, $location->getFile())) {
+            if (!$this->storage->move($resized, $this->newEntryFile($location))) {
                 $this->logger->warning('image resize failed', ['path' => $logPath, 'width' => $width, ConversionFailure::LOG_ERROR_CODE => 'cache_write', 'reason' => 'The resized image cannot be moved into the cache']);
 
                 return self::UNAVAILABLE;
@@ -292,7 +359,7 @@ final class VariantConverter
             // clients that accept the format do not ask the converter
             // (and build it, or discover the API) on every request.
             $this->logger->debug('variant format not available', ['path' => $path, 'format' => $format, 'converter' => $this->converter->getName()]);
-            $this->failures->remember($variant, self::UNSUPPORTED_RETRY);
+            $this->failures->remember($variant, self::UNSUPPORTED_RETRY, true);
 
             return null;
         }
@@ -308,7 +375,7 @@ final class VariantConverter
             $this->logger->warning('image conversion failed, the original is served', ['path' => $path, 'format' => $format] + $failure->logContext());
         }
         if ($failure->shouldBeRemembered()) {
-            $this->failures->remember($variant, $failure->isTransient() ? $this->transientRetry : self::PERMANENT_RETRY);
+            $this->failures->remember($variant, $failure->isTransient() ? $this->transientRetry : self::PERMANENT_RETRY, !$failure->isTransient());
         }
 
         return $failure;

@@ -91,9 +91,11 @@ final class CacheKeyResolverTest extends TestCase
         self::assertSame('/srv/c/h/.q/v=1/.avif/img/a.png.avif', $location->getVariantFile('avif'));
         self::assertSame('/srv/c/h/.q/v=1/.br/img/a.png', $location->getEncodedFile('br'));
         self::assertSame('/srv/c/h/.q/v=1/.gz/img/a.png', $location->getEncodedFile('gz'));
+        self::assertSame('/srv/c/h/.q/v=1/.pending/img/a.png', $location->getPendingFile());
         self::assertSame([
             '/srv/c/h/.q/v=1/img/a.png',
             '/srv/c/h/.q/v=1/.meta/img/a.png.json',
+            '/srv/c/h/.q/v=1/.pending/img/a.png',
             '/srv/c/h/.q/v=1/.avif/img/a.png.avif',
             '/srv/c/h/.q/v=1/.webp/img/a.png.webp',
             '/srv/c/h/.q/v=1/.br/img/a.png',

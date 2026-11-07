@@ -88,6 +88,15 @@ interface CacheStorage
     public function touch(string $path): bool;
 
     /**
+     * Renames the file at $from to $path in one atomic step, replacing
+     * $path and creating its missing parent directories; both are on the
+     * filesystem of the cache.
+     *
+     * @return bool true when $path exists afterwards
+     */
+    public function move(string $from, string $path): bool;
+
+    /**
      * Removes the file at $path when it exists.
      */
     public function delete(string $path): void;

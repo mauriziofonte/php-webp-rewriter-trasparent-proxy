@@ -137,6 +137,11 @@ final class FilesystemStorage implements CacheStorage
         return @touch($path);
     }
 
+    public function move(string $from, string $path): bool
+    {
+        return is_file($from) && $this->ensureDirectory(dirname($path)) && @rename($from, $path) && is_file($path);
+    }
+
     public function delete(string $path): void
     {
         if (is_file($path)) {

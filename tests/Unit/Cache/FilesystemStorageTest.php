@@ -54,6 +54,18 @@ final class FilesystemStorageTest extends TestCase
         self::assertSame(['c.css'], $this->storage->listDirectory($this->directory->path('a/b')));
     }
 
+    public function testMoveRenamesAFileIntoANewDirectory(): void
+    {
+        $source = $this->directory->write('a/.pending/b.png', 'PNG');
+        $file = $this->directory->path('a/b/b.png');
+
+        self::assertTrue($this->storage->move($source, $file));
+        self::assertSame('PNG', file_get_contents($file));
+        self::assertFileDoesNotExist($source);
+        self::assertFalse($this->storage->move($source, $file), 'nothing to move');
+        self::assertSame('PNG', file_get_contents($file));
+    }
+
     public function testImportFailsWithoutSourceAndCleansUp(): void
     {
         self::assertFalse($this->storage->import($this->directory->path('a/c.css'), $this->directory->path('missing')));

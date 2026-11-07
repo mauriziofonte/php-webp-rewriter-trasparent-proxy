@@ -177,6 +177,31 @@ final class VariantConverterTest extends TestCase
         self::assertSame(['avif'], $this->converter->getFormats());
     }
 
+    /**
+     * Review N1: a variant is settled once made or failed for good (a
+     * refusal of the image, a format the converter does not make), never
+     * by a failure of a converter that could not convert now.
+     */
+    public function testOnlyAMadeOrFinallyFailedVariantIsSettled(): void
+    {
+        $this->directory->write('_cache/cdn.example.test/images/a.png', 'busy PNG');
+        $variants = $this->variants();
+        $variants->convertAll($this->location, $this->location->getFile(), null);
+        self::assertFalse($variants->isSettled($this->location), 'transient failures');
+
+        $this->directory->write('_cache/cdn.example.test/images/a.png', 'broken PNG');
+        $variants->forgetFailures($this->location);
+        $variants->convertAll($this->location, $this->location->getFile(), null);
+        self::assertTrue($variants->isSettled($this->location), 'refused for good');
+
+        $variants->forgetFailures($this->location);
+        self::assertFalse($variants->isSettled($this->location), 'a new version');
+        $this->converter->setCapabilities(FakeImageConverter::capabilities([]));
+        $this->directory->write('_cache/cdn.example.test/images/a.png', 'PNG');
+        $variants->convertAll($this->location, $this->location->getFile(), null);
+        self::assertTrue($variants->isSettled($this->location), 'formats the converter does not make');
+    }
+
     public function testANewVersionOfTheEntryIsConvertedDespiteAMarker(): void
     {
         $variants = $this->variants();
@@ -256,15 +281,19 @@ final class VariantConverterTest extends TestCase
         $outcome = $variants->resizeEntry($resized, self::FIXTURES . 'image.png', 320, 'req-2');
 
         self::assertSame(VariantConverter::RESIZED, $outcome);
-        self::assertFileEquals(self::FIXTURES . 'resized.png', $resized->getFile());
+        self::assertFileEquals(self::FIXTURES . 'resized.png', $resized->getPendingFile(), 'pending until its variants are settled');
+        self::assertFileDoesNotExist($resized->getFile());
+        self::assertSame($resized->getPendingFile(), $variants->storedFileOf($resized));
+        self::assertFalse($variants->isSettled($resized));
         self::assertFileDoesNotExist($resized->getVariantFile('webp'), 'the variants are made after the response');
         $calls = $this->converter->getCalls();
         self::assertSame([['original', 320, 'req-2']], [[$calls[0][0], $calls[0][2], $calls[0][3]]]);
         self::assertCount(1, $calls);
 
-        $variants->convertAll($resized, $resized->getFile(), 'req-2');
+        $variants->convertAll($resized, $resized->getPendingFile(), 'req-2');
         self::assertFileExists($resized->getVariantFile('webp'));
         self::assertFileExists($resized->getVariantFile('avif'));
+        self::assertTrue($variants->isSettled($resized));
         // The variants are made from the resized image.
         self::assertSame((string) file_get_contents(self::FIXTURES . 'resized.png'), $this->converter->getCalls()[1][1]);
     }

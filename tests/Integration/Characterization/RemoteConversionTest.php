@@ -47,7 +47,10 @@ final class RemoteConversionTest extends CharacterizationTestCase
         self::assertSame($png, $response->getBody());
         self::assertSame('image/png', $response->getHeader('Content-Type'));
         self::assertSame('Accept', $response->getHeader('Vary'));
-        self::assertStringEqualsFile($this->cachePath('images/gradient.png'), $png);
+        self::assertStringContainsString('max-age=0', (string) $response->getHeader('Cache-Control'));
+        // Review N1: kept from the web server until the API can convert.
+        self::assertStringEqualsFile($this->cachePath('.pending/images/gradient.png'), $png);
+        self::assertFileDoesNotExist($this->cachePath('images/gradient.png'));
         self::assertFileDoesNotExist($this->cachePath('.webp/images/gradient.png.webp'));
         self::assertFileDoesNotExist($this->cachePath('.avif/images/gradient.png.avif'));
     }

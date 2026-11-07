@@ -16,8 +16,10 @@ use Mfonte\ProxyCdn\Cache\CacheStorage;
  * markers: the first SLOT_HEX_DIGITS hexadecimal digits of the SHA-256 of
  * the variant file name the slot, so at most 4096 marker files exist
  * whatever the clients ask. A slot holds the time the marker expires and
- * the full hash of its variant; two variants that share a slot replace
- * each other's marker, which only costs one more conversion attempt.
+ * the full hash of its variant, and whether the failure is final (the
+ * image or the converter will fail the same way whenever asked: see
+ * isFinal()); two variants that share a slot replace each other's
+ * marker, which only costs one more conversion attempt.
  *
  * A marker does not stop the conversion of a newly stored entry: the
  * origin may have sent another image (VariantConverter forgets it then).
@@ -27,6 +29,8 @@ final class ConversionFailures
     private const SLOT_HEX_DIGITS = 3;
 
     private const SLOT_SUFFIX = '.failed';
+
+    private const FINAL = 'final';
 
     /**
      * @var CacheStorage
@@ -48,12 +52,15 @@ final class ConversionFailures
     }
 
     /**
-     * Remembers for $ttl seconds that $variantFile could not be made.
+     * Remembers for $ttl seconds that $variantFile could not be made;
+     * $final when asking again would fail the same way (a refusal of the
+     * image, a format the converter does not make), not because the
+     * converter could not convert now.
      */
-    public function remember(string $variantFile, int $ttl): void
+    public function remember(string $variantFile, int $ttl, bool $final = false): void
     {
         if ($ttl > 0) {
-            $this->storage->write($this->slotOf($variantFile), (time() + $ttl) . ' ' . hash('sha256', $variantFile) . "\n");
+            $this->storage->write($this->slotOf($variantFile), (time() + $ttl) . ' ' . hash('sha256', $variantFile) . ($final ? ' ' . self::FINAL : '') . "\n");
         }
     }
 
@@ -64,9 +71,22 @@ final class ConversionFailures
      */
     public function isRemembered(string $variantFile): bool
     {
-        $expiresAt = $this->expiryOf($variantFile);
+        $marker = $this->markerOf($variantFile);
 
-        return $expiresAt !== null && $expiresAt > time();
+        return $marker !== null && $marker[0] > time();
+    }
+
+    /**
+     * Whether a fresh marker of $variantFile says that the failure is
+     * final (see remember()).
+     *
+     * @phpstan-impure
+     */
+    public function isFinal(string $variantFile): bool
+    {
+        $marker = $this->markerOf($variantFile);
+
+        return $marker !== null && $marker[0] > time() && $marker[1];
     }
 
     /**
@@ -75,25 +95,28 @@ final class ConversionFailures
      */
     public function forget(string $variantFile): void
     {
-        if ($this->expiryOf($variantFile) !== null) {
+        if ($this->markerOf($variantFile) !== null) {
             $this->storage->delete($this->slotOf($variantFile));
         }
     }
 
     /**
-     * The expiry of the marker the slot holds for $variantFile; null when it
-     * holds none, or the marker of another variant.
+     * The expiry of the marker the slot holds for $variantFile, and
+     * whether it is final; null when it holds none, or the marker of
+     * another variant.
+     *
+     * @return array{int, bool}|null
      *
      * @phpstan-impure
      */
-    private function expiryOf(string $variantFile): ?int
+    private function markerOf(string $variantFile): ?array
     {
         $contents = $this->storage->read($this->slotOf($variantFile));
-        if ($contents === null || preg_match('/\A([0-9]{1,12}) ([0-9a-f]{64})\n\z/', $contents, $match) !== 1 || $match[2] !== hash('sha256', $variantFile)) {
+        if ($contents === null || preg_match('/\A([0-9]{1,12}) ([0-9a-f]{64})( ' . self::FINAL . ')?\n\z/', $contents, $match) !== 1 || $match[2] !== hash('sha256', $variantFile)) {
             return null;
         }
 
-        return (int) $match[1];
+        return [(int) $match[1], isset($match[3])];
     }
 
     private function slotOf(string $variantFile): string
