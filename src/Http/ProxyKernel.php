@@ -585,44 +585,59 @@ final class ProxyKernel
             return $this->responses->error($logPath, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
         }
 
+        // The coalescing of the miss path (handleAsset()): enter again when
+        // what enter() saw is gone, then lead after MAX_ENTRIES times.
         $key = $location->getKey();
-        $lease = $this->coalescer->enter($key, function () use ($location, $file): bool {
-            return $this->storedFile($location) !== null || $this->negativeCache->lookup($file) !== null;
-        });
-        if ($lease === false) {
-            return $this->responses->error($logPath, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
-        }
-        try {
-            $remembered = $this->negativeCache->lookup($file);
-            if ($remembered !== null) {
-                return $this->notFound($logPath, $remembered);
+        for ($entries = 1;; ++$entries) {
+            $uncacheable = false;
+            if ($entries > self::MAX_ENTRIES) {
+                $lease = $this->coalescer->lead($key);
+            } else {
+                $uncacheable = $this->coalescer->isRecentlyUncacheable($key);
+                // Ready once the body below has something to answer: the
+                // resized entry, published or pending, or a 404.
+                $lease = $uncacheable ? null : $this->coalescer->enter($key, function () use ($location, $file): bool {
+                    return $this->storedFile($location) !== null || $this->negativeCache->lookup($file) !== null;
+                });
             }
-            $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT);
-            if ($stored !== null) {
-                return $stored;
+            if ($lease === false) {
+                return $this->responses->error($logPath, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
             }
-            $shared = $lease === null ? $this->sharedOutcome($key, $logPath) : null;
-            if ($shared !== null) {
-                return $shared;
-            }
+            try {
+                $remembered = $this->negativeCache->lookup($file);
+                if ($remembered !== null) {
+                    return $this->notFound($logPath, $remembered);
+                }
+                $stored = $this->serve($request, $location, $extension, ResponseFactory::CACHE_HIT);
+                if ($stored !== null) {
+                    return $stored;
+                }
+                $shared = $lease === null ? $this->sharedOutcome($key, $logPath) : null;
+                if ($shared !== null) {
+                    return $shared;
+                }
+                if ($lease === null && !$uncacheable && $this->coalescer->isEnabled()) {
+                    continue;
+                }
 
-            $fetched = $this->fetch($request, $origin, $imagePath, $query);
-            if ($fetched->getFailureReason() === OriginResponse::FAILURE_REDIRECT) {
-                // The redirect would lead the client to the image, not to
-                // its resized copy.
-                $fetched->release();
+                $fetched = $this->fetch($request, $origin, $imagePath, $query);
+                if ($fetched->getFailureReason() === OriginResponse::FAILURE_REDIRECT) {
+                    // The redirect would lead the client to the image, not to
+                    // its resized copy.
+                    $fetched->release();
 
-                return $this->sharedError($location, $logPath, ResponseFactory::ERROR_BAD_GATEWAY);
-            }
-            if (!$fetched->isSuccessful()) {
-                return $this->failure($origin, $logPath, $location, $fetched);
-            }
-            $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
+                    return $this->sharedError($location, $logPath, ResponseFactory::ERROR_BAD_GATEWAY);
+                }
+                if (!$fetched->isSuccessful()) {
+                    return $this->failure($origin, $logPath, $location, $fetched);
+                }
+                $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
 
-            return $this->resizeAndServe($request, $location, $extension, $width, $fetched);
-        } finally {
-            if ($lease !== null) {
-                $lease->release();
+                return $this->resizeAndServe($request, $location, $extension, $width, $fetched);
+            } finally {
+                if ($lease !== null) {
+                    $lease->release();
+                }
             }
         }
     }

@@ -4,17 +4,21 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
+use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
 use Mfonte\ProxyCdn\Image\ImageConverter;
 use Mfonte\ProxyCdn\Image\ImageConverterFactory;
 use Mfonte\ProxyCdn\Image\SignedUrlVerifier;
+use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\FakeApi\FakeApiServer;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
+use Mfonte\ProxyCdn\Tests\Fixtures\Http\CoalescerSeam;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
 use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeImageConverter;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
 use Mfonte\ProxyCdn\Tests\Fixtures\Origin\FakeOriginFetcher;
+use Mfonte\ProxyCdn\Tests\Fixtures\Origin\LockProbingOrigin;
 use Mfonte\SecureImageConverter\Contract\Capabilities;
 use Mfonte\SecureImageConverter\Contract\ConversionRequest;
 use Mfonte\SecureImageConverter\Contract\ConversionResult;
@@ -482,6 +486,38 @@ final class ImageConversionTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertStringEqualsFile(self::FIXTURES . 'image.png', self::body($response));
         self::assertFileDoesNotExist($this->cachePath(ltrim($path, '/')));
+    }
+
+    /**
+     * Finding P-24 on the resize path, as on the miss path: a request the
+     * coalescer sends to look for an outcome that expires before it reads
+     * it enters again and fetches with the lock held, never alongside the
+     * next leader.
+     */
+    public function testAResizeWhoseSharedOutcomeExpiresMeanwhileFetchesWithTheLock(): void
+    {
+        $this->origin->respond(self::ORIGIN . '/images/photo.png', OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 500));
+        $state = $this->directory->path(TestKernel::STATE_DIRECTORY);
+        $origin = new LockProbingOrigin($this->origin, $state);
+        $kernel = TestKernel::create(
+            TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN, 'IMAGE_CONVERTER' => 'local', 'RESIZE_WIDTHS' => '320,640', 'RESIZE_KEY' => self::RESIZE_KEY, 'CIRCUIT_BREAKER_THRESHOLD' => '10']),
+            $this->directory->path(),
+            $origin,
+            $this->converter,
+            $this->logger
+        );
+        $path = $this->resizePath(320, '/images/photo.png');
+        self::assertSame(503, $kernel->handle(self::request($path, ''))->getStatusCode());
+
+        $looks = 0;
+        CoalescerSeam::replace($kernel, $state, $this->logger, static function () use (&$looks): int {
+            return ++$looks <= 2 ? time() : time() + RequestCoalescer::OUTCOME_WINDOW;
+        });
+        self::assertSame(503, $kernel->handle(self::request($path, ''))->getStatusCode());
+
+        self::assertGreaterThan(2, $looks, 'the outcome was looked up again');
+        self::assertCount(2, $this->origin->getRequests());
+        self::assertSame([false, true], $origin->getLocked(), 'the second fetch holds the lock');
     }
 
     public function testAResizeOfAMissingImageIsA404(): void

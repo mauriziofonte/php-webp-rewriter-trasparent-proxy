@@ -226,6 +226,34 @@ final class CacheLayoutTest extends TestCase
         self::assertFileDoesNotExist($this->directory->path('_cache/cdn.example.test/images/a.webp'));
     }
 
+    /**
+     * Review N1 with risk L-4: a legacy "X.webp" answered from a sibling
+     * that waits for its variants (the converter cannot convert now) is
+     * a hit from the pending sibling, answered with "max-age=0", and
+     * leaves the sibling unpublished: it never bypasses the rule that the
+     * web server serves an image only once its variants are settled.
+     */
+    public function testALegacyWebpUrlOfAPendingSiblingKeepsItPendingL4(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/images/a.png', 'PNG');
+        $converter = new FakeImageConverter();
+        $converter->setUnavailable(true);
+
+        $kernel = $this->kernel(['IMAGE_CONVERTER' => 'local'], $converter);
+        $kernel->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        $kernel->terminate();
+        $count = count($this->origin->getRequests());
+        $kernel = $this->kernel(['IMAGE_CONVERTER' => 'local'], $converter);
+        $hit = $kernel->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        $kernel->terminate();
+
+        self::assertSame(['HIT', 'image/png', 'PNG'], [$hit->headers->get('x-cache-status'), $hit->headers->get('content-type'), self::body($hit)]);
+        self::assertStringContainsString('max-age=0', (string) $hit->headers->get('cache-control'));
+        self::assertCount($count, $this->origin->getRequests(), 'served from the pending sibling');
+        self::assertFileExists($this->directory->path('_cache/cdn.example.test/.pending/images/a.png'));
+        self::assertFileDoesNotExist($this->directory->path('_cache/cdn.example.test/images/a.png'), 'not published');
+    }
+
     public function testALegacyWebpUrlWithoutSiblingIsA404(): void
     {
         $first = $this->kernel()->handle(Request::create('https://cdn.example.test/images/none.webp'));
