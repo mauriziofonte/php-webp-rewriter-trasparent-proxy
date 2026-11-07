@@ -9,11 +9,13 @@ declare(strict_types=1);
  *   check-env [--informational]   validate the configuration and the host
  *   cache:purge <url>...          purge URLs here and on CLUSTER_PEERS
  *   cache:evict                   evict LRU entries down to CACHE_MAX_SIZE
+ *   cache:warmup <source>         request a sitemap or a URL list
  */
 
 use Mfonte\ProxyCdn\Config\ConfigLoader;
 use Mfonte\ProxyCdn\Console\CacheEvictCommand;
 use Mfonte\ProxyCdn\Console\CachePurgeCommand;
+use Mfonte\ProxyCdn\Console\CacheWarmupCommand;
 use Mfonte\ProxyCdn\Console\CheckEnvCommand;
 use Mfonte\ProxyCdn\Console\Installation;
 use Symfony\Component\Console\Application;
@@ -54,6 +56,7 @@ $application->addCommands([
     new CheckEnvCommand(new ConfigLoader($projectRoot . '/.env'), null, null, null, $projectRoot),
     new CachePurgeCommand($installation),
     new CacheEvictCommand($installation),
+    new CacheWarmupCommand($installation),
 ]);
 
 exit($application->run());
