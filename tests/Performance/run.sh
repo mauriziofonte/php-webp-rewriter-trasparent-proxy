@@ -236,9 +236,14 @@ pass "vendor/ loads on PHP $php_version ($autoloader autoloader)"
 # --- PHP settings: config/php/proxy-cdn.ini ---------------------------------
 
 php_id="$(docker run --rm --network none "php:$php_version-fpm" php -r 'echo PHP_VERSION_ID;')"
+# Capture the list first: "php -m | grep -q" fails under pipefail when grep
+# exits on the first match and php gets SIGPIPE, which would load OPcache
+# twice on PHP 8.5, where it is built in.
+php_modules="$(docker run --rm --network none "php:$php_version-fpm" php -m)" ||
+    die "php -m failed on PHP $php_version"
 mkdir -p "$workdir/php"
 {
-    if ! docker run --rm --network none "php:$php_version-fpm" php -m | grep -qx 'Zend OPcache'; then
+    if ! grep -qx 'Zend OPcache' <<<"$php_modules"; then
         echo 'zend_extension=opcache'
     fi
     if [ "$preload" = on ] && [ "$php_id" -ge 70400 ]; then
