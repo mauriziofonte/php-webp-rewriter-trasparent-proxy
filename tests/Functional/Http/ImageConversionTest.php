@@ -524,21 +524,72 @@ final class ImageConversionTest extends TestCase
         $response = $this->resizingKernel()->handle(self::request($path, ''));
 
         self::assertSame(200, $response->getStatusCode());
+        self::assertSame('BYPASS', $response->headers->get('x-cache-status'));
         self::assertStringEqualsFile(self::FIXTURES . 'image.png', self::body($response));
         self::assertFileDoesNotExist($this->cachePath(ltrim($path, '/')));
+        self::assertCount(1, $this->converter->getCalls());
         // Review F2: the waiters stream it too, in parallel, until the
         // outcome expires or an entry is stored.
         $key = (new CacheKeyResolver($this->directory->path('_cache')))->resolve('cdn.example.test', $path, '')->getKey();
         self::assertTrue($this->coalescer()->isRecentlyUncacheable($key));
+    }
+
+    /**
+     * Review G1: within the window of an unavailable resize, the requests
+     * stream the image without resizing it, even with a converter that
+     * would resize it now, and without renewing the outcome; once the
+     * window is over, one request resizes again, and an entry it stores
+     * forgets the outcome.
+     */
+    public function testAResizeTheConverterCannotMakeIsTriedOncePerWindow(): void
+    {
+        $this->converter->setUnavailable(true);
+        $path = $this->resizePath(320, '/images/photo.png');
+        $key = (new CacheKeyResolver($this->directory->path('_cache')))->resolve('cdn.example.test', $path, '')->getKey();
+        $state = $this->directory->path(TestKernel::STATE_DIRECTORY);
+        self::assertSame(200, $this->resizingKernel()->handle(self::request($path, ''))->getStatusCode());
+        $slots = glob($state . '/coalescing/*.outcome') ?: [];
+        self::assertCount(1, $slots);
+        $recordedAt = time() - 2;
+        self::assertTrue(touch($slots[0], $recordedAt));
 
         $this->converter->setUnavailable(false);
+        for ($i = 0; $i < 3; ++$i) {
+            $streamed = $this->resizingKernel()->handle(self::request($path, ''));
+            self::assertSame(200, $streamed->getStatusCode());
+            self::assertSame('BYPASS', $streamed->headers->get('x-cache-status'));
+            self::assertStringEqualsFile(self::FIXTURES . 'image.png', self::body($streamed));
+        }
+        self::assertCount(1, $this->converter->getCalls(), 'no resize within the window');
+        clearstatcache();
+        self::assertSame($recordedAt, filemtime($slots[0]), 'the window is not renewed without a retry');
+
+        // After the window, a retry that fails again renews it once.
+        $this->converter->setUnavailable(true);
         $kernel = $this->resizingKernel();
+        CoalescerSeam::replace($kernel, $state, $this->logger, static function (): int {
+            return time() + RequestCoalescer::OUTCOME_WINDOW;
+        });
+        self::assertSame('BYPASS', $kernel->handle(self::request($path, ''))->headers->get('x-cache-status'));
+        self::assertCount(2, $this->converter->getCalls(), 'one retry after the window');
+        self::assertTrue($this->coalescer()->isRecentlyUncacheable($key), 'renewed by the retry');
+        self::assertSame('BYPASS', $this->resizingKernel()->handle(self::request($path, ''))->headers->get('x-cache-status'));
+        self::assertCount(2, $this->converter->getCalls());
+
+        // A retry after that window that succeeds stores the entry.
+        $this->converter->setUnavailable(false);
+        $kernel = $this->resizingKernel();
+        CoalescerSeam::replace($kernel, $state, $this->logger, static function (): int {
+            return time() + RequestCoalescer::OUTCOME_WINDOW;
+        });
         $retried = $kernel->handle(self::request($path, ''));
-        $kernel->terminate();
 
         self::assertSame('MISS', $retried->headers->get('x-cache-status'), 'resized again');
-        self::assertFileExists($this->cachePath(ltrim($path, '/')));
+        self::assertCount(3, $this->converter->getCalls());
         self::assertFalse($this->coalescer()->isRecentlyUncacheable($key), 'forgotten once stored');
+        self::assertSame([], glob($state . '/coalescing/*.outcome') ?: []);
+        $kernel->terminate();
+        self::assertFileExists($this->cachePath(ltrim($path, '/')));
     }
 
     /**

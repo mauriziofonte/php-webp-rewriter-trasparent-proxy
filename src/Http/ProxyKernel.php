@@ -566,8 +566,9 @@ final class ProxyKernel
      * is without being stored, and so is an image the origin forbids
      * storing: either way the requests that waited for it, and those of
      * the coalescer window, fetch and stream it in parallel rather than
-     * one after another. A failure of the conversion never fails the
-     * request.
+     * one after another, none of them resizing it; the first request
+     * after the window resizes again, with the lock. A failure of the
+     * conversion never fails the request.
      *
      * @param string $path      the decoded path of the resize URL
      * @param string $imagePath the decoded path of the image on the origin
@@ -635,8 +636,15 @@ final class ProxyKernel
                     return $this->failure($origin, $logPath, $location, $fetched);
                 }
                 $this->circuitBreaker->reset(RedirectTarget::originOf($origin));
+                // Review G1: within the window of an outcome that stored
+                // nothing, the request streams the image without resizing
+                // it, whether it found the outcome, waited for the leader
+                // that left it, or holds the lock after it (lead()). Only
+                // a request that holds the lock once the outcome expired
+                // resizes, so one attempt is made per window at most.
+                $resize = !$uncacheable && !$this->coalescer->isRecentlyUncacheable($key);
 
-                return $this->resizeAndServe($request, $location, $extension, $width, $fetched);
+                return $this->resizeAndServe($request, $location, $extension, $width, $fetched, $resize);
             } finally {
                 if ($lease !== null) {
                     $lease->release();
@@ -648,8 +656,10 @@ final class ProxyKernel
     /**
      * Stores the image of $fetched resized as the entry of the resize URL
      * of $location and serves it (see handleResize()).
+     *
+     * @param bool $resize whether to resize: false streams the image as it is, without storing it
      */
-    private function resizeAndServe(Request $request, CacheLocation $location, string $extension, int $width, OriginResponse $fetched): Response
+    private function resizeAndServe(Request $request, CacheLocation $location, string $extension, int $width, OriginResponse $fetched, bool $resize): Response
     {
         $logPath = SignedUrlVerifier::mask('/' . $location->getRelativePath());
         $body = $fetched->getBodyFile() ?? ResponseBody::fromString($fetched->getBody(), sys_get_temp_dir());
@@ -661,7 +671,7 @@ final class ProxyKernel
         $freshness = Freshness::fromHeaders($fetched->getHeaders(), time());
         $requestId = self::requestIdOf($request);
         $variants = $this->variants;
-        $outcome = !$freshness->isStorable() || $variants === null
+        $outcome = !$resize || !$freshness->isStorable() || $variants === null
             ? VariantConverter::UNAVAILABLE
             : $variants->resizeEntry($location, $body->getPath(), $width, $requestId);
         if ($outcome === VariantConverter::UNAVAILABLE || $variants === null) {
@@ -671,8 +681,13 @@ final class ProxyKernel
             // another (review F2: a converter that hangs made the last
             // of them wait past the coalescing timeout, then answer 503).
             // The outcome expires with the coalescer window, after which
-            // a request resizes again; a stored entry forgets it.
-            $this->coalescer->recordUncacheable($location->getKey());
+            // one request resizes again; a stored entry forgets it. Only
+            // the request that tried records it: one that streamed
+            // without trying would renew the window without a retry
+            // (review G1).
+            if ($resize) {
+                $this->coalescer->recordUncacheable($location->getKey());
+            }
 
             return $this->files->respondUncached($request, $body, $extension, $freshness->isNoStore());
         }

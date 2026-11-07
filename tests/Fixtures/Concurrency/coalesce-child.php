@@ -19,7 +19,9 @@ declare(strict_types=1);
  * tier PHP revalidates). With "resize-hang", <url> is a signed resize
  * URL (RESIZE_KEY of RESIZE_HANG_KEY), the origin answers with a PNG,
  * and the converter hangs RESIZE_HANG_MS, then answers that it cannot
- * convert now, as a conversion API that hangs does.
+ * convert now, as a conversion API that hangs does; "resize-fail" does
+ * the same after RESIZE_FAIL_MS. Either converter records each attempt
+ * as a line of "conversions.log" in <directory>.
  *
  * Usage: php coalesce-child.php <directory> <fetch log> <url> <delay ms> <start time> [<mode>]
  */
@@ -56,6 +58,7 @@ require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
 const RESIZE_HANG_KEY = 'resize-hang-key-0123456789abcdef0123';
 const RESIZE_HANG_MS = 3000;
+const RESIZE_FAIL_MS = 1000;
 
 list(, $directory, $fetchLog, $url, $delay, $start) = $argv;
 $mode = $argv[6] ?? 'ok';
@@ -94,7 +97,7 @@ $origin = new class ($fetchLog, (int) $delay, $mode) implements OriginFetcher {
         if ($this->mode === 'notfound' || ($legacy && substr($request->getUrl(), -5) === '.webp')) {
             return OriginResponse::failure(OriginResponse::FAILURE_NOT_FOUND, 404);
         }
-        if ($this->mode === 'resize-hang') {
+        if ($this->mode === 'resize-hang' || $this->mode === 'resize-fail') {
             return OriginResponse::success(['content-type' => 'image/png'], (string) file_get_contents(dirname(__DIR__) . '/Image/files/image.png'));
         }
         $headers = ['content-type' => 'text/css'];
@@ -111,11 +114,24 @@ $origin = new class ($fetchLog, (int) $delay, $mode) implements OriginFetcher {
 
 $converter = null;
 $overrides = $mode === 'notfound' ? ['NEGATIVE_CACHE_TTL' => '0'] : [];
-if ($mode === 'resize-hang') {
-    $converter = new class () implements ImageConverter {
+if ($mode === 'resize-hang' || $mode === 'resize-fail') {
+    $converter = new class ($directory . '/conversions.log', $mode === 'resize-hang' ? RESIZE_HANG_MS : RESIZE_FAIL_MS) implements ImageConverter {
+        /** @var string */
+        private $log;
+
+        /** @var int */
+        private $hang;
+
+        public function __construct(string $log, int $hang)
+        {
+            $this->log = $log;
+            $this->hang = $hang;
+        }
+
         public function convert(string $inputPath, string $outputPath, ConversionRequest $request, ?string $requestId = null): ConversionResult
         {
-            usleep(RESIZE_HANG_MS * 1000);
+            file_put_contents($this->log, sprintf("%.6F\n", microtime(true)), FILE_APPEND | LOCK_EX);
+            usleep($this->hang * 1000);
 
             throw ConversionFailure::unavailable('hang', 'The converter timed out', 'timeout');
         }

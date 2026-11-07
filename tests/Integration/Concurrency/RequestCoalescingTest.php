@@ -251,6 +251,60 @@ final class RequestCoalescingTest extends TestCase
             self::assertSame($png, $result['hash']);
         }
         self::assertLessThan(20.0, $elapsed, 'two conversion attempts in a row at most, not one per request');
+        // Review G1: the waiters stream without resizing, even all at once.
+        self::assertCount(1, $this->conversions(), 'one conversion attempt for the burst');
+    }
+
+    /**
+     * Review G1: once a resize was unavailable, a second burst within the
+     * window streams the image without any conversion, and does not renew
+     * the window; a third one after it makes exactly one attempt, the one
+     * of the request that holds the lock, while the others wait for it and
+     * stream.
+     */
+    public function testAnUnavailableResizeIsTriedOncePerWindow(): void
+    {
+        $url = 'https://cdn.example.test' . (new SignedUrlVerifier('resize-hang-key-0123456789abcdef0123', [8]))->pathOf('cdn.example.test', 8, '/img/photo.png', '');
+        $png = hash('sha256', (string) file_get_contents(dirname(__DIR__, 2) . '/Fixtures/Image/files/image.png'));
+        $waves = [$this->burst($url, 'resize-fail', 0.0, 4)];
+        self::assertCount(1, $this->conversions());
+        $slots = glob($this->directory->path('.var/coalescing/*.outcome')) ?: [];
+        self::assertCount(1, $slots);
+        clearstatcache();
+        $recordedAt = (int) filemtime($slots[0]);
+
+        $waves[] = $this->burst($url, 'resize-fail', 0.0, 10, 0.75);
+        self::assertLessThan($recordedAt + RequestCoalescer::OUTCOME_WINDOW, time(), 'the second burst ran within the window');
+        self::assertCount(1, $this->conversions(), 'no conversion within the window');
+        clearstatcache();
+        self::assertSame($recordedAt, filemtime($slots[0]), 'the window is not renewed without an attempt');
+
+        $wait = $recordedAt + RequestCoalescer::OUTCOME_WINDOW + 1 - microtime(true);
+        if ($wait > 0) {
+            usleep((int) ($wait * 1000000));
+        }
+        $waves[] = $this->burst($url, 'resize-fail', 0.0, 10, 0.75);
+        self::assertCount(2, $this->conversions(), 'one attempt after the window');
+
+        foreach ($waves as $results) {
+            foreach ($results as $result) {
+                self::assertSame(200, $result['status']);
+                self::assertSame('BYPASS', $result['cache']);
+                self::assertSame($png, $result['hash']);
+            }
+        }
+    }
+
+    /**
+     * The conversion attempts the converter of coalesce-child.php logged.
+     *
+     * @return list<string>
+     */
+    private function conversions(): array
+    {
+        $file = $this->directory->path('conversions.log');
+
+        return is_file($file) ? (file($file, FILE_IGNORE_NEW_LINES) ?: []) : [];
     }
 
     /**
@@ -260,13 +314,14 @@ final class RequestCoalescingTest extends TestCase
      * @param string $mode      what the origin answers (see coalesce-child.php)
      * @param float  $spread    seconds over which the starts of the requests are spread evenly (0: all at once)
      * @param int    $processes how many requests
+     * @param float  $lead      seconds from now to the first start, for the processes to load
      *
      * @return list<array{status: int, cache: string, hash: string, location: string|null}>
      */
-    private function burst(string $url, string $mode = 'ok', float $spread = 0.0, int $processes = self::PROCESSES): array
+    private function burst(string $url, string $mode = 'ok', float $spread = 0.0, int $processes = self::PROCESSES, float $lead = 1.5): array
     {
         $script = dirname(__DIR__, 2) . '/Fixtures/Concurrency/coalesce-child.php';
-        $first = microtime(true) + 1.5;
+        $first = microtime(true) + $lead;
         $running = [];
         for ($i = 0; $i < $processes; ++$i) {
             $start = sprintf('%.6F', $first + $spread * $i / $processes);
