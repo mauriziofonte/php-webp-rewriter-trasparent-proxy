@@ -13,15 +13,18 @@ use Mfonte\ProxyCdn\Exception\InvalidArgumentException;
  * entry first: the work of cache:evict.
  *
  * The unit is the set of an entry: the entry, its metadata, its AVIF and
- * WEBP variants and its Brotli and gzip encodings (CacheLocation::
- * getFiles()), in one tier and one query-string bucket. A set is measured
- * as the sum of its files and dated by the most recent access time
- * (BY_ATIME: the web server serves the encodings and the variants too) or
- * modification time (BY_MTIME, for a file system mounted noatime) of any
- * of them, and is always removed whole: its variants and encodings first,
- * then the entry, then its metadata, so that a run cut short never leaves
- * a sibling that outlives its entry. A sibling whose entry is gone is a
- * set of its own and goes the same way.
+ * WEBP variants, its Brotli and gzip encodings, and the pending copy of
+ * an image waiting for its variants with the variants staged for it
+ * (CacheLocation::getFiles()), in one tier and one query-string bucket.
+ * A set is measured as the sum of its files and dated by the most recent
+ * access time (BY_ATIME: the web server serves the encodings and the
+ * variants too) or modification time (BY_MTIME, for a file system
+ * mounted noatime) of any of them, and is always removed whole: its
+ * variants, staged variants and encodings first, then the pending copy,
+ * then the entry, then its metadata, so that a run cut short never
+ * leaves a sibling that outlives its entry. A sibling whose entry is
+ * gone is a set of its own and goes the same way; so is an image that
+ * is only pending.
  *
  * The walk uses lstat() and never follows a symbolic link: a link is
  * counted, left in place, and never entered or deleted, and a file is
@@ -40,7 +43,12 @@ final class CacheEvictor
      * The sibling directories of a bucket, with the suffix their files add
      * to the path of the entry.
      */
-    private const SIBLINGS = ['.avif' => '.avif', '.webp' => '.webp', '.br' => '', '.gz' => '', '.meta' => '.json'];
+    private const SIBLINGS = [
+        '.avif' => '.avif', '.webp' => '.webp', '.br' => '', '.gz' => '', '.meta' => '.json',
+        // The pending tier of PRX-8: the entries waiting for their
+        // variants, and the variants staged for them.
+        '.pending' => '', '.pending/.avif' => '.avif', '.pending/.webp' => '.webp',
+    ];
 
     /**
      * @var string
@@ -160,10 +168,11 @@ final class CacheEvictor
             if (!self::isDirectory($bucketDirectory . '/' . $directory, $links)) {
                 continue;
             }
-            foreach (CacheTree::walk($bucketDirectory . '/' . $directory) as $relative => $stat) {
+            // A dot directory within is another sibling (".pending/.webp").
+            foreach (CacheTree::walk($bucketDirectory . '/' . $directory, $visible) as $relative => $stat) {
                 if ($stat[0] === CacheTree::TYPE_LINK) {
                     ++$links;
-                } elseif ($stat[0] === CacheTree::TYPE_FILE && ($suffix === '' || substr($relative, -strlen($suffix)) === $suffix)) {
+                } elseif ($stat[0] === CacheTree::TYPE_FILE && basename($relative)[0] !== '.' && ($suffix === '' || substr($relative, -strlen($suffix)) === $suffix)) {
                     $paths[$suffix === '' ? $relative : (string) substr($relative, 0, -strlen($suffix))] = true;
                 }
             }
@@ -208,9 +217,8 @@ final class CacheEvictor
         if ($this->measure($location)[1] > $scannedTime) {
             return false;
         }
-        $files = $location->getFiles();
-        // getFiles(): entry, metadata, variants, encodings.
-        $ordered = array_merge(array_slice($files, 2), [$files[0], $files[1]]);
+        $last = [$location->getPendingFile(), $location->getFile(), $location->getMetadataFile()];
+        $ordered = array_merge(array_values(array_diff($location->getFiles(), $last)), $last);
         foreach ($ordered as $file) {
             $stat = CacheTree::statInside($this->cacheDirectory, $file);
             if ($stat !== null && $stat[0] === CacheTree::TYPE_FILE) {

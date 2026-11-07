@@ -114,6 +114,25 @@ final class CacheEvictCommandTest extends TestCase
     }
 
     /**
+     * An image waiting for its variants (the pending tier of PRX-8) is a
+     * set with the variants staged for it: measured, and evicted whole.
+     */
+    public function testAPendingImageIsASetWithItsStagedVariants(): void
+    {
+        $pending = $this->set('/.pending', 'images/new.jpg', 1000000, ['.webp/images/new.jpg.webp', '.avif/images/new.jpg.avif']);
+        $kept = $this->set('', 'kept.css', 2000000);
+
+        list($exitCode, $display) = $this->evict(['--max-size' => '100']);
+
+        self::assertSame(0, $exitCode, $display);
+        self::assertStringContainsString('Cache: 2 entries, 220 bytes', $display);
+        foreach ($pending as $file) {
+            self::assertFileDoesNotExist($file);
+        }
+        self::assertFileExists($kept[0]);
+    }
+
+    /**
      * A link in the cache, even one that stands for a sibling directory,
      * is never followed: what it points to is neither measured nor
      * removed.
