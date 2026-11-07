@@ -7,14 +7,19 @@ namespace Mfonte\ProxyCdn\Tests\Performance;
 use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Config\CompiledConfigCache;
 use Mfonte\ProxyCdn\Config\ConfigLoader;
+use Mfonte\ProxyCdn\Http\EdgeKernelFactory;
 use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
+use Mfonte\ProxyCdn\Image\ImageConverterFactory;
+use Mfonte\ProxyCdn\Observability\Metrics;
 use Mfonte\ProxyCdn\Origin\HttpOriginFetcher;
 use Psr\Log\NullLogger;
 
 /**
- * Microbenchmarks of the per-request work that precedes ProxyKernel::handle()
+ * Microbenchmarks of the per-request work that precedes EdgeKernel::handle()
  * in public/index.php: loading the configuration (with and without the
- * compiled configuration) and building the kernel. They explain the share
+ * compiled configuration) and building the kernel, with and without the
+ * middleware of the edge kernel (request ID, /healthz, /metrics, miss rate
+ * limit), as configured by the .env. They explain the share
  * of these steps in the server-side latency of a hit PHP serves.
  *
  * Every case runs in a scratch directory with the .env of the integration
@@ -79,8 +84,22 @@ final class MicroBenchmark
             'origin client (HttpOriginFetcher::fromConfig)' => $this->measure(static function () use ($config, $logger): void {
                 HttpOriginFetcher::fromConfig($config, $logger);
             }),
+            'image converter (ImageConverterFactory::create)' => $this->measure(static function () use ($config, $state, $logger, $storage): void {
+                ImageConverterFactory::create($config, $state, $logger, $storage);
+            }),
             'kernel object graph (ProxyKernelFactory::create)' => $this->measure(static function () use ($config, $public, $state, $fetcher, $logger): void {
                 ProxyKernelFactory::create($config, $public, $state, $fetcher, null, $logger);
+            }),
+            'edge kernel object graph with its middleware, as public/index.php (EdgeKernelFactory::create)' => $this->measure(static function () use ($config, $public, $state, $fetcher, $logger, $storage): void {
+                EdgeKernelFactory::create(
+                    $config,
+                    $public,
+                    $state,
+                    $fetcher,
+                    ImageConverterFactory::create($config, $state, $logger, $storage),
+                    $logger,
+                    Metrics::fromConfig($config, $state)
+                );
             }),
         ];
     }

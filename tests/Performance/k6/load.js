@@ -14,9 +14,13 @@
  *                 herd   one request from each of VUS clients, all at once
  *   EXPECT_CACHE  X-Cache-Status every response must carry (HIT, MISS), or
  *                 empty for none
+ *   EXPECT_REQUEST_ID
+ *                 1: every response must carry a request ID the proxy made
+ *                 (32 hexadecimal digits: k6 sends none), as PHP adds to
+ *                 each of its responses
  *
- * Every response must be a 200 (and carry EXPECT_CACHE): run.sh refuses a
- * measurement with a failed check.
+ * Every response must be a 200 (and carry EXPECT_CACHE and the request ID
+ * when asked): run.sh refuses a measurement with a failed check.
  */
 
 import http from 'k6/http';
@@ -31,6 +35,7 @@ const RATE = parseInt(__ENV.RATE || '500', 10);
 const VUS = parseInt(__ENV.VUS || '8', 10);
 const ITERATIONS = parseInt(__ENV.ITERATIONS || '200', 10);
 const EXPECT_CACHE = __ENV.EXPECT_CACHE || '';
+const EXPECT_REQUEST_ID = __ENV.EXPECT_REQUEST_ID === '1';
 
 const scenarios = {
     rate: {
@@ -78,6 +83,9 @@ export default function () {
         },
         'cache status': function (r) {
             return EXPECT_CACHE === '' || r.headers['X-Cache-Status'] === EXPECT_CACHE;
+        },
+        'request ID': function (r) {
+            return !EXPECT_REQUEST_ID || /^[0-9a-f]{32}$/.test(r.headers['X-Request-Id'] || '');
         },
     });
 }

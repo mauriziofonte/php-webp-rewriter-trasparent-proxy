@@ -139,11 +139,12 @@ final class LatencyReport
     public function markdown(): string
     {
         $text = sprintf(
-            "### Performance suite: PHP %s, %s autoloader, preloading %s, Apache rules %s\n\nMachine: %s. Load generator: k6 %s. "
+            "### Performance suite: PHP %s, %s autoloader, preloading %s, middleware %s, Apache rules %s\n\nMachine: %s. Load generator: k6 %s. "
             . "Absolute targets %s.\n\n",
             self::stringOf($this->run['php'] ?? '?'),
             self::stringOf($this->run['autoloader'] ?? '?'),
             self::stringOf($this->run['preloading'] ?? '?'),
+            self::stringOf($this->run['middleware'] ?? '?'),
             self::stringOf($this->run['apacheRules'] ?? '?'),
             self::stringOf($this->run['machine'] ?? '?'),
             self::stringOf($this->run['k6'] ?? '?'),

@@ -11,7 +11,7 @@
 #   2. a warm hit served by PHP: server-side latency from the PHP-FPM
 #      access log;
 #   3. cold misses against a fake origin with a fixed latency: total latency
-#      minus that latency (no conversion: IMAGE_CONVERSION_MODE is none);
+#      minus that latency (no conversion: IMAGE_CONVERTER is none);
 #   4. the thundering herd: concurrent requests on one cold entry, whose
 #      origin answers after a second, cause exactly one origin fetch.
 #
@@ -23,6 +23,14 @@
 #   --php <version>        PHP-FPM image version (default 8.5)
 #   --stack <name>         apache, nginx or all (default all)
 #   --preload on|off       OPcache preloading on PHP 7.4+ (default on)
+#   --middleware on|off    on (default): the middleware of PRX-9 that a
+#                          production install runs, all active on the
+#                          requests PHP serves: the metrics store
+#                          (METRICS_STORE=file, METRICS_KEYS set), the miss
+#                          rate limit (MISS_RATE_LIMIT set high enough never
+#                          to refuse), and the request ID, always on. off:
+#                          METRICS_STORE=off and no miss rate limit, to
+#                          measure what the middleware costs
 #   --apache-htaccess      Apache reads public/.htaccess on every request
 #                          (AllowOverride All) instead of including it in
 #                          the virtual host, as config/apache/proxy-cdn.conf
@@ -71,6 +79,7 @@ k6_digest="${BENCH_K6_DIGEST:-sha256:3ddc8b1a33a2c3d8edc6e99b6a762ae36cba0878846
 php_version=8.5
 stack=all
 preload=on
+middleware=on
 apache_rules=vhost
 rounds=3
 duration=10s
@@ -90,13 +99,14 @@ die() {
     printf 'FAILED: %s\n' "$*" >&2
     exit 1
 }
-usage() { sed -n '18,51p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '18,58p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --php) php_version="${2:-}"; shift 2 || die "--php needs a value" ;;
         --stack) stack="${2:-}"; shift 2 || die "--stack needs a value" ;;
         --preload) preload="${2:-}"; shift 2 || die "--preload needs a value" ;;
+        --middleware) middleware="${2:-}"; shift 2 || die "--middleware needs a value" ;;
         --apache-htaccess) apache_rules=htaccess; shift ;;
         --rounds) rounds="${2:-}"; shift 2 || die "--rounds needs a value" ;;
         --duration) duration="${2:-}"; shift 2 || die "--duration needs a value" ;;
@@ -126,6 +136,7 @@ case "$stack" in
     *) die "--stack expects apache, nginx or all, got '$stack'" ;;
 esac
 case "$preload" in on | off) ;; *) die "--preload expects on or off, got '$preload'" ;; esac
+case "$middleware" in on | off) ;; *) die "--middleware expects on or off, got '$middleware'" ;; esac
 for value in "$rounds" "$rate" "$vus" "$php_rate" "$misses" "$origin_delay" "$herd"; do
     [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "expected a positive integer, got '$value'"
 done
@@ -264,6 +275,9 @@ fi
 
 # --- application copies -----------------------------------------------------
 
+# Bearer key of /metrics, for the check that the metrics counted the hits.
+metrics_key="bench-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+
 # As the harness: tracked and untracked files that git does not ignore.
 for s in "${stacks[@]}"; do
     target="$workdir/$s/app"
@@ -279,6 +293,12 @@ for s in "${stacks[@]}"; do
     # The load generator names the web servers by their service names.
     grep -v '^PROXY_HOSTS' "$harness/app.env" >"$target/.env"
     printf 'PROXY_HOSTS = "apache,nginx"\n' >>"$target/.env"
+    if [ "$middleware" = on ]; then
+        printf 'METRICS_STORE = "file"\nMETRICS_KEYS = "%s"\nMISS_RATE_LIMIT = 1000000\nMISS_RATE_LIMIT_BURST = 100000\n' \
+            "$metrics_key" >>"$target/.env"
+    else
+        printf 'METRICS_STORE = "off"\nMISS_RATE_LIMIT = 0\n' >>"$target/.env"
+    fi
     if [ "$s" = nginx ]; then
         printf 'SENDFILE = "x-accel-redirect"\n' >>"$target/.env"
     else
@@ -419,19 +439,30 @@ for s in "${stacks[@]}"; do
 
     log "Hits served by PHP behind $s"
     lines="$(lines_of "$fpm_log")"
-    k6 "$s-php-hit-rate" rate "$base$asset?v=1&zz=1" "RATE=$php_rate" EXPECT_CACHE=HIT
+    k6 "$s-php-hit-rate" rate "$base$asset?v=1&zz=1" "RATE=$php_rate" EXPECT_CACHE=HIT EXPECT_REQUEST_ID=1
     sleep 1
     tail -n +$((lines + 1)) "$fpm_log" >"$workdir/results/$s-php-hit-rate.fpm.log"
     expect "$s: every PHP hit is in the PHP-FPM access log" \
         "$(grep -c 'zz=1' "$workdir/results/$s-php-hit-rate.fpm.log" || true)" \
         "$(php -r 'echo json_decode((string) file_get_contents($argv[1]), true)["requests"];' "$workdir/results/$s-php-hit-rate.json")"
-    k6 "$s-php-hit-loop" loop "$base$asset?v=1&zz=1" "VUS=$vus" EXPECT_CACHE=HIT
+    k6 "$s-php-hit-loop" loop "$base$asset?v=1&zz=1" "VUS=$vus" EXPECT_CACHE=HIT EXPECT_REQUEST_ID=1
+    if [ "$middleware" = on ]; then
+        # The metrics middleware counted the hits PHP served (the store is
+        # shared by every PHP-FPM worker of the stack).
+        counted="$(curl -fsS -H "Host: $s" -H 'X-Forwarded-Proto: https' -H "Authorization: Bearer $metrics_key" \
+            "$local_base/metrics" | tee "$workdir/results/$s-metrics.txt" |
+            awk '/^proxy_cdn_requests_total\{/ && /cache="HIT"/ { total += $NF } END { printf "%d", total }')"
+        served="$(php -r '$t = 0; foreach (array_slice($argv, 1) as $f) { $t += json_decode((string) file_get_contents($f), true)["requests"]; } echo $t;' \
+            "$workdir/results/$s-php-hit-rate.json" "$workdir/results/$s-php-hit-loop.json")"
+        [ "$counted" -ge "$served" ] || die "$s: /metrics counted $counted hits, PHP served at least $served"
+        pass "$s: /metrics counted $counted hits served by PHP (at least $served measured)"
+    fi
 
     log "Cold misses behind $s: $misses entries, origin latency ${origin_delay} ms"
     origin_reset
     origin_rule "$asset" "$origin_delay"
     k6 "$s-origin-direct" miss "http://origin$asset" "ITERATIONS=$misses" "RUN=direct-$s-$run_id"
-    k6 "$s-miss" miss "$base$asset" "ITERATIONS=$misses" "RUN=$s-$run_id" EXPECT_CACHE=MISS
+    k6 "$s-miss" miss "$base$asset" "ITERATIONS=$misses" "RUN=$s-$run_id" EXPECT_CACHE=MISS EXPECT_REQUEST_ID=1
     expect "$s: one origin fetch per miss" "$(origin_count "$asset")" "$((misses * 2))"
 
     log "Thundering herd behind $s: $herd concurrent requests on one cold entry"
@@ -458,7 +489,7 @@ if [ "$results" != "$workdir/results" ]; then
     cp "$workdir"/results/* "$results/"
 fi
 cat >"$results/run.json" <<EOF
-{"php": "$php_version", "phpVersionId": $php_id, "stacks": "${stacks[*]}", "preloading": "$preloading", "apacheRules": "$apache_rules", "autoloader": "$autoloader",
+{"php": "$php_version", "phpVersionId": $php_id, "stacks": "${stacks[*]}", "preloading": "$preloading", "middleware": "$middleware", "apacheRules": "$apache_rules", "autoloader": "$autoloader",
  "rounds": $rounds, "duration": "$duration", "rate": $rate, "vus": $vus, "phpRate": $php_rate, "misses": $misses,
  "originDelayMs": $origin_delay, "herd": $herd, "k6": "$k6_version@$k6_digest",
  "machine": "$(nproc) CPUs, $(uname -sr), $(awk -F': ' '/^model name/ { print $2; exit }' /proc/cpuinfo 2>/dev/null || echo unknown)"}
