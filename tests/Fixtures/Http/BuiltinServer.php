@@ -134,8 +134,10 @@ final class BuiltinServer
     }
 
     /**
-     * Waits until the port accepts connections, or until the server reports
-     * that it cannot listen on it (the port was taken in the meantime).
+     * Waits until the server accepts connections on the port, or until it
+     * reports that it cannot listen on it (the port was taken in the
+     * meantime). A connection to another process that took the port does
+     * not count.
      */
     private function waitUntilReady(): bool
     {
@@ -145,13 +147,57 @@ final class BuiltinServer
             $socket = @stream_socket_client('tcp://127.0.0.1:' . $this->port, $errno, $errstr, 0.2);
             if (is_resource($socket)) {
                 fclose($socket);
-
-                return true;
+                if ($this->ownsPort()) {
+                    return true;
+                }
             }
             if (strpos($this->getOutput(), $failure) !== false) {
                 return false;
             }
             usleep(10000);
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether the socket listening on the port is this server's: between
+     * freePort() and the bind of "php -S" another process may take the port,
+     * and a connection would then reach that process. On Linux the inode of
+     * the listening socket is looked up among the server's descriptors;
+     * elsewhere a connection is taken as proof.
+     */
+    private function ownsPort(): bool
+    {
+        // proc_get_status() returns false on older versions when it fails.
+        $running = false;
+        $pid = 0;
+        foreach ((array) proc_get_status($this->process) as $field => $value) {
+            if ($field === 'running') {
+                $running = $value === true;
+            } elseif ($field === 'pid') {
+                $pid = (int) $value;
+            }
+        }
+        if (!$running) {
+            return false;
+        }
+        $descriptors = '/proc/' . $pid . '/fd';
+        $table = @file('/proc/net/tcp', FILE_IGNORE_NEW_LINES);
+        if ($table === false || !is_dir($descriptors)) {
+            return true;
+        }
+        $address = sprintf('0100007F:%04X', $this->port);
+        foreach ($table as $row) {
+            $fields = preg_split('/\s+/', trim($row));
+            if ($fields === false || count($fields) < 10 || $fields[1] !== $address || $fields[3] !== '0A') {
+                continue;
+            }
+            foreach ((array) glob($descriptors . '/*') as $descriptor) {
+                if (@readlink((string) $descriptor) === 'socket:[' . $fields[9] . ']') {
+                    return true;
+                }
+            }
         }
 
         return false;
