@@ -16,20 +16,19 @@ namespace Mfonte\ProxyCdn\Tests\Performance;
  * - the absolute targets (PHP hit, cold-miss overhead), which are reported,
  *   and gate only in strict mode.
  *
- * Each round measures the hit and the static file back to back. On a
- * shared machine a busy neighbour slows one side of a round or the other:
- * within one run, the ratios of single rounds spread by up to 0.7 (p50),
- * 4.0 (p99) and 0.6 (requests per second), so the gate does not use the
- * ratio of one round, nor their median (reported next to the gate):
- * - p50: the lowest p50 of the hit over the rounds, divided by the lowest
- *   p50 of the static file. Contention only adds latency, so the lowest
- *   p50 of each side is its latency on a quiet machine, and a round that
- *   slowed the static file cannot flatter the hit;
- * - p99 and requests per second: the best round (lowest p99 ratio,
- *   highest ratio of requests per second). These depend on the share of
- *   the machine the run got, which the two halves of a round share.
- * A slower hit path makes every round worse, so the gate still sees it,
- * while one noisy round no longer fails the run.
+ * Each round measures the hit and then the static file. On a shared
+ * machine a busy neighbour slows one measurement or the other: within one
+ * run, the ratios of single rounds spread by up to 0.7 (p50), 4.0 (p99)
+ * and 0.6 (requests per second), so the gate uses neither the ratio of
+ * one round nor the best or the median one (the median is reported):
+ * a round whose static file was slowed flatters the hit. It compares
+ * the best value of each side over the rounds instead, which is that
+ * side on the quietest machine the run saw: contention only adds latency
+ * and only takes throughput away. The lowest p50 and p99 of the hit are
+ * divided by the lowest p50 and p99 of the static file, the highest
+ * requests per second of the hit by the highest of the static file.
+ * A slower hit path makes every value of the hit worse, so the gate still
+ * sees it, while one noisy measurement no longer fails the run.
  *
  * The overhead of a cold miss is its latency minus the origin time, which
  * is measured: the latency of the same requests sent to the origin
@@ -177,7 +176,7 @@ final class LatencyReport
         return [
             'run' => $this->run,
             'gate' => [
-                'statistic' => 'p50: lowest of each side; p99, requests per second: best round',
+                'statistic' => 'best value of each side over the rounds',
                 'maxRatio' => $this->maxRatio,
                 'maxP99Ratio' => $this->maxP99Ratio,
                 'minRpsRatio' => $this->minRpsRatio,
@@ -258,6 +257,10 @@ final class LatencyReport
         $p50 = [];
         $hitP50 = [];
         $staticP50 = [];
+        $hitP99 = [];
+        $staticP99 = [];
+        $hitRps = [];
+        $staticRps = [];
         $p99 = [];
         $rps = [];
         $valid = true;
@@ -270,6 +273,10 @@ final class LatencyReport
             $p50[] = $hitRate['p50'] / $staticRate['p50'];
             $hitP50[] = $hitRate['p50'];
             $staticP50[] = $staticRate['p50'];
+            $hitP99[] = $hitRate['p99'];
+            $staticP99[] = $staticRate['p99'];
+            $hitRps[] = $hitLoop['rps'];
+            $staticRps[] = $staticLoop['rps'];
             $p99[] = $hitRate['p99'] / $staticRate['p99'];
             $rps[] = $hitLoop['rps'] / $staticLoop['rps'];
             $this->info($stack, 'web-server hit, round ' . $round, 'p50 / p99 (static file)', sprintf(
@@ -287,17 +294,29 @@ final class LatencyReport
         }
         $this->check($stack, 'all measurements', 'every response a 200 with the expected X-Cache-Status, under 1% dropped', $valid ? 'yes' : 'no', 'yes', $valid, true);
         if ($rounds > 0) {
-            $best = sprintf(' (best of %d %s)', $rounds, $rounds === 1 ? 'round' : 'rounds');
+            $of = sprintf(' of %d %s each)', $rounds, $rounds === 1 ? 'round' : 'rounds');
             // Lowest values are percentile 0, highest ones percentile 100.
             $this->ratio(
                 $stack,
-                sprintf('p50 hit / static file (lowest of %d %s each)', $rounds, $rounds === 1 ? 'round' : 'rounds'),
+                'p50 hit / static file (lowest' . $of,
                 self::percentile($hitP50, 0) / self::percentile($staticP50, 0),
                 self::limitFor($this->maxRatio, $stack, self::HIT_RATIO),
                 true
             );
-            $this->ratio($stack, 'p99 hit / static file' . $best, self::percentile($p99, 0), self::limitFor($this->maxP99Ratio, $stack, self::HIT_RATIO), true);
-            $this->ratio($stack, 'requests per second hit / static file' . $best, self::percentile($rps, 100), self::limitFor($this->minRpsRatio, $stack, 2 - self::HIT_RATIO), false);
+            $this->ratio(
+                $stack,
+                'p99 hit / static file (lowest' . $of,
+                self::percentile($hitP99, 0) / self::percentile($staticP99, 0),
+                self::limitFor($this->maxP99Ratio, $stack, self::HIT_RATIO),
+                true
+            );
+            $this->ratio(
+                $stack,
+                'requests per second hit / static file (highest' . $of,
+                self::percentile($hitRps, 100) / self::percentile($staticRps, 100),
+                self::limitFor($this->minRpsRatio, $stack, 2 - self::HIT_RATIO),
+                false
+            );
             $this->info($stack, 'web-server hit', 'p50 / p99 / requests per second, hit / static file (median of rounds)', sprintf(
                 '%.3f / %.3f / %.3f',
                 self::median($p50),

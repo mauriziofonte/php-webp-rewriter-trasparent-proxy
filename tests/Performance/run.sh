@@ -28,8 +28,7 @@
 #                          the virtual host, as config/apache/proxy-cdn.conf
 #                          recommends
 #   --rounds <n>           rounds of the hit and baseline measurements (default 3);
-#                          the gate takes the lowest p50 of each side, and the
-#                          best round for p99 and requests per second
+#                          the gate compares the best value of each side
 #   --duration <time>      duration of each of those measurements (default 10s)
 #   --rate <n>             requests per second of the latency measurements (default 1000)
 #   --vus <n>              clients of the throughput measurements (default 16)
@@ -42,10 +41,10 @@
 #                          the lowest of the baseline; repeat it with a stack name
 #                          (apache=1.50) to set one stack (default 1.10, the target)
 #   --max-p99-ratio [<stack>=]<x>
-#                          gate: in its best round, the same for p99 (default 1.10)
+#                          gate: the same for p99 (default 1.10)
 #   --min-rps-ratio [<stack>=]<x>
-#                          gate: in its best round, the hit reaches at least x times
-#                          the requests per second of the baseline (default 0.90)
+#                          gate: the highest requests per second of the hit reach at
+#                          least x times the highest of the baseline (default 0.90)
 #   --strict               the absolute targets (PHP hit, cold miss) gate too
 #   --results <dir>        keep the results there (default: inside the work dir)
 #   --keep                 leave the containers and the work dir in place
