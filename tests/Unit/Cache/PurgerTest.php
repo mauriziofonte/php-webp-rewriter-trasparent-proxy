@@ -8,7 +8,12 @@ use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cache\NegativeCache;
 use Mfonte\ProxyCdn\Cache\Purger;
+use Mfonte\ProxyCdn\Cache\RequestCoalescer;
+use Mfonte\ProxyCdn\Http\ResponseFactory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
+use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
+use Mfonte\SecureImageConverter\Concurrency\KeyedLock;
+use Mfonte\SecureImageConverter\Concurrency\LockDirectory;
 use PHPUnit\Framework\Attributes\CoversClass;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
@@ -29,6 +34,11 @@ final class PurgerTest extends TestCase
     private $negativeCache;
 
     /**
+     * @var RequestCoalescer
+     */
+    private $coalescer;
+
+    /**
      * @var Purger
      */
     private $purger;
@@ -44,7 +54,9 @@ final class PurgerTest extends TestCase
         $this->directory = new TemporaryDirectory();
         $storage = new FilesystemStorage();
         $this->negativeCache = new NegativeCache($storage, $this->directory->path('state'), 300);
-        $this->purger = new Purger($storage, $this->negativeCache);
+        $lock = new KeyedLock(new LockDirectory($this->directory->path('locks')), RequestCoalescer::LOCK_NAME);
+        $this->coalescer = new RequestCoalescer($lock, 1.0, new MemoryLogger(), $storage, $this->directory->path('coalescing'));
+        $this->purger = new Purger($storage, $this->negativeCache, $this->coalescer);
         $this->resolver = new CacheKeyResolver($this->directory->path('public'));
     }
 
@@ -81,6 +93,29 @@ final class PurgerTest extends TestCase
             self::assertFileDoesNotExist($file);
         }
         self::assertFileExists($other);
+    }
+
+    /**
+     * The next request of a purged URL reaches the origin: the outcome
+     * the coalescer shares for it (a failure, a 404, a redirect) is
+     * forgotten, for the entries of its query strings too, while the
+     * outcome of another URL is kept.
+     */
+    public function testPurgeForgetsTheSharedOutcomes(): void
+    {
+        $location = $this->resolver->resolve('h', '/img/a.css', '');
+        $query = $this->resolver->resolve('h', '/img/a.css', 'v=1');
+        $this->directory->write(substr($query->getFile(), strlen($this->directory->path()) + 1), 'css');
+        $other = $this->resolver->resolve('h', '/img/b.css', '');
+        $this->coalescer->recordFailure($location->getKey(), ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+        $this->coalescer->recordRedirect($query->getKey(), 302, '/img/c.css');
+        $this->coalescer->recordFailure($other->getKey(), ResponseFactory::ERROR_ORIGIN_NOT_FOUND);
+
+        $this->purger->purge($location);
+
+        self::assertNull($this->coalescer->recentFailure($location->getKey()));
+        self::assertNull($this->coalescer->recentRedirect($query->getKey()));
+        self::assertSame(ResponseFactory::ERROR_ORIGIN_NOT_FOUND, $this->coalescer->recentFailure($other->getKey()));
     }
 
     public function testPurgeOfAMissingEntryRemovesNothing(): void

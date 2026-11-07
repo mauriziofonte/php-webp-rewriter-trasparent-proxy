@@ -40,11 +40,11 @@ final class Purger
     private $negativeCache;
 
     /**
-     * @var RequestCoalescer|null
+     * @var RequestCoalescer
      */
     private $coalescer;
 
-    public function __construct(CacheStorage $storage, NegativeCache $negativeCache, ?RequestCoalescer $coalescer = null)
+    public function __construct(CacheStorage $storage, NegativeCache $negativeCache, RequestCoalescer $coalescer)
     {
         $this->storage = $storage;
         $this->negativeCache = $negativeCache;
@@ -74,9 +74,7 @@ final class Purger
                 }
             }
             $this->negativeCache->forget($entry->getFile());
-            if ($this->coalescer !== null) {
-                $this->coalescer->forget($entry->getKey());
-            }
+            $this->coalescer->forget($entry->getKey());
         }
 
         return $removed;
