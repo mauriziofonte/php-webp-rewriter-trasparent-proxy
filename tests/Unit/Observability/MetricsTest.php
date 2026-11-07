@@ -188,11 +188,79 @@ final class MetricsTest extends TestCase
     {
         $store = $this->store();
         self::assertTrue($store->add(['a' => 1]));
-        file_put_contents($this->directory->path('var/metrics/' . FileMetricsStore::FILE_NAME), '{not json');
+        $files = $this->shardFiles();
+        self::assertCount(1, $files);
+        file_put_contents($files[0], '{not json');
 
         self::assertSame([], $store->read());
         self::assertTrue($store->add(['a' => 2, 'b' => 1]));
         self::assertSame(['a' => 2, 'b' => 1], $store->read());
+    }
+
+    /**
+     * The counters are split over files, one per writer at a time, and
+     * summed when read; the first file is the one of the single-file store.
+     */
+    public function testTheCountersOfEveryShardAreSummed(): void
+    {
+        $store = $this->store();
+        self::assertSame([], $store->read());
+        file_put_contents($this->directory->path('var/metrics/' . FileMetricsStore::FILE_NAME), '{"a":1}');
+        file_put_contents($this->directory->path('var/metrics/' . FileMetricsStore::fileName(3)), '{"a":2,"b":5}');
+
+        self::assertSame(['a' => 3, 'b' => 5], $store->read());
+    }
+
+    /**
+     * A writer never waits for a busy file while another one is free.
+     */
+    public function testAnUpdateSkipsABusyShard(): void
+    {
+        $store = $this->store();
+        self::assertTrue($store->add(['a' => 1]));
+        $own = $this->directory->path('var/metrics/' . FileMetricsStore::fileName((int) getmypid() % FileMetricsStore::SHARDS));
+        self::assertFileExists($own);
+        $other = fopen($own, 'c+b');
+        self::assertIsResource($other);
+        self::assertTrue(flock($other, LOCK_EX));
+
+        try {
+            self::assertTrue($store->add(['a' => 1, 'b' => 1]));
+        } finally {
+            flock($other, LOCK_UN);
+            fclose($other);
+        }
+
+        self::assertCount(2, $this->shardFiles());
+        self::assertSame(['a' => 2, 'b' => 1], $store->read());
+    }
+
+    /**
+     * However many writers, the files are the SHARDS of fixed names, and
+     * a writer holding every one of them only makes the next one wait.
+     */
+    public function testTheNumberOfFilesIsBounded(): void
+    {
+        $store = $this->store();
+        self::assertSame([], $store->read());
+        $held = [];
+        for ($shard = 0; $shard < FileMetricsStore::SHARDS - 1; ++$shard) {
+            $handle = fopen($this->directory->path('var/metrics/' . FileMetricsStore::fileName($shard)), 'c+b');
+            self::assertIsResource($handle);
+            self::assertTrue(flock($handle, LOCK_EX));
+            $held[] = $handle;
+        }
+        for ($i = 0; $i < 20; ++$i) {
+            self::assertTrue($store->add(['a' => 1]));
+        }
+        foreach ($held as $handle) {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+
+        self::assertCount(FileMetricsStore::SHARDS, $this->shardFiles());
+        self::assertSame(['a' => 20], $store->read());
+        self::assertSame('{"a":20}', file_get_contents($this->directory->path('var/metrics/' . FileMetricsStore::fileName(FileMetricsStore::SHARDS - 1))));
     }
 
     public function testFromConfig(): void
@@ -202,8 +270,18 @@ final class MetricsTest extends TestCase
         $metrics->recordRequest('GET', 'HIT', 200, 0.001);
         $metrics->flush();
 
-        self::assertFileExists($this->directory->path('var/metrics/' . FileMetricsStore::FILE_NAME));
+        self::assertCount(1, $this->shardFiles());
         self::assertSame(0700, fileperms($this->directory->path('var/metrics')) & 0777);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function shardFiles(): array
+    {
+        $files = glob($this->directory->path('var/metrics') . '/metrics*.json');
+
+        return $files === false ? [] : $files;
     }
 
     private function store(): MetricsStore

@@ -25,8 +25,9 @@ use Mfonte\ProxyCdn\Security\PurgeAuthenticator;
  *   Bearer <key>" on GET /metrics, 16 or more characters, or
  *   "sha256:<hex digest>" (MetricsAuthenticator). Not set: /metrics is
  *   not served.
- * - METRICS_STORE: "file" (counters in one locked file of var/metrics,
- *   shared by every PHP process of the host) or "off". Default: file.
+ * - METRICS_STORE: "file" (counters in locked files of var/metrics, at
+ *   most eight, shared by every PHP process of the host) or "off".
+ *   Default: file.
  * - MISS_RATE_LIMIT: origin fetches per minute that one client address
  *   may cause (cache misses; hits are never limited), read through
  *   TRUSTED_PROXIES; 0 turns the limit off. Default: 0.
