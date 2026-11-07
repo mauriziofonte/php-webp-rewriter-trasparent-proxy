@@ -1130,9 +1130,10 @@ final class ProxyKernel
         }
         $pending = false;
         foreach ($this->negotiator->acceptedFormats((string) $request->headers->get('Accept', '')) as $format) {
-            $variant = $location->getVariantFile($format);
+            // The variants of a pending entry wait with it (review F1).
+            $variant = $unpublished ? $location->getPendingVariantFile($format) : $location->getVariantFile($format);
             if ($this->storage->isFile($variant)) {
-                return $this->files->respond($request, $variant, $format, $cacheStatus, [], ['Accept'], $pending ? 0 : $maxAge);
+                return $this->files->respond($request, $variant, $format, $cacheStatus, [], ['Accept'], $pending || $unpublished ? 0 : $maxAge);
             }
             $pending = $this->convertLater($request, $location, $format) || $pending;
         }
@@ -1236,7 +1237,8 @@ final class ProxyKernel
 
     /**
      * Publishes the pending raster entry of $location in the tier the web
-     * server serves, with one rename(), once its variants are settled
+     * server serves, its variants then itself, each with one rename(),
+     * once its variants are settled
      * (VariantConverter::isSettled()), or once it has waited
      * PENDING_HOLD_SECONDS for them: then without the variants still
      * missing, which are not tried again until the entry is stored anew
@@ -1255,6 +1257,17 @@ final class ProxyKernel
             return;
         }
         $path = SignedUrlVerifier::mask('/' . $location->getRelativePath());
+        // The variants first: once the entry is published, the web server
+        // serves them. Each is settled already, so serving one before the
+        // entry is published gives no client a variant it would not keep.
+        foreach (CacheLocation::FORMATS as $format) {
+            $staged = $location->getPendingVariantFile($format);
+            if ($this->storage->isFile($staged) && !$this->storage->move($staged, $location->getVariantFile($format))) {
+                $this->logger->warning('image entry not published', ['path' => $path, 'format' => $format]);
+
+                return;
+            }
+        }
         if (!$this->storage->move($pendingFile, $location->getFile())) {
             $this->logger->warning('image entry not published', ['path' => $path]);
 
@@ -1336,12 +1349,16 @@ final class ProxyKernel
      */
     private function serveLegacy(Request $request, CacheLocation $location, string $extension, string $cacheStatus, ?int $maxAge = null): Response
     {
-        $webp = $location->getVariantFile(CacheLocation::FORMAT_WEBP);
-        if ($this->storage->isFile($webp)) {
-            return $this->files->respond($request, $webp, CacheLocation::FORMAT_WEBP, $cacheStatus, [], [], $maxAge);
-        }
         $file = $this->storedFile($location) ?? $location->getFile();
         $unpublished = $file !== $location->getFile();
+        $webp = $unpublished ? $location->getPendingVariantFile(CacheLocation::FORMAT_WEBP) : $location->getVariantFile(CacheLocation::FORMAT_WEBP);
+        if ($this->storage->isFile($webp)) {
+            if ($unpublished) {
+                $this->scheduleConversion($location, false, self::requestIdOf($request));
+            }
+
+            return $this->files->respond($request, $webp, CacheLocation::FORMAT_WEBP, $cacheStatus, [], [], $unpublished ? 0 : $maxAge);
+        }
         if ($unpublished) {
             $this->scheduleConversion($location, false, self::requestIdOf($request));
         }

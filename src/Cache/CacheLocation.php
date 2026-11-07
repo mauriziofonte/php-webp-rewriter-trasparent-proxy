@@ -135,8 +135,19 @@ final class CacheLocation
     }
 
     /**
+     * Where the variant in $format (one of FORMATS) of a pending entry
+     * waits with it, out of the reach of the web server, until both are
+     * published: below the pending directory, in a "." directory that no
+     * path of an entry can name.
+     */
+    public function getPendingVariantFile(string $format): string
+    {
+        return $this->siblingDirectory('pending') . DIRECTORY_SEPARATOR . '.' . $format . DIRECTORY_SEPARATOR . $this->path . '.' . $format;
+    }
+
+    /**
      * Every file of the entry: the entry, its variants and its encodings,
-     * its metadata and its pending copy.
+     * its metadata, and its pending copy with its pending variants.
      *
      * @return list<string>
      */
@@ -145,6 +156,7 @@ final class CacheLocation
         $files = [$this->getFile(), $this->getMetadataFile(), $this->getPendingFile()];
         foreach (self::FORMATS as $format) {
             $files[] = $this->getVariantFile($format);
+            $files[] = $this->getPendingVariantFile($format);
         }
         foreach (self::ENCODINGS as $encoding) {
             $files[] = $this->getEncodedFile($encoding);

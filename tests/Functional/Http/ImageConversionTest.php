@@ -213,6 +213,44 @@ final class ImageConversionTest extends TestCase
     }
 
     /**
+     * Review F1 (delta): a pending entry whose AVIF variant the converter
+     * cannot make now, while its WEBP one is made, serves that WEBP
+     * variant with "max-age=0" only, and keeps it next to the pending
+     * entry, where the web server cannot serve it to an AVIF client for
+     * CACHE_EXPIRY; both are published together once AVIF is made.
+     */
+    public function testALesserVariantOfAPendingEntryIsNeverServedForCacheExpiry(): void
+    {
+        $this->converter->setUnavailableFormats(['avif']);
+        $overrides = ['NETWORK_ERROR_TTL' => '1'];
+        $this->respond(self::request('/images/logo.png', self::ACCEPT_ALL), $overrides);
+        sleep(2);
+        $this->respond(self::request('/images/logo.png', self::ACCEPT_ALL), $overrides);
+
+        self::assertFileExists($this->cachePath('.pending/.webp/images/logo.png.webp'));
+        self::assertFileDoesNotExist($this->cachePath('.webp/images/logo.png.webp'), 'not where the web server serves it');
+        self::assertFileDoesNotExist($this->cachePath('images/logo.png'));
+
+        $webp = $this->respond(self::request('/images/logo.png', self::ACCEPT_ALL), $overrides);
+
+        self::assertSame(['HIT', 'image/webp'], [$webp->headers->get('x-cache-status'), $webp->headers->get('content-type')]);
+        self::assertStringEqualsFile(self::FIXTURES . 'variant.webp', self::body($webp));
+        self::assertStringContainsString('max-age=0', (string) $webp->headers->get('cache-control'), 'the entry is not published');
+
+        $this->converter->setUnavailableFormats([]);
+        sleep(2);
+        $this->respond(self::request('/images/logo.png', self::ACCEPT_ALL), $overrides);
+
+        self::assertFileExists($this->cachePath('images/logo.png'), 'published');
+        self::assertFileExists($this->cachePath('.avif/images/logo.png.avif'));
+        self::assertFileExists($this->cachePath('.webp/images/logo.png.webp'));
+        self::assertFileDoesNotExist($this->cachePath('.pending/.webp/images/logo.png.webp'));
+        $avif = $this->kernel($overrides)->handle(self::request('/images/logo.png', self::ACCEPT_ALL));
+        self::assertSame('image/avif', $avif->headers->get('content-type'));
+        self::assertStringNotContainsString('max-age=0', (string) $avif->headers->get('cache-control'));
+    }
+
+    /**
      * Review N1: an entry whose variants cannot be made for good (a
      * refusal of the image) is published without them at once; one that
      * only failed transiently is published without them after

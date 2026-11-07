@@ -47,6 +47,13 @@ final class FakeImageConverter implements ImageConverter
     private $unavailable = false;
 
     /**
+     * The formats the converter cannot make now.
+     *
+     * @var list<string>
+     */
+    private $unavailableFormats = [];
+
+    /**
      * @var string|null
      */
     private $reportedFormat;
@@ -96,6 +103,16 @@ final class FakeImageConverter implements ImageConverter
     }
 
     /**
+     * Makes the converter unavailable for $formats only.
+     *
+     * @param list<string> $formats
+     */
+    public function setUnavailableFormats(array $formats): void
+    {
+        $this->unavailableFormats = $formats;
+    }
+
+    /**
      * Makes the converter report $format whatever it wrote: an output the
      * verification must refuse.
      */
@@ -123,7 +140,7 @@ final class FakeImageConverter implements ImageConverter
         if ($this->capabilities === null) {
             throw ConversionFailure::unavailable('fake', 'The fake converter has no capabilities', 'converter_unavailable');
         }
-        if ($this->unavailable || strpos($input, 'busy') !== false) {
+        if ($this->unavailable || strpos($input, 'busy') !== false || in_array($request->getFormat(), $this->unavailableFormats, true)) {
             throw ConversionFailure::unavailable('fake', 'The fake converter is busy', 'concurrency_unavailable', 503);
         }
         if (strpos($input, 'broken') !== false) {

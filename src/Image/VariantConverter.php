@@ -41,8 +41,9 @@ use Psr\Log\LoggerInterface;
  * same way, as an expected outcome. Nothing it does throws.
  *
  * A new raster entry of the tier the web server serves is written to its
- * pending file (newEntryFile()), which only PHP serves, until its
- * variants are settled (isSettled()): a variant is settled once made, or
+ * pending file (newEntryFile()), which only PHP serves, with its
+ * variants next to it (CacheLocation::getPendingVariantFile()), until
+ * they are settled (isSettled()): a variant is settled once made, or
  * once it failed for good; a failure because the converter could not
  * convert now settles nothing, so the variant is tried again.
  */
@@ -196,9 +197,27 @@ final class VariantConverter
      */
     public function shouldConvert(CacheLocation $location, string $format): bool
     {
-        $variant = $location->getVariantFile($format);
+        return $this->negotiator->isEnabled($format)
+            && $this->variantFileOf($location, $format) === null
+            && !$this->failures->isRemembered($location->getVariantFile($format));
+    }
 
-        return $this->negotiator->isEnabled($format) && !$this->storage->isFile($variant) && !$this->failures->isRemembered($variant);
+    /**
+     * The variant $format of the entry of $location that exists: the
+     * published one, else the one waiting with the pending entry
+     * (CacheLocation::getPendingVariantFile()); null when neither does.
+     *
+     * @phpstan-impure
+     */
+    public function variantFileOf(CacheLocation $location, string $format): ?string
+    {
+        foreach ([$location->getVariantFile($format), $location->getPendingVariantFile($format)] as $file) {
+            if ($this->storage->isFile($file)) {
+                return $file;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -210,15 +229,14 @@ final class VariantConverter
      */
     public function convertOnHit(CacheLocation $location, string $format, ?string $requestId): bool
     {
-        $variant = $location->getVariantFile($format);
         $source = $this->storedFileOf($location);
         if ($source === null || !$this->shouldConvert($location, $format)) {
-            return $this->storage->isFile($variant);
+            return $this->variantFileOf($location, $format) !== null;
         }
 
         $this->make($location, $format, $source, $requestId);
 
-        return $this->storage->isFile($variant);
+        return $this->variantFileOf($location, $format) !== null;
     }
 
     /**
@@ -230,8 +248,7 @@ final class VariantConverter
     public function isSettled(CacheLocation $location): bool
     {
         foreach ($this->negotiator->getEnabledFormats() as $format) {
-            $variant = $location->getVariantFile($format);
-            if (!$this->storage->isFile($variant) && !$this->failures->isFinal($variant)) {
+            if ($this->variantFileOf($location, $format) === null && !$this->failures->isFinal($location->getVariantFile($format))) {
                 return false;
             }
         }
@@ -345,12 +362,16 @@ final class VariantConverter
     }
 
     /**
-     * Makes one variant. A failure is logged, remembered and returned;
-     * null when the variant was made, or is not one this converter makes.
+     * Makes one variant: next to the pending entry when $source is it
+     * (published with it), else in the tier the web server serves. A
+     * failure is logged, remembered (under the published name, which
+     * stays the same once published) and returned; null when the variant
+     * was made, or is not one this converter makes.
      */
     private function make(CacheLocation $location, string $format, string $source, ?string $requestId): ?ConversionFailure
     {
         $variant = $location->getVariantFile($format);
+        $target = $source === $location->getPendingFile() ? $location->getPendingVariantFile($format) : $variant;
         $path = SignedUrlVerifier::mask('/' . $location->getRelativePath());
         $capabilities = $this->converter->getCapabilities();
         if ($capabilities !== null && !$capabilities->supportsOutput($format)) {
@@ -364,7 +385,7 @@ final class VariantConverter
             return null;
         }
         // Without capabilities, the converter says why it cannot convert.
-        $failure = $this->run($source, $variant, new ConversionRequest($format), $format, $requestId);
+        $failure = $this->run($source, $target, new ConversionRequest($format), $format, $requestId);
         if ($failure === null) {
             return null;
         }

@@ -758,6 +758,23 @@ pending_entry() {
         *max-age=0,*) pass "$s: pending entry, second request has max-age=0" ;;
         *) die "$s: pending entry, second request: Cache-Control $(header_of Cache-Control "$workdir/$s/pending2.headers")" ;;
     esac
+    # A variant made while another one is still missing waits next to the
+    # pending entry, where the proxy writes it: the web server must not
+    # serve it, to an AVIF client, for CACHE_EXPIRY. Conversion is off in
+    # the harness, so the step writes it itself.
+    mkdir -p "$(dirname "$pending")/../.webp/images"
+    printf 'webp variant' >"$(dirname "$pending")/../.webp/images/gradient.png.webp"
+    [ -z "$(find "$host/.q" -path '*/.pending' -prune -o -name 'gradient.png.webp' -print)" ] ||
+        die "$s: a variant of the pending entry is where the web server serves it"
+    lines="$(lines_of "$fpm_log")"
+    expect "$s: pending variant" "$(fetch "$url" "$workdir/$s/pending3" -H 'Accept: image/avif,image/webp,*/*')" 200
+    expect "$s: pending variant body" "$(cat "$workdir/$s/pending3.body")" "webp variant"
+    expect "$s: pending variant type" "$(header_of Content-Type "$workdir/$s/pending3.headers")" image/webp
+    wait_for "$s: pending variant answered by PHP-FPM" 10 has_lines "$fpm_log" $((lines + 1))
+    case "$(cache_directives "$workdir/$s/pending3.headers")" in
+        *max-age=0,*) pass "$s: pending variant has max-age=0" ;;
+        *) die "$s: pending variant: Cache-Control $(header_of Cache-Control "$workdir/$s/pending3.headers")" ;;
+    esac
     mv "$env.saved" "$env"
 }
 

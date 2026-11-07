@@ -291,8 +291,12 @@ final class VariantConverterTest extends TestCase
         self::assertCount(1, $calls);
 
         $variants->convertAll($resized, $resized->getPendingFile(), 'req-2');
-        self::assertFileExists($resized->getVariantFile('webp'));
-        self::assertFileExists($resized->getVariantFile('avif'));
+        // Next to the pending entry, out of the reach of the web server.
+        self::assertFileExists($resized->getPendingVariantFile('webp'));
+        self::assertFileExists($resized->getPendingVariantFile('avif'));
+        self::assertFileDoesNotExist($resized->getVariantFile('webp'));
+        self::assertSame($resized->getPendingVariantFile('avif'), $variants->variantFileOf($resized, 'avif'));
+        self::assertFalse($variants->shouldConvert($resized, 'avif'));
         self::assertTrue($variants->isSettled($resized));
         // The variants are made from the resized image.
         self::assertSame((string) file_get_contents(self::FIXTURES . 'resized.png'), $this->converter->getCalls()[1][1]);
