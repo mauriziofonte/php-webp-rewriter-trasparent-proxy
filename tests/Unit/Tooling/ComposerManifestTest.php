@@ -67,7 +67,7 @@ final class ComposerManifestTest extends TestCase
                 'ext-json' => '*',
                 'psr/log' => '^1.1 || ^2.0 || ^3.0',
                 'symfony/console' => '^5.4.35 || ^6.4.3 || ^7.0.3 || ^8.0',
-                'symfony/http-foundation' => '^5.4.54 || ^6.4.46 || ^7.4.19 || ^8.1.7',
+                'symfony/http-foundation' => '^5.4.56 || ^6.4.50 || ^7.4.23 || ^8.1.11',
                 'vlucas/phpdotenv' => '^5.6.1',
             ],
             $require
