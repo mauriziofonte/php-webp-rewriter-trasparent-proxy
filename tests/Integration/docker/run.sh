@@ -5,7 +5,7 @@
 # a smoke test on each stack: the HTTP client negotiates HTTP/2 with the
 # origin over TLS from PHP-FPM, the first request is fetched from the origin
 # through PHP-FPM, and every later one is served from the cache by the web
-# server without reaching PHP-FPM (its access log stays unchanged) or the
+# server without reaching PHP-FPM (as the route log of the server says) or the
 # origin: the entry, its WEBP and AVIF variants, its gzip encoding and the
 # entry of a query string, each with the headers PHP sends, once. PURGE,
 # OPTIONS and unlisted hosts reach PHP, and only a trusted proxy can tell
@@ -210,7 +210,17 @@ started=1
 compose up --detach --pull never "${services[@]}" || die "docker compose up failed"
 
 port_of() { compose port "$1" 80 | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1; }
-status_of() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
+# next_request: a new id for the X-Harness-Request header, which the web
+# servers write into their route log (see route_of).
+next_request() {
+    local n
+    n=$(($(cat "$workdir/requests.seq" 2>/dev/null || echo 0) + 1))
+    echo "$n" >"$workdir/requests.seq"
+    echo "r$n"
+}
+# request_mark: the id of the last request sent, for the routes checks.
+request_mark() { cat "$workdir/requests.seq" 2>/dev/null || echo 0; }
+status_of() { curl -sS -o /dev/null -H "X-Harness-Request: $(next_request)" -w '%{http_code}' "$@"; }
 
 wait_for() {
     local what="$1" timeout="$2" deadline
@@ -280,7 +290,7 @@ count_of() { grep -ci "^$1:" "$2" || true; }
 
 # preflight <url> <output prefix>: a CORS preflight; prints the status.
 preflight() {
-    curl -sS -X OPTIONS -H 'X-Forwarded-Proto: https' -H 'Origin: https://site.example' \
+    curl -sS -X OPTIONS -H "X-Harness-Request: $(next_request)" -H 'X-Forwarded-Proto: https' -H 'Origin: https://site.example' \
         -H 'Access-Control-Request-Method: GET' -D "$2.headers" -o /dev/null -w '%{http_code}' "$1"
 }
 
@@ -300,7 +310,8 @@ cors_once() {
 fetch() {
     local url="$1" output="$2"
     shift 2
-    curl -sS -H 'X-Forwarded-Proto: https' "$@" -D "$output.headers" -o "$output.body" -w '%{http_code}' "$url"
+    curl -sS -H "X-Harness-Request: $(next_request)" -H 'X-Forwarded-Proto: https' "$@" \
+        -D "$output.headers" -o "$output.body" -w '%{http_code}' "$url"
 }
 
 # header_of <name> <headers file>: the values of a header, comma-joined.
@@ -313,12 +324,46 @@ varies_on() {
     expect "$1" "$(header_of Vary "$2" | tr ',' '\n' | tr -d ' ' | grep -ci "^$3\$" || true)" 1
 }
 
-# fpm_quiet <label> <fpm log> <lines before>: PHP-FPM received no request
-# since <lines before>. PHP-FPM writes its access log after the response:
-# leave it time to do so before concluding that a request never reached it.
-fpm_quiet() {
-    sleep 1
-    expect "$1 without PHP-FPM" "$(lines_of "$2")" "$3"
+# route_of <id>: "php" when request <id> reached PHP-FPM, "web" when the
+# web server answered it alone, from the route log of the web server
+# ($web_log), whose line it waits for. Counting the lines of the access
+# log of PHP-FPM instead raced with PHP: a worker writes its line once the
+# script has ended, after fastcgi_finish_request() has let the client go
+# and after the work that follows it, so a count taken right after a miss
+# could miss that line and find it on the next count. The route log is
+# written per request, with the id the request sent.
+route_of() {
+    local line deadline=$((SECONDS + 10))
+    until line="$(grep -m 1 "^$1 " "$web_log" 2>/dev/null)"; do
+        [ "$SECONDS" -lt "$deadline" ] || die "request $1 is not in the route log $web_log"
+        sleep 0.05
+    done
+    case "$(printf '%s' "$line" | cut -d' ' -f2)" in
+        proxy* | *:[0-9]*) echo php ;;
+        *) echo web ;;
+    esac
+}
+
+# routes_since <mark>: the route of each request sent after <mark>,
+# comma-separated.
+routes_since() {
+    local n routes="" route
+    for n in $(seq $(($1 + 1)) "$(request_mark)"); do
+        route="$(route_of "r$n")"
+        routes="${routes:+$routes,}$route"
+    done
+    echo "$routes"
+}
+
+# web_only <label> <mark>: every request sent after <mark> was served by
+# the web server, without PHP-FPM.
+web_only() {
+    expect "$1 without PHP-FPM" "$(routes_since "$2" | tr ',' '\n' | sort -u | paste -sd, -)" web
+}
+
+# via_php <label> <mark>: every request sent after <mark> reached PHP-FPM.
+via_php() {
+    expect "$1" "$(routes_since "$2" | tr ',' '\n' | sort -u | paste -sd, -)" php
 }
 
 # hit_headers <label> <headers file>: the headers PHP sends with an asset,
@@ -413,9 +458,9 @@ pipelined() {
 }
 
 smoke() {
-    local s="$1" base fpm_log lines app css svg redirect size css_size
+    local s="$1" base web_log mark app css svg redirect size css_size
     base="http://127.0.0.1:$(port_of "$s")"
-    fpm_log="$workdir/$s/logs/php-fpm-access.log"
+    web_log="$workdir/$s/logs/web-access.log"
     app="$workdir/$s/app/public/_cache/127.0.0.1"
     log "Smoke test: $s + PHP-FPM $php_version"
     origin_reset
@@ -436,19 +481,19 @@ smoke() {
     expect "$s: /vendor/ hit" "$(cache_status "$workdir/$s/vendor2.headers")" HIT
     expect "$s: dot files stay refused" "$(status_of -H 'X-Forwarded-Proto: https' "$base/.git/config")" 403
 
-    lines="$(lines_of "$fpm_log")"
+    mark="$(request_mark)"
     expect "$s: first request" "$(fetch "$base$asset" "$workdir/$s/first")" 200
     cmp -s "$workdir/$s/first.body" "$fixture" || die "$s: the first response differs from the origin file"
     expect "$s: first request fetched from the origin" "$(origin_count "$asset")" 1
-    wait_for "$s: first request went through PHP-FPM" 10 has_lines "$fpm_log" $((lines + 1))
+    via_php "$s: first request went through PHP-FPM" "$mark"
     [ -f "$app$asset" ] || die "$s: no cache entry at public/_cache/127.0.0.1$asset"
     pass "$s: cache entry written to public/_cache/127.0.0.1$asset"
 
-    lines="$(lines_of "$fpm_log")"
+    mark="$(request_mark)"
     expect "$s: second request" "$(fetch "$base$asset" "$workdir/$s/second")" 200
     cmp -s "$workdir/$s/second.body" "$fixture" || die "$s: the second response differs from the origin file"
     expect "$s: second request served without the origin" "$(origin_count "$asset")" 1
-    fpm_quiet "$s: second request served" "$fpm_log" "$lines"
+    web_only "$s: second request served" "$mark"
 
     cors_once "$s: miss" "$workdir/$s/first.headers" Access-Control-Allow-Origin X-Cache-Status Cache-Control
     hit_headers "$s: hit" "$workdir/$s/second.headers"
@@ -460,7 +505,7 @@ smoke() {
     # in the harness, so the test writes them itself.
     mkdir -p "$app/.webp/images" "$app/.avif/images"
     printf 'webp variant' >"$app/.webp$asset.webp"
-    lines="$(lines_of "$fpm_log")"
+    mark="$(request_mark)"
     expect "$s: WEBP variant" "$(fetch "$base$asset" "$workdir/$s/webp" -H 'Accept: image/avif;q=0, image/webp')" 200
     expect "$s: WEBP variant body" "$(cat "$workdir/$s/webp.body")" "webp variant"
     expect "$s: WEBP variant type" "$(header_of Content-Type "$workdir/$s/webp.headers")" image/webp
@@ -471,17 +516,18 @@ smoke() {
     hit_headers "$s: AVIF variant" "$workdir/$s/avif.headers"
     expect "$s: no variant without Accept" "$(fetch "$base$asset" "$workdir/$s/plain" -H 'Accept: */*')" 200
     cmp -s "$workdir/$s/plain.body" "$fixture" || die "$s: the plain hit differs from the origin file"
-    fpm_quiet "$s: variants served" "$fpm_log" "$lines"
+    web_only "$s: variants served" "$mark"
 
     # A legacy "X.webp" URL of 2.x is a hit PHP serves, by design (see
     # LEGACY_WEBP_URLS in the README): the WEBP variant of the raster
     # entry, without fetching anything from the origin.
     legacy="${asset%.*}.webp"
+    mark="$(request_mark)"
     expect "$s: legacy WEBP URL" "$(fetch "$base$legacy" "$workdir/$s/legacy")" 200
     expect "$s: legacy WEBP URL body" "$(cat "$workdir/$s/legacy.body")" "webp variant"
     expect "$s: legacy WEBP URL type" "$(header_of Content-Type "$workdir/$s/legacy.headers")" image/webp
     expect "$s: legacy WEBP URL is a hit" "$(cache_status "$workdir/$s/legacy.headers")" HIT
-    wait_for "$s: legacy WEBP URL went through PHP-FPM" 10 has_lines "$fpm_log" $((lines + 1))
+    via_php "$s: legacy WEBP URL went through PHP-FPM" "$mark"
     expect "$s: legacy WEBP URL fetched nothing" "$(origin_count "$legacy")" 0
     expect "$s: legacy WEBP URL fetched no raster" "$(origin_count "$asset")" 1
 
@@ -489,10 +535,10 @@ smoke() {
     expect "$s: query string, first request" "$(fetch "$base$asset?v=3" "$workdir/$s/query1")" 200
     expect "$s: query string, first request is a miss" "$(cache_status "$workdir/$s/query1.headers")" MISS
     [ -f "$app/.q/v=3$asset" ] || die "$s: no cache entry at .q/v=3$asset"
-    lines="$(lines_of "$fpm_log")"
+    mark="$(request_mark)"
     expect "$s: query string, second request" "$(fetch "$base$asset?v=3" "$workdir/$s/query2")" 200
     expect "$s: query string, second request is a hit" "$(cache_status "$workdir/$s/query2.headers")" HIT
-    fpm_quiet "$s: query string hit served" "$fpm_log" "$lines"
+    web_only "$s: query string hit served" "$mark"
     expect "$s: query string fetched from the origin once" "$(origin_count "$asset")" 2
 
     # A hit that PHP must serve: "zz" is not in the allowlist, so the web
@@ -500,11 +546,11 @@ smoke() {
     # PHP (no mod_xsendfile), nginx through X-Accel-Redirect: the headers
     # once either way, Cache-Control included (nginx passes on the one of
     # PHP and must not add its own).
-    lines="$(lines_of "$fpm_log")"
+    mark="$(request_mark)"
     expect "$s: PHP-path hit" "$(fetch "$base$asset?v=3&zz=1" "$workdir/$s/phphit")" 200
     cmp -s "$workdir/$s/phphit.body" "$fixture" || die "$s: the PHP-path hit differs from the origin file"
     expect "$s: PHP-path hit is a hit" "$(cache_status "$workdir/$s/phphit.headers")" HIT
-    wait_for "$s: PHP-path hit went through PHP-FPM" 10 has_lines "$fpm_log" $((lines + 1))
+    via_php "$s: PHP-path hit went through PHP-FPM" "$mark"
     hit_headers "$s: PHP-path hit" "$workdir/$s/phphit.headers"
     # nginx passes on the Content-Length of PHP, which is the length of the
     # file it measured. Apache drops it (CVE-2024-24795, public/.htaccess)
@@ -526,7 +572,7 @@ smoke() {
     css=/css/site.css
     expect "$s: stylesheet, first request" "$(fetch "$base$css" "$workdir/$s/css1")" 200
     [ -f "$app/.gz$css" ] || die "$s: no gzip encoding at .gz$css"
-    lines="$(lines_of "$fpm_log")"
+    mark="$(request_mark)"
     expect "$s: gzip encoding" "$(fetch "$base$css" "$workdir/$s/css2" -H 'Accept-Encoding: gzip')" 200
     expect "$s: gzip encoding is labelled" "$(header_of Content-Encoding "$workdir/$s/css2.headers")" gzip
     varies_on "$s: gzip encoding varies on Accept-Encoding" "$workdir/$s/css2.headers" Accept-Encoding
@@ -547,28 +593,28 @@ smoke() {
     hit_headers "$s: Brotli encoding" "$workdir/$s/css4.headers"
     expect "$s: gzip when Brotli is refused" "$(fetch "$base$css" "$workdir/$s/css5" -H 'Accept-Encoding: gzip, br;q=0')" 200
     expect "$s: gzip when Brotli is refused is labelled" "$(header_of Content-Encoding "$workdir/$s/css5.headers")" gzip
-    fpm_quiet "$s: encodings served" "$fpm_log" "$lines"
+    web_only "$s: encodings served" "$mark"
 
     # SVG: the policy of PHP, once.
     svg=/images/logo.svg
     expect "$s: SVG, first request" "$(fetch "$base$svg" "$workdir/$s/svg1")" 200
-    lines="$(lines_of "$fpm_log")"
+    mark="$(request_mark)"
     expect "$s: SVG, second request" "$(fetch "$base$svg" "$workdir/$s/svg2")" 200
-    fpm_quiet "$s: SVG hit served" "$fpm_log" "$lines"
+    web_only "$s: SVG hit served" "$mark"
     cors_once "$s: SVG miss" "$workdir/$s/svg1.headers" Content-Security-Policy
     cors_once "$s: SVG hit" "$workdir/$s/svg2.headers" Content-Security-Policy
     expect "$s: SVG hit policy" "$(header_of Content-Security-Policy "$workdir/$s/svg2.headers")" \
         "$(header_of Content-Security-Policy "$workdir/$s/svg1.headers")"
 
     # What must reach PHP even for a cached file.
-    lines="$(lines_of "$fpm_log")"
+    mark="$(request_mark)"
     expect "$s: PURGE of a cached file reaches PHP" \
         "$(status_of -X PURGE -H 'X-Forwarded-Proto: https' "$base$asset")" 401
     expect "$s: preflight of a cached file" "$(preflight "$base$asset" "$workdir/$s/options-hit")" 204
     cors_once "$s: preflight of a cached file" "$workdir/$s/options-hit.headers" \
         Access-Control-Allow-Origin Access-Control-Allow-Methods Access-Control-Max-Age
     expect "$s: unlisted host" "$(status_of -H 'X-Forwarded-Proto: https' -H 'Host: other.example' "$base$asset")" 421
-    wait_for "$s: PURGE, OPTIONS and the unlisted host reached PHP-FPM" 10 has_lines "$fpm_log" $((lines + 3))
+    via_php "$s: PURGE, OPTIONS and the unlisted host reached PHP-FPM" "$mark"
     expect "$s: preflight of a missing file" "$(preflight "$base/images/missing.png" "$workdir/$s/options-miss")" 204
     cors_once "$s: preflight of a missing file" "$workdir/$s/options-miss.headers" \
         Access-Control-Allow-Origin Access-Control-Allow-Methods Access-Control-Max-Age
@@ -600,9 +646,9 @@ smoke() {
 # answers after a second, cause exactly one origin fetch (request
 # coalescing, PRX-7), and every request gets the asset.
 burst() {
-    local s="$1" base path=/js/app.js config codes half fpm_log lines
+    local s="$1" base path=/js/app.js config codes half web_log lines php
     base="http://127.0.0.1:$(port_of "$s")"
-    fpm_log="$workdir/$s/logs/php-fpm-access.log"
+    web_log="$workdir/$s/logs/web-access.log"
     log "Coalescing: $s + PHP-FPM $php_version, $burst_size concurrent requests on one cold entry"
     origin_reset
     curl -fsS -X PUT "$origin/__origin/rules?path=$path&delay=1000" >/dev/null
@@ -614,7 +660,7 @@ burst() {
             printf 'url = "%s"\noutput = "/dev/null"\n' "$base$path" >>"$config"
         done
     done
-    lines="$(lines_of "$fpm_log")"
+    lines="$(lines_of "$web_log")"
     for half in 1 2; do
         curl -sS --parallel --parallel-immediate --parallel-max $((burst_size / 2)) -H 'X-Forwarded-Proto: https' \
             -w '%{http_code}\n' --config "$workdir/$s/burst-$half.curlrc" >"$workdir/$s/burst-$half.codes" &
@@ -623,8 +669,9 @@ burst() {
     codes="$(cat "$workdir/$s"/burst-*.codes | sort | uniq -c | sed 's/^ *//')"
     expect "$s: every request of the burst got the asset" "$codes" "$burst_size 200"
     expect "$s: the burst caused one origin fetch" "$(origin_count "$path")" 1
-    sleep 1
-    pass "$s: $(($(lines_of "$fpm_log") - lines)) of the $burst_size requests reached PHP-FPM, which waited for one fetch"
+    wait_for "$s: the web server logged the burst" 30 has_lines "$web_log" $((lines + burst_size))
+    php="$(tail -n +$((lines + 1)) "$web_log" | cut -d' ' -f2 | grep -c -E '^proxy|:[0-9]' || true)"
+    pass "$s: $php of the $burst_size requests reached PHP-FPM, which waited for one fetch"
     curl -fsS -X DELETE "$origin/__origin/rules?path=$path" >/dev/null
     expect "$s: the burst left a cache entry" "$(fetch "$base$path" "$workdir/$s/burst")" 200
     expect "$s: the entry of the burst is a hit" "$(cache_status "$workdir/$s/burst.headers")" HIT

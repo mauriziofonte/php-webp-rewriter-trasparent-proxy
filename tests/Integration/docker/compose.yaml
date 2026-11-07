@@ -44,6 +44,7 @@ services:
     volumes:
       - ./apache/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
       - ${HARNESS_WORKDIR:?set by run.sh}/apache/app:/app:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/apache/logs:/var/log/harness
     ports:
       - 127.0.0.1::80
     depends_on:
@@ -68,6 +69,7 @@ services:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ../../../config/nginx:/etc/nginx/proxy-cdn:ro
       - ${HARNESS_WORKDIR:?set by run.sh}/nginx/app:/app:ro
+      - ${HARNESS_WORKDIR:?set by run.sh}/nginx/logs:/var/log/harness
     ports:
       - 127.0.0.1::80
     depends_on:
