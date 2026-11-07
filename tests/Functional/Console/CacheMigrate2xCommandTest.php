@@ -105,8 +105,9 @@ final class CacheMigrate2xCommandTest extends TestCase
 
     /**
      * Neither mode touches what is not 2.x cache: robots.txt, an ACME
-     * challenge, the files and the empty directories of another
-     * application. The plan names each of them.
+     * challenge, the files of another application whose extension is not
+     * cacheable and its empty directories, names ending in .404 or
+     * .netfail that mark no cache entry. The plan names each of them.
      */
     public function testFilesThatAreNoCacheStayInBothModes(): void
     {
@@ -115,6 +116,11 @@ final class CacheMigrate2xCommandTest extends TestCase
             'public/.well-known/acme-challenge/tok' => 'token',
             'public/.well-known/security.txt' => 'Contact: mailto:security@example.test',
             'public/other-app/config.yml' => 'key: value',
+            // Names ending like a 2.x marker, whose marked file is no cache entry.
+            'public/.well-known/acme-challenge/tok.404' => 'token',
+            'public/.well-known/x.netfail' => 'x',
+            'public/other-app/errors/page.404' => 'error page',
+            'public/notes.404' => 'notes',
         ];
         foreach ($kept as $relative => $contents) {
             $this->directory->write($relative, $contents);

@@ -21,7 +21,8 @@ use Symfony\Component\Console\Output\OutputInterface;
  * WEBP conversions next to them as X.webp, the query-string entries in
  * public/_qs/<hash>/ (a hash of the query string, which cannot be mapped
  * back: deleted), the .404 and .netfail markers next to the files
- * (deleted), and its configuration in .cached.env.php at the project root
+ * (deleted when the file they mark has a URL of the cache, left
+ * otherwise), and its configuration in .cached.env.php at the project root
  * (deleted). An entry whose URL passes the rules of live traffic
  * (ProxyUrls) is moved to public/_cache/<host>/<path>, where the web
  * server serves it until it is purged, as 2.x did; an X.webp next to
@@ -176,8 +177,14 @@ final class CacheMigrate2xCommand extends Command
         foreach (array_keys($files) as $relative) {
             $relative = (string) $relative;
             $file = $public . '/' . $relative;
-            if (self::isMarker($relative)) {
-                $plan['delete'][] = $file;
+            $marked = self::markedFile($relative);
+            if ($marked !== null) {
+                // A marker of 2.x only when the file it marks has a URL of the cache.
+                if (self::target($proxyUrls, $host, $marked) !== null) {
+                    $plan['delete'][] = $file;
+                } else {
+                    $plan['leave'][$file] = 'not a marker of a cache entry';
+                }
                 continue;
             }
             if (strtolower(pathinfo($relative, PATHINFO_EXTENSION)) === 'webp') {
@@ -247,15 +254,19 @@ final class CacheMigrate2xCommand extends Command
         return is_string($located) ? null : $located[2];
     }
 
-    private static function isMarker(string $relative): bool
+    /**
+     * The file a name with a marker suffix marks (the name without the
+     * suffix); null when the name has no marker suffix.
+     */
+    private static function markedFile(string $relative): ?string
     {
         foreach (self::LEGACY_MARKERS as $marker) {
-            if (substr($relative, -strlen($marker)) === $marker) {
-                return true;
+            if (strlen($relative) > strlen($marker) && substr($relative, -strlen($marker)) === $marker) {
+                return (string) substr($relative, 0, -strlen($marker));
             }
         }
 
-        return false;
+        return null;
     }
 
     /**
