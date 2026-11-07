@@ -341,6 +341,39 @@ final class EdgeKernelTest extends TestCase
     }
 
     /**
+     * The fan-out sends the URL of the purge, never a path of the cache:
+     * the pending copy and the staged variants of an image (PRX-8) go
+     * with the local purge, and each peer purges its own; a request for
+     * a pending path itself is refused, so it is never sent on.
+     */
+    public function testTheFanOutNeverCarriesAPendingPath(): void
+    {
+        $overrides = ['PURGE_KEYS' => 'origin.example.test=' . self::PURGE_SECRET];
+        $pending = [
+            $this->directory->write('public/_cache/cdn.example.test/.pending/images/a.png', 'png'),
+            $this->directory->write('public/_cache/cdn.example.test/.pending/.webp/images/a.png.webp', 'webp'),
+        ];
+        $transport = new MockTransport();
+        $transport->respond(self::PEER . '/images/a.png', 200);
+        $kernel = $this->kernelWithPeers($overrides, $transport);
+        $auth = ['HTTP_AUTHORIZATION' => 'Bearer ' . self::PURGE_SECRET];
+
+        $purged = $kernel->handle(self::request('https://cdn.example.test/images/a.png', $auth, 'PURGE'));
+        $direct = $kernel->handle(self::request('https://cdn.example.test/.pending/images/a.png', $auth, 'PURGE'));
+        $kernel->terminate();
+
+        self::assertSame(200, $purged->getStatusCode());
+        self::assertStringNotContainsString('.pending', (string) $purged->getContent());
+        foreach ($pending as $file) {
+            self::assertFileDoesNotExist($file);
+        }
+        self::assertGreaterThanOrEqual(400, $direct->getStatusCode());
+        $sent = $transport->getRequests();
+        self::assertCount(1, $sent);
+        self::assertSame(self::PEER . '/images/a.png', $sent[0]->getUrl());
+    }
+
+    /**
      * A peer that fails is logged and counted; the local purge stands.
      */
     public function testAFailingPeerDoesNotUndoTheLocalPurge(): void

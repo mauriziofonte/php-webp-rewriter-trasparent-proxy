@@ -20,7 +20,9 @@ use Symfony\Component\HttpFoundation\Response;
  * notes it); browsers also act on 103 for navigations only, so the hints
  * matter for the documents the proxy serves (an HTML entry), not for its
  * images and scripts. The hints are sent for GET, never for HEAD, and
- * never in a response that already started.
+ * never in a response that already started. The Link value is EARLY_HINTS
+ * as configured: it never names a path of the cache, a pending entry or a
+ * variant that is not published.
  */
 final class EarlyHints implements OriginFetchGuard
 {

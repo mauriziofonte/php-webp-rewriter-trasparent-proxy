@@ -641,6 +641,13 @@ final class ProxyKernel
                     continue;
                 }
 
+                // The miss rate limit and Early Hints, as on the miss path:
+                // every request that fetches passes, those of the window of
+                // an unavailable resize included, which each fetch.
+                $refused = $this->guard === null ? null : $this->guard->beforeFetch($request, $logPath);
+                if ($refused !== null) {
+                    return $refused;
+                }
                 $fetched = $this->fetch($request, $origin, $imagePath, $query);
                 if ($fetched->getFailureReason() === OriginResponse::FAILURE_REDIRECT) {
                     // The redirect would lead the client to the image, not to
