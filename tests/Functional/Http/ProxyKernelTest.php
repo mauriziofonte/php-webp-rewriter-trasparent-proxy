@@ -989,9 +989,6 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
-     * Moves the times kept by every breaker by $seconds.
-     */
-    /**
      * As if OUTCOME_WINDOW seconds had passed since the last request: the
      * outcome the coalescer shares with every request of an entry (a
      * failure, a 404, a redirect) has expired, so that the next request of
@@ -1006,8 +1003,9 @@ final class ProxyKernelTest extends TestCase
     }
 
     /**
-     * As if -$seconds seconds had passed for the breaker, and for the
-     * outcomes the coalescer shares (OUTCOME_WINDOW is shorter).
+     * Moves the times kept by every breaker by $seconds, and ages the
+     * outcomes the coalescer shares past their window (OUTCOME_WINDOW is
+     * shorter than any shift of the tests).
      */
     private function shiftBreakerTimes(int $seconds): void
     {

@@ -13,7 +13,8 @@ namespace Mfonte\ProxyCdn\Cache;
  * AVIF and WEBP variants and its Brotli and gzip encodings
  * (CacheLocation::getFiles()), what the negative cache remembers for it,
  * and the outcome the request coalescer shares for it (a 404, a redirect
- * or a failure of the origin, which the next request must not be given). A purge of a URL without query string also removes the entries of
+ * or a failure of the origin, which the next request must not be given).
+ * A purge of a URL without query string also removes the entries of
  * every query string of the same path, in ".q/" and ".qh/" (finding P-16:
  * 2.x left them, so "PURGE /app.css" kept serving "/app.css?v=2"); a purge
  * of a URL with a query string removes that entry only.

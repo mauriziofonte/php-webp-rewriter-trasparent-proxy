@@ -242,11 +242,9 @@ final class CircuitBreakerTest extends CharacterizationTestCase
     }
 
     /**
-     * Moves the times kept by every breaker by $seconds.
-     */
-    /**
-     * As if -$seconds seconds had passed for the breaker, and for the
-     * outcomes the coalescer shares (OUTCOME_WINDOW is shorter).
+     * Moves the times kept by every breaker by $seconds, and ages the
+     * outcomes the coalescer shares past their window (OUTCOME_WINDOW is
+     * shorter than any shift of the tests).
      */
     private function shiftBreakerTimes(int $seconds): void
     {

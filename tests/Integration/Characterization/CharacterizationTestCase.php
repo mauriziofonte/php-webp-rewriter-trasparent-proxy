@@ -233,9 +233,6 @@ SH;
     }
 
     /**
-     * Sets the modification time of a negative-cache marker $seconds in the past.
-     */
-    /**
      * As if OUTCOME_WINDOW seconds had passed since the last request: the
      * outcome the coalescer shares with every request of an entry (a
      * failure, a 404, a redirect) has expired, so that the next request of
@@ -249,6 +246,9 @@ SH;
         clearstatcache();
     }
 
+    /**
+     * Sets the modification time of a negative-cache marker $seconds in the past.
+     */
     protected static function age(string $file, int $seconds): void
     {
         self::assertFileExists($file);
