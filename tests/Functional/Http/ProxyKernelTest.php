@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
+use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
 use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
@@ -438,24 +439,47 @@ final class ProxyKernelTest extends TestCase
 
     /**
      * A request that finds what the coalescer saw gone every time it looks
-     * answers 503 after ProxyKernel::MAX_ENTRIES entries, without fetching.
+     * stops entering after ProxyKernel::MAX_ENTRIES entries, waits for the
+     * lock and leads: it fetches with the lock held.
      */
-    public function testARequestThatNeverFindsWhatTheCoalescerSawDoesNotFetch(): void
+    public function testARequestThatNeverFindsWhatTheCoalescerSawLeadsWithTheLock(): void
+    {
+        $origin = new LockProbingOrigin($this->origin, $this->directory->path(TestKernel::STATE_DIRECTORY));
+        $config = TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'CIRCUIT_BREAKER_THRESHOLD' => '10']);
+        $kernel = TestKernel::create($config, $this->directory->path(), $origin, null, $this->logger);
+        $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 500));
+        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+
+        $this->replaceCoalescer($kernel, self::outcomeSeenButNeverFound($looks));
+        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+
+        self::assertSame(12, $looks, 'three entries, then the lock');
+        self::assertSame([false, true], $origin->getLocked(), 'the second fetch holds the lock');
+    }
+
+    /**
+     * The request that leads after ProxyKernel::MAX_ENTRIES entries waits
+     * for the lock at most as long as any waiter, then answers 503 without
+     * fetching.
+     */
+    public function testARequestThatCannotLeadAfterItsEntriesAnswers503(): void
     {
         $kernel = $this->kernelWithThreshold(10);
         $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 500));
         self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+        $state = $this->directory->path(TestKernel::STATE_DIRECTORY);
+        $key = (new CacheKeyResolver($this->directory->path('_cache')))->resolve('cdn.example.test', '/js/app.js', '')->getKey();
+        $leader = CoalescerSeam::lock($state)->tryAcquire($key);
+        self::assertNotNull($leader);
 
-        // In each entry, isRecentlyUncacheable() and enter() see the outcome
-        // fresh, recentFailure() and recentRedirect() find it expired.
-        $looks = 0;
-        $this->replaceCoalescer($kernel, static function () use (&$looks): int {
-            return $looks++ % 4 < 2 ? time() : time() + RequestCoalescer::OUTCOME_WINDOW;
-        });
-        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+        CoalescerSeam::replace($kernel, $state, $this->logger, self::outcomeSeenButNeverFound($looks), 0.3);
+        $response = $kernel->handle(Request::create('https://cdn.example.test/js/app.js'));
+        $leader->release();
 
+        self::assertSame(503, $response->getStatusCode());
         self::assertSame(12, $looks, 'three entries');
         self::assertCount(1, $this->origin->getRequests(), 'no fetch without the lock');
+        self::assertContains('request coalescing timed out', array_column($this->logger->getRecords(), 'message'));
     }
 
     /**
@@ -1051,6 +1075,25 @@ final class ProxyKernelTest extends TestCase
         }
 
         return false;
+    }
+
+    /**
+     * A clock of the coalescer under which, in each entry of the miss
+     * path, isRecentlyUncacheable() and enter() see the outcome fresh,
+     * and recentFailure() and recentRedirect() find it expired; $looks
+     * counts the looks.
+     *
+     * @param-out int $looks
+     *
+     * @return callable(): int
+     */
+    private static function outcomeSeenButNeverFound(?int &$looks): callable
+    {
+        $looks = 0;
+
+        return static function () use (&$looks): int {
+            return $looks++ % 4 < 2 ? time() : time() + RequestCoalescer::OUTCOME_WINDOW;
+        };
     }
 
     /**

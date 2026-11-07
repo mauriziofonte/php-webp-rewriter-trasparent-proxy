@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 
+use Mfonte\ProxyCdn\Cache\CacheKeyResolver;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
 use Mfonte\ProxyCdn\Origin\OriginResponse;
 use Mfonte\ProxyCdn\Tests\Fixtures\Config\TestConfig;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
+use Mfonte\ProxyCdn\Tests\Fixtures\Http\CoalescerSeam;
 use Mfonte\ProxyCdn\Tests\Fixtures\Http\TestKernel;
 use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeWebpConverter;
 use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
@@ -316,6 +318,48 @@ final class CacheLayoutTest extends TestCase
         $third = $this->kernel()->handle(Request::create('https://cdn.example.test/images/a.webp'));
         self::assertSame('MISS', $third->headers->get('x-cache-status'), 'expired: fetched again');
         self::assertGreaterThan($fetches, count($this->origin->getRequests()));
+    }
+
+    /**
+     * Finding P-24: while a request leads the fetch of "X.webp", the
+     * others wait for it; an expired sibling in the tier PHP revalidates
+     * is not ready for them (it is fetched again, serveLegacyHit() does not
+     * serve it), so they keep waiting instead of waking at once to nothing
+     * they can serve. Here the leader is the test, which holds the lock
+     * longer than the wait: the request answers 503 once its wait as a
+     * waiter is over, without having woken to nothing and gone on to wait
+     * to lead (RequestCoalescer::lead(), which logs "leading").
+     */
+    public function testAnExpiredLegacySiblingIsNotReadyForTheWaiters(): void
+    {
+        $this->origin->serve(self::ORIGIN . '/images/a.png', 'PNG', ['cache-control' => 'max-age=60']);
+        self::assertSame('MISS', $this->kernel()->handle(Request::create('https://cdn.example.test/images/a.webp'))->headers->get('x-cache-status'));
+        $metadata = $this->directory->path('_cache/cdn.example.test/.m/.meta/images/a.png.json');
+        $data = json_decode((string) file_get_contents($metadata), true);
+        self::assertIsArray($data);
+        self::assertIsInt($data['validated_at'] ?? null);
+        $data['validated_at'] -= 3600;
+        file_put_contents($metadata, json_encode($data));
+        $fetches = count($this->origin->getRequests());
+
+        $state = $this->directory->path(TestKernel::STATE_DIRECTORY);
+        $key = (new CacheKeyResolver($this->directory->path('_cache')))->resolve('cdn.example.test', '/images/a.webp', '')->getKey();
+        $leader = CoalescerSeam::lock($state)->tryAcquire($key);
+        self::assertNotNull($leader);
+        $logger = new MemoryLogger();
+        $kernel = $this->kernel();
+        CoalescerSeam::replace($kernel, $state, $logger, static function (): int {
+            return time();
+        }, 0.3);
+        $response = $kernel->handle(Request::create('https://cdn.example.test/images/a.webp'));
+        $leader->release();
+
+        self::assertSame(503, $response->getStatusCode());
+        self::assertCount($fetches, $this->origin->getRequests());
+        $records = $logger->getRecords();
+        self::assertCount(1, $records);
+        self::assertSame('request coalescing timed out', $records[0]['message']);
+        self::assertArrayNotHasKey('leading', $records[0]['context'], 'it timed out as a waiter, and never went on to lead');
     }
 
     /**

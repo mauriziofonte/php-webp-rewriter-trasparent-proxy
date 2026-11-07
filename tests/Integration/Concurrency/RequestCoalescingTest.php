@@ -199,21 +199,52 @@ final class RequestCoalescingTest extends TestCase
     }
 
     /**
+     * A legacy "X.webp" URL whose raster sibling is stored, expired, in the
+     * tier PHP revalidates: the waiters do not take the expired sibling as
+     * ready (the leader fetches it again), they wait for the fresh one the
+     * leader stores, and every request gets it; the siblings are fetched
+     * once. They used to wake at once, find nothing they could serve and
+     * answer 503.
+     */
+    public function testALegacyWebpBurstOnAnExpiredSiblingWaitsForTheLeaderP24(): void
+    {
+        $this->burst('https://cdn.example.test/img/b.webp', 'legacy-short', 0.0, 1);
+        $metadata = $this->directory->path('_cache/cdn.example.test/.m/.meta/img/b.jpg.json');
+        $state = json_decode((string) file_get_contents($metadata), true);
+        self::assertIsArray($state, 'the sibling is in the tier PHP revalidates');
+        self::assertIsInt($state['validated_at'] ?? null);
+        $state['validated_at'] -= 500;
+        file_put_contents($metadata, json_encode($state));
+        unlink($this->directory->path('fetches.log'));
+
+        $results = $this->burst('https://cdn.example.test/img/b.webp', 'legacy-short');
+
+        $fetches = file($this->directory->path('fetches.log'), FILE_IGNORE_NEW_LINES) ?: [];
+        self::assertSame(['https://origin.example.test/img/b.webp', 'https://origin.example.test/img/b.jpg'], $fetches);
+        $hash = hash('sha256', str_repeat("body { color: red; }\n", 100));
+        foreach ($results as $result) {
+            self::assertSame(200, $result['status']);
+            self::assertSame($hash, $result['hash']);
+        }
+    }
+
+    /**
      * Runs PROCESSES requests for $url at the same moment, each in its own
      * PHP process, and returns what each printed.
      *
-     * @param string $mode   what the origin answers (see coalesce-child.php)
-     * @param float  $spread seconds over which the starts of the requests are spread evenly (0: all at once)
+     * @param string $mode      what the origin answers (see coalesce-child.php)
+     * @param float  $spread    seconds over which the starts of the requests are spread evenly (0: all at once)
+     * @param int    $processes how many requests
      *
      * @return list<array{status: int, cache: string, hash: string, location: string|null}>
      */
-    private function burst(string $url, string $mode = 'ok', float $spread = 0.0): array
+    private function burst(string $url, string $mode = 'ok', float $spread = 0.0, int $processes = self::PROCESSES): array
     {
         $script = dirname(__DIR__, 2) . '/Fixtures/Concurrency/coalesce-child.php';
         $first = microtime(true) + 1.5;
-        $processes = [];
-        for ($i = 0; $i < self::PROCESSES; ++$i) {
-            $start = sprintf('%.6F', $first + $spread * $i / self::PROCESSES);
+        $running = [];
+        for ($i = 0; $i < $processes; ++$i) {
+            $start = sprintf('%.6F', $first + $spread * $i / $processes);
             $command = implode(' ', array_map('escapeshellarg', [
                 PHP_BINARY,
                 $script,
@@ -226,11 +257,11 @@ final class RequestCoalescingTest extends TestCase
             ]));
             $process = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
             self::assertIsResource($process);
-            $processes[] = [$process, $pipes];
+            $running[] = [$process, $pipes];
         }
 
         $results = [];
-        foreach ($processes as $entry) {
+        foreach ($running as $entry) {
             list($process, $pipes) = $entry;
             $output = (string) stream_get_contents($pipes[1]);
             $errors = (string) stream_get_contents($pipes[2]);

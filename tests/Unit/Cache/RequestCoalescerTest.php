@@ -207,6 +207,28 @@ final class RequestCoalescerTest extends TestCase
         $leader->release();
     }
 
+    /**
+     * lead() waits for the lock whatever the other requests left (here a
+     * fresh failure, which enter() would share), and gives up after the
+     * timeout.
+     */
+    public function testLeadWaitsForTheLockAndIsBounded(): void
+    {
+        $coalescer = $this->coalescer($this->lock(), 0.2);
+        $coalescer->recordFailure('key', ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+
+        $lease = $coalescer->lead('key');
+        self::assertInstanceOf(LeaseInterface::class, $lease);
+        self::assertNull($this->lock()->tryAcquire('key'), 'held');
+
+        $started = microtime(true);
+        self::assertFalse($this->coalescer($this->lock(), 0.2)->lead('key'));
+        self::assertGreaterThanOrEqual(0.15, microtime(true) - $started);
+        self::assertSame('request coalescing timed out', $this->logger->getRecords()[0]['message'] ?? null);
+        $lease->release();
+        self::assertNull($this->coalescer(null, 0.2)->lead('key'), 'without a lock');
+    }
+
     public function testWithoutALockEveryRequestFetches(): void
     {
         $coalescer = $this->coalescer(null, 1.0);
@@ -241,9 +263,10 @@ final class RequestCoalescerTest extends TestCase
         self::assertFalse($lease->isReleased());
         $lease->release();
         self::assertTrue($lease->isReleased());
+        self::assertInstanceOf(LeaseInterface::class, $coalescer->lead('key'));
         self::assertNull($coalescer->tryEnter('key'));
         $records = $this->logger->getRecords();
-        self::assertCount(2, $records);
+        self::assertCount(3, $records);
         self::assertSame('request coalescing unavailable', $records[0]['message']);
         self::assertSame('warning', $records[0]['level']);
     }

@@ -215,6 +215,39 @@ final class RequestCoalescer
     }
 
     /**
+     * Waits until this request holds the lock of $key, whatever the other
+     * requests left meanwhile: for a request that enter() kept sending to
+     * look for what was gone by the time it looked, which leads instead.
+     *
+     * @return LeaseInterface|false|null the lock to release once the entry is stored (a lease that holds nothing when
+     *                                   the lock fails); null without a lock; false when it waited longer than the
+     *                                   timeout
+     */
+    public function lead(string $key)
+    {
+        if ($this->lock === null) {
+            return null;
+        }
+        $lock = $this->lock;
+        try {
+            $lease = $this->backoff->retryUntil(static function () use ($lock, $key): ?LeaseInterface {
+                return $lock->tryAcquire($key);
+            }, $this->timeout);
+        } catch (ExceptionInterface $exception) {
+            $this->logger->warning('request coalescing unavailable', ['error' => $exception->getMessage()]);
+
+            return self::unlocked();
+        }
+        if (!$lease instanceof LeaseInterface) {
+            $this->logger->warning('request coalescing timed out', ['timeout' => $this->timeout, 'leading' => true]);
+
+            return false;
+        }
+
+        return $lease;
+    }
+
+    /**
      * Whether a lock is available, so that requests are coalesced.
      */
     public function isEnabled(): bool

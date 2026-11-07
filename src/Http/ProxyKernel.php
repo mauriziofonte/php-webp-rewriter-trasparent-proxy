@@ -103,8 +103,9 @@ final class ProxyKernel
     /**
      * How many times a request enters the coalescer of its entry
      * (RequestCoalescer::enter()) when what it was told to look for is
-     * gone each time it looks; then it answers 503 rather than fetch
-     * without the lock.
+     * gone each time it looks; then it waits for the lock and leads
+     * (RequestCoalescer::lead()), and answers 503 (the entry stale, on a
+     * revalidation) only when that wait times out.
      */
     private const MAX_ENTRIES = 3;
 
@@ -406,13 +407,19 @@ final class ProxyKernel
         // fetches of its raster siblings too.
         $key = $location->getKey();
         for ($entries = 1;; ++$entries) {
-            $uncacheable = $this->coalescer->isRecentlyUncacheable($key);
-            $lease = $uncacheable ? null : $this->coalescer->enter($key, function () use ($location, $file, $legacy): bool {
-                return $this->storage->isFile($file)
-                    || $this->storage->isFile($location->managed()->getFile())
-                    || $this->negativeCache->lookup($file) !== null
-                    || $this->isLegacyStored($legacy);
-            });
+            $uncacheable = false;
+            if ($entries > self::MAX_ENTRIES) {
+                $lease = $this->coalescer->lead($key);
+            } else {
+                $uncacheable = $this->coalescer->isRecentlyUncacheable($key);
+                // Ready once the body below has something to answer.
+                $lease = $uncacheable ? null : $this->coalescer->enter($key, function () use ($location, $file, $legacy): bool {
+                    return $this->storage->isFile($file)
+                        || $this->storage->isFile($location->managed()->getFile())
+                        || $this->negativeCache->lookup($file) !== null
+                        || $this->legacyHit($legacy) !== null;
+                });
+            }
             if ($lease === false) {
                 return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
             }
@@ -441,12 +448,9 @@ final class ProxyKernel
                     // entry or its outcome was purged, or the outcome of
                     // another key replaced it in the slot): enter again
                     // rather than fetch without the lock while the next
-                    // leader fetches.
-                    if ($entries < self::MAX_ENTRIES) {
-                        continue;
-                    }
-
-                    return $this->responses->error($path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+                    // leader fetches, and after MAX_ENTRIES times wait for
+                    // the lock and lead.
+                    continue;
                 }
 
                 $fetched = $this->fetch($request, $origin, $path, $query);
@@ -543,7 +547,7 @@ final class ProxyKernel
         // One lock per entry, in either tier: the one of the miss path.
         $key = $location->getKey();
         for ($entries = 1;; ++$entries) {
-            $lease = $this->coalescer->enter($key, function () use ($managed): bool {
+            $lease = $entries > self::MAX_ENTRIES ? $this->coalescer->lead($key) : $this->coalescer->enter($key, function () use ($managed): bool {
                 $current = $this->readMetadata($managed);
 
                 return !$this->storage->isFile($managed->getFile()) || ($current !== null && $current->isFresh(time()));
@@ -572,11 +576,7 @@ final class ProxyKernel
                 }
                 if ($lease === null && $this->coalescer->isEnabled() && !$this->coalescer->isRecentlyUncacheable($key)) {
                     // What enter() saw is gone, as on the miss path.
-                    if ($entries < self::MAX_ENTRIES) {
-                        continue;
-                    }
-
-                    return $this->staleOrError($request, $managed, $extension, $path, $metadata, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+                    continue;
                 }
 
                 return $this->revalidate($request, $managed, $extension, $origin, $path, $query, $metadata);
@@ -961,38 +961,44 @@ final class ProxyKernel
      */
     private function serveLegacyHit(Request $request, array $siblings): ?Response
     {
+        $hit = $this->legacyHit($siblings);
+        if ($hit === null) {
+            return null;
+        }
+        list($extension, $location, $maxAge) = $hit;
+
+        return $this->serveLegacy($request, $location, $extension, ResponseFactory::CACHE_HIT, $maxAge);
+    }
+
+    /**
+     * The raster sibling of "X.webp" that serveLegacyHit() serves, with
+     * its extension and the max-age it has left (null in the tier the web
+     * server serves); null when the cache holds none it may serve. The
+     * requests waiting on "X.webp" take only such a sibling as ready: an
+     * expired one is fetched again by the leader.
+     *
+     * @param list<array{string, CacheLocation}> $siblings
+     *
+     * @return array{string, CacheLocation, int|null}|null
+     *
+     * @phpstan-impure
+     */
+    private function legacyHit(array $siblings): ?array
+    {
         $now = time();
         foreach ($siblings as $sibling) {
             list($extension, $location) = $sibling;
             if ($this->storage->isFile($location->getFile())) {
-                return $this->serveLegacy($request, $location, $extension, ResponseFactory::CACHE_HIT);
+                return [$extension, $location, null];
             }
             $managed = $location->managed();
             $metadata = $this->storage->isFile($managed->getFile()) ? $this->readMetadata($managed) : null;
             if ($metadata !== null && $metadata->isFresh($now)) {
-                return $this->serveLegacy($request, $managed, $extension, ResponseFactory::CACHE_HIT, $metadata->getRemainingLifetime($now));
+                return [$extension, $managed, $metadata->getRemainingLifetime($now)];
             }
         }
 
         return null;
-    }
-
-    /**
-     * Whether the cache holds a raster sibling of "X.webp", in either tier.
-     *
-     * @param list<array{string, CacheLocation}> $siblings
-     *
-     * @phpstan-impure
-     */
-    private function isLegacyStored(array $siblings): bool
-    {
-        foreach ($siblings as $sibling) {
-            if ($this->storage->isFile($sibling[1]->getFile()) || $this->storage->isFile($sibling[1]->managed()->getFile())) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

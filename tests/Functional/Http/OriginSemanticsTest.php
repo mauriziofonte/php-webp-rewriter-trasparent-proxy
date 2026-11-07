@@ -371,31 +371,47 @@ final class OriginSemanticsTest extends TestCase
     }
 
     /**
-     * A revalidation that never finds what the coalescer saw gives up after
-     * ProxyKernel::MAX_ENTRIES entries and serves the entry stale, without
-     * asking the origin.
+     * A revalidation that never finds what the coalescer saw stops
+     * entering after ProxyKernel::MAX_ENTRIES entries, waits for the lock
+     * and revalidates as the leader, with the lock held.
      */
-    public function testARevalidationThatNeverFindsWhatTheCoalescerSawServesStale(): void
+    public function testARevalidationThatNeverFindsWhatTheCoalescerSawLeadsWithTheLock(): void
     {
-        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
-        $this->kernel()->handle(Request::create(self::URL));
-        $this->age(500);
-        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 503));
-        self::assertSame('STALE', $this->kernel()->handle(Request::create(self::URL))->headers->get('x-cache-status'));
+        $origin = new LockProbingOrigin($this->origin, $this->stateDirectory());
+        $this->failedRevalidation($origin);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::notModified(['cache-control' => 'max-age=60']));
 
-        // In each entry, enter() sees the failure fresh, and recentFailure(),
-        // recentRedirect() and isRecentlyUncacheable() find it expired.
-        $kernel = $this->kernel();
-        $looks = 0;
-        CoalescerSeam::replace($kernel, $this->stateDirectory(), $this->logger, static function () use (&$looks): int {
-            return $looks++ % 4 < 1 ? time() : time() + RequestCoalescer::OUTCOME_WINDOW;
-        });
+        $kernel = $this->kernel([], $origin);
+        CoalescerSeam::replace($kernel, $this->stateDirectory(), $this->logger, self::failureSeenButNeverFound($looks));
         $response = $kernel->handle(Request::create(self::URL));
+
+        self::assertSame('REVALIDATED', $response->headers->get('x-cache-status'));
+        self::assertSame(12, $looks, 'three entries, then the lock');
+        self::assertSame([false, false, true], $origin->getLocked(), 'the revalidation holds the lock');
+    }
+
+    /**
+     * The revalidation that leads after ProxyKernel::MAX_ENTRIES entries
+     * waits for the lock at most as long as any waiter, then serves the
+     * entry stale without asking the origin.
+     */
+    public function testARevalidationThatCannotLeadAfterItsEntriesServesStale(): void
+    {
+        $this->failedRevalidation($this->origin);
+        $key = (new CacheKeyResolver($this->directory->path('_cache')))->resolve('cdn.example.test', '/js/app.js', '')->getKey();
+        $leader = CoalescerSeam::lock($this->stateDirectory())->tryAcquire($key);
+        self::assertNotNull($leader);
+
+        $kernel = $this->kernel();
+        CoalescerSeam::replace($kernel, $this->stateDirectory(), $this->logger, self::failureSeenButNeverFound($looks), 0.3);
+        $response = $kernel->handle(Request::create(self::URL));
+        $leader->release();
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('STALE', $response->headers->get('x-cache-status'));
         self::assertSame(12, $looks, 'three entries');
         self::assertCount(2, $this->origin->getRequests(), 'no revalidation without the lock');
+        self::assertContains('request coalescing timed out', array_column($this->logger->getRecords(), 'message'));
     }
 
     /**
@@ -552,6 +568,39 @@ final class OriginSemanticsTest extends TestCase
             null,
             $this->logger
         );
+    }
+
+    /**
+     * Stores the managed entry, expires it beyond its stale-while-revalidate
+     * and lets its revalidation fail: the entry was served stale, and the
+     * coalescer shares the failure.
+     */
+    private function failedRevalidation(OriginFetcher $origin): void
+    {
+        $this->origin->serve(self::ORIGIN_URL, 'short();', ['cache-control' => 'max-age=60']);
+        $this->kernel([], $origin)->handle(Request::create(self::URL));
+        $this->age(500);
+        $this->origin->respond(self::ORIGIN_URL, OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 503));
+        self::assertSame('STALE', $this->kernel([], $origin)->handle(Request::create(self::URL))->headers->get('x-cache-status'));
+    }
+
+    /**
+     * A clock of the coalescer under which, in each entry of the
+     * revalidation path, enter() sees the failure fresh, and
+     * recentFailure(), recentRedirect() and isRecentlyUncacheable() find
+     * it expired; $looks counts the looks.
+     *
+     * @param-out int $looks
+     *
+     * @return callable(): int
+     */
+    private static function failureSeenButNeverFound(?int &$looks): callable
+    {
+        $looks = 0;
+
+        return static function () use (&$looks): int {
+            return $looks++ % 4 < 1 ? time() : time() + RequestCoalescer::OUTCOME_WINDOW;
+        };
     }
 
     private function stateDirectory(): string
