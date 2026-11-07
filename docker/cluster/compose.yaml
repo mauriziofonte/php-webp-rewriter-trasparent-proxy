@@ -11,6 +11,9 @@
 #
 # The project root is mounted read-only at /app (vendor/ must be installed
 # with Composer); each node mounts its own public/_cache, var/ and logs/.
+# Nothing of them is shared: the cache with its pending tier (.pending/)
+# and work directory (.work/), and var/ with its locks, breakers, rate
+# limit buckets, metrics and conversion state, belong to one node.
 # The configuration is node.env plus CLUSTER_PEERS per node; a key that
 # node.env does not set is read from the .env of the project, if any.
 
