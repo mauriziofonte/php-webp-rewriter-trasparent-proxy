@@ -87,6 +87,11 @@ final class CacheEvictor
             $totalBytes += $set[1];
         }
         $report = new EvictionReport(count($sets), $totalBytes, $links);
+        foreach ($sets as $set) {
+            if ($set[3]) {
+                $report->pending();
+            }
+        }
         if ($maxBytes <= 0 || $totalBytes <= $maxBytes) {
             return $report;
         }
@@ -104,7 +109,7 @@ final class CacheEvictor
                 continue;
             }
             $remaining -= $set[1];
-            $report->evicted((string) $key, $set[1]);
+            $report->evicted((string) $key, $set[1], $set[3]);
         }
 
         return $report;
@@ -112,9 +117,10 @@ final class CacheEvictor
 
     /**
      * Every set of the cache, keyed by tier, host, bucket and path: its
-     * location, bytes and time; and the number of links seen.
+     * location, bytes, time and whether it waits for its variants; and the
+     * number of links seen.
      *
-     * @return array{array<string, array{CacheLocation, int, int}>, int}
+     * @return array{array<string, array{CacheLocation, int, int, bool}>, int}
      */
     private function scan(): array
     {
@@ -149,7 +155,7 @@ final class CacheEvictor
     }
 
     /**
-     * @param array<string, array{CacheLocation, int, int}> $sets
+     * @param array<string, array{CacheLocation, int, int, bool}> $sets
      */
     private function scanBucket(array &$sets, int &$links, string $hostDirectory, bool $managed, string $bucket, string $bucketDirectory): void
     {
@@ -184,7 +190,8 @@ final class CacheEvictor
                 $location = $location->managed();
             }
             list($bytes, $time) = $this->measure($location);
-            $sets[($managed ? 'm' : 'w') . ':' . $location->getKey()] = [$location, $bytes, $time];
+            $pending = CacheTree::statInside($this->cacheDirectory, $location->getPendingFile());
+            $sets[($managed ? 'm' : 'w') . ':' . $location->getKey()] = [$location, $bytes, $time, $pending !== null && $pending[0] === CacheTree::TYPE_FILE];
         }
     }
 

@@ -11,6 +11,7 @@ use Mfonte\ProxyCdn\Cluster\PeerNotifier;
 use Mfonte\ProxyCdn\Config\Config;
 use Mfonte\ProxyCdn\Image\ImageConverter;
 use Mfonte\ProxyCdn\Observability\HealthCheck;
+use Mfonte\ProxyCdn\Observability\MeteredImageConverter;
 use Mfonte\ProxyCdn\Observability\MeteredOriginFetcher;
 use Mfonte\ProxyCdn\Observability\Metrics;
 use Mfonte\ProxyCdn\Observability\MetricsAuthenticator;
@@ -20,12 +21,12 @@ use Psr\Log\LoggerInterface;
 /**
  * Builds the EdgeKernel of the front controller around the ProxyKernel of
  * ProxyKernelFactory, with the same arguments plus the Metrics of the
- * request: the origin fetches are counted (MeteredOriginFetcher), the
- * misses go through the miss rate limit and the Early Hints of the
- * configuration (OriginFetchGuards), /healthz
- * checks the cache and state directories, /metrics is served when
- * METRICS_KEYS is set, and accepted purges are fanned out to CLUSTER_PEERS
- * (none when it is empty).
+ * request: the origin fetches and the image conversions are counted
+ * (MeteredOriginFetcher, MeteredImageConverter), the misses go through
+ * the miss rate limit and the Early Hints of the configuration
+ * (OriginFetchGuards), /healthz checks the cache and state directories,
+ * /metrics is served when METRICS_KEYS is set, and accepted purges are
+ * fanned out to CLUSTER_PEERS (none when it is empty).
  */
 final class EdgeKernelFactory
 {
@@ -49,7 +50,7 @@ final class EdgeKernelFactory
             $publicDirectory,
             $stateDirectory,
             new MeteredOriginFetcher($origin, $metrics),
-            $converter,
+            $converter === null ? null : new MeteredImageConverter($converter, $metrics),
             $logger,
             OriginFetchGuards::fromConfig($config, $stateDirectory, $metrics, $logger)
         );

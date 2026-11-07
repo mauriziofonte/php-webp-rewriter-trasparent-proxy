@@ -130,6 +130,15 @@ final class CacheEvictCommandTest extends TestCase
             self::assertFileDoesNotExist($file);
         }
         self::assertFileExists($kept[0]);
+        $usage = CacheUsage::read(new FilesystemStorage(), $this->directory->path('var/' . CacheUsage::FILE_NAME));
+        self::assertNotNull($usage);
+        self::assertSame(0, $usage->getPendingEntries(), 'the pending image was evicted');
+
+        $this->set('/.pending', 'images/other.jpg', 3000000);
+        $this->evict([]);
+        $usage = CacheUsage::read(new FilesystemStorage(), $this->directory->path('var/' . CacheUsage::FILE_NAME));
+        self::assertNotNull($usage);
+        self::assertSame([2, 1], [$usage->getEntries(), $usage->getPendingEntries()], 'for /metrics');
     }
 
     /**

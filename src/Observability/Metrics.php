@@ -25,8 +25,10 @@ use Mfonte\ProxyCdn\Config\OperationsConfig;
  * | proxy_cdn_miss_rate_limited_total           | counter   |                        |
  * | proxy_cdn_miss_rate_limit_unavailable_total | counter   |                        |
  * | proxy_cdn_early_hints_total                 | counter   |                        |
+ * | proxy_cdn_image_conversions_total           | counter   | converter, result      |
  * | proxy_cdn_cache_bytes                       | gauge     |                        |
  * | proxy_cdn_cache_entries                     | gauge     |                        |
+ * | proxy_cdn_cache_pending_entries             | gauge     |                        |
  * | proxy_cdn_cache_scan_timestamp_seconds      | gauge     |                        |
  *
  * - Only the requests that reach PHP are counted: the hits the web server
@@ -35,12 +37,21 @@ use Mfonte\ProxyCdn\Config\OperationsConfig;
  *   X-Cache-Status of the response (HIT, MISS, STALE, REVALIDATED,
  *   BYPASS) or "none"; status: the HTTP status, or "other" outside
  *   100-599; outcome: "success", "not_modified" or the failure reason of
- *   the origin fetch (OriginResponse::FAILURE_*); result: a fixed word.
+ *   the origin fetch (OriginResponse::FAILURE_*); result: a fixed word;
+ *   converter: "local" or "remote" (IMAGE_CONVERTER).
+ * - image_conversions_total counts the conversions and resizes of PRX-8
+ *   (MeteredImageConverter) by result: "ok", "rejected" (the image cannot
+ *   be converted as asked), "unavailable" (the converter cannot convert
+ *   now) or "circuit_open" (refused at once while the circuit breaker of
+ *   the conversion API is open). Those of terminate() are counted too:
+ *   the counters are written after them.
  *   Every label value comes from a fixed set, never from the request, so
  *   the series cannot grow with the traffic, and no label names a host,
  *   a path, a peer or a version.
  * - The cache gauges come from the last scan of cache:evict (CacheUsage),
- *   and are missing until one ran.
+ *   and are missing until one ran; cache_pending_entries counts the
+ *   images waiting for their variants (.pending/), and is missing for a
+ *   scan made before it was counted.
  * - metrics_available is 0 when the store cannot be read: the counters are
  *   then missing from the scrape, not reset.
  *
@@ -71,6 +82,12 @@ final class Metrics
 
     public const RESULT_FAILED = 'failed';
 
+    public const CONVERSION_REJECTED = 'rejected';
+
+    public const CONVERSION_UNAVAILABLE = 'unavailable';
+
+    public const CONVERSION_CIRCUIT_OPEN = 'circuit_open';
+
     /**
      * Upper bounds of the histogram buckets, in seconds: hits served by PHP
      * take about a millisecond, misses up to UPSTREAM_TIMEOUT.
@@ -92,6 +109,10 @@ final class Metrics
 
     private const RESULTS = [self::RESULT_PURGED, self::RESULT_REFUSED, self::RESULT_OK, self::RESULT_FAILED];
 
+    private const CONVERSION_RESULTS = [self::RESULT_OK, self::CONVERSION_REJECTED, self::CONVERSION_UNAVAILABLE, self::CONVERSION_CIRCUIT_OPEN];
+
+    private const CONVERTERS = ['local', 'remote'];
+
     private const FAMILIES = [
         'requests_total' => ['counter', 'Requests answered by PHP, by method, X-Cache-Status and HTTP status.'],
         'request_duration_seconds' => ['histogram', 'Time PHP took to build the response, by X-Cache-Status.'],
@@ -101,6 +122,7 @@ final class Metrics
         'miss_rate_limited_total' => ['counter', 'Misses refused with 429 by MISS_RATE_LIMIT.'],
         'miss_rate_limit_unavailable_total' => ['counter', 'Misses let through unchecked because the MISS_RATE_LIMIT buckets could not be updated.'],
         'early_hints_total' => ['counter', '103 Early Hints responses sent before an origin fetch.'],
+        'image_conversions_total' => ['counter', 'Image conversions and resizes, by converter and result (ok, rejected, unavailable, circuit_open).'],
     ];
 
     /**
@@ -209,6 +231,20 @@ final class Metrics
     }
 
     /**
+     * Counts a conversion or a resize of an image.
+     *
+     * @param string $converter ImageConverter::getName()
+     * @param string $result    RESULT_OK or a CONVERSION_* result
+     */
+    public function recordImageConversion(string $converter, string $result): void
+    {
+        $this->increment('image_conversions_total', [
+            'converter' => in_array($converter, self::CONVERTERS, true) ? $converter : self::OTHER,
+            'result' => in_array($result, self::CONVERSION_RESULTS, true) ? $result : self::OTHER,
+        ]);
+    }
+
+    /**
      * Writes what was recorded since the last flush to the store.
      *
      * @return bool false when the store could not be updated
@@ -238,6 +274,9 @@ final class Metrics
         if ($usage !== null) {
             self::gauge($lines, 'cache_bytes', 'Bytes of the cache files at the last scan of cache:evict.', (string) $usage->getBytes());
             self::gauge($lines, 'cache_entries', 'Cache entries, with their siblings, at the last scan of cache:evict.', (string) $usage->getEntries());
+            if ($usage->getPendingEntries() !== null) {
+                self::gauge($lines, 'cache_pending_entries', 'Images waiting for their variants (.pending/) at the last scan of cache:evict.', (string) $usage->getPendingEntries());
+            }
             self::gauge($lines, 'cache_scan_timestamp_seconds', 'Unix time of the last scan of cache:evict.', (string) $usage->getScannedAt());
         }
         if ($counters === null || $this->store === null) {

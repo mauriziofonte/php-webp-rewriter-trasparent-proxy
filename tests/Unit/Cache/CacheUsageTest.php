@@ -28,7 +28,11 @@ final class CacheUsageTest extends TestCase
             $usage = CacheUsage::read($storage, $file);
 
             self::assertNotNull($usage);
-            self::assertSame([10, 2, 1700000000], [$usage->getBytes(), $usage->getEntries(), $usage->getScannedAt()]);
+            self::assertSame([10, 2, 1700000000, null], [$usage->getBytes(), $usage->getEntries(), $usage->getScannedAt(), $usage->getPendingEntries()]);
+            self::assertTrue((new CacheUsage(10, 2, 1700000000, 1))->write($storage, $file));
+            $usage = CacheUsage::read($storage, $file);
+            self::assertNotNull($usage);
+            self::assertSame(1, $usage->getPendingEntries());
             file_put_contents($file, '{"bytes":"10"}');
             self::assertNull(CacheUsage::read($storage, $file));
         } finally {

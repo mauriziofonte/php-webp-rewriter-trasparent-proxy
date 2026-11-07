@@ -40,6 +40,16 @@ final class EvictionReport
     private $kept = 0;
 
     /**
+     * @var int
+     */
+    private $pendingEntries = 0;
+
+    /**
+     * @var int
+     */
+    private $evictedPending = 0;
+
+    /**
      * @param int $entries the sets found
      * @param int $bytes   their bytes
      * @param int $links   the symbolic links seen and left alone
@@ -52,12 +62,25 @@ final class EvictionReport
     }
 
     /**
-     * Records a set removed (or that a dry run would remove).
+     * Records a set found that waits for its variants (.pending/).
      */
-    public function evicted(string $key, int $bytes): void
+    public function pending(): void
+    {
+        ++$this->pendingEntries;
+    }
+
+    /**
+     * Records a set removed (or that a dry run would remove).
+     *
+     * @param bool $pending whether the set waited for its variants
+     */
+    public function evicted(string $key, int $bytes, bool $pending = false): void
     {
         $this->evicted[] = $key;
         $this->evictedBytes += $bytes;
+        if ($pending) {
+            ++$this->evictedPending;
+        }
     }
 
     /**
@@ -111,5 +134,13 @@ final class EvictionReport
     public function getRemainingBytes(): int
     {
         return $this->bytes - $this->evictedBytes;
+    }
+
+    /**
+     * The sets left that wait for their variants.
+     */
+    public function getRemainingPendingEntries(): int
+    {
+        return $this->pendingEntries - $this->evictedPending;
     }
 }

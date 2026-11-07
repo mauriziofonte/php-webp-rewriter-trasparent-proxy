@@ -114,6 +114,30 @@ final class MetricsTest extends TestCase
         self::assertStringContainsString("proxy_cdn_cache_entries 7\n", $text);
         self::assertStringContainsString("proxy_cdn_cache_scan_timestamp_seconds 1700000001\n", $text);
         self::assertStringNotContainsString('proxy_cdn_cache_bytes', (new Metrics(null))->render());
+        self::assertStringNotContainsString('proxy_cdn_cache_pending_entries', $text, 'not counted by that scan');
+        self::assertStringContainsString(
+            "# TYPE proxy_cdn_cache_pending_entries gauge\nproxy_cdn_cache_pending_entries 3\n",
+            (new Metrics(null))->render(new CacheUsage(2048, 7, 1700000001, 3))
+        );
+    }
+
+    public function testTheImageConversionsAreCountedByConverterAndResult(): void
+    {
+        $metrics = new Metrics($this->store());
+        $metrics->recordImageConversion('remote', Metrics::RESULT_OK);
+        $metrics->recordImageConversion('remote', Metrics::RESULT_OK);
+        $metrics->recordImageConversion('remote', Metrics::CONVERSION_CIRCUIT_OPEN);
+        $metrics->recordImageConversion('local', Metrics::CONVERSION_REJECTED);
+        $metrics->recordImageConversion('other-' . mt_rand(), 'result-' . mt_rand());
+        $metrics->flush();
+
+        $text = (new Metrics($this->store()))->render();
+
+        self::assertStringContainsString("# TYPE proxy_cdn_image_conversions_total counter\n", $text);
+        self::assertStringContainsString("proxy_cdn_image_conversions_total{converter=\"remote\",result=\"ok\"} 2\n", $text);
+        self::assertStringContainsString("proxy_cdn_image_conversions_total{converter=\"remote\",result=\"circuit_open\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_image_conversions_total{converter=\"local\",result=\"rejected\"} 1\n", $text);
+        self::assertStringContainsString("proxy_cdn_image_conversions_total{converter=\"other\",result=\"other\"} 1\n", $text);
     }
 
     public function testWithoutStoreNothingIsCounted(): void

@@ -33,15 +33,22 @@ final class CacheUsage
     private $scannedAt;
 
     /**
-     * @param int $bytes     bytes of every file of the cache
-     * @param int $entries   cache entries, each with its siblings
-     * @param int $scannedAt Unix time of the scan
+     * @var int|null
      */
-    public function __construct(int $bytes, int $entries, int $scannedAt)
+    private $pendingEntries;
+
+    /**
+     * @param int      $bytes          bytes of every file of the cache
+     * @param int      $entries        cache entries, each with its siblings
+     * @param int      $scannedAt      Unix time of the scan
+     * @param int|null $pendingEntries the entries among them waiting for their variants (.pending/); null when not counted
+     */
+    public function __construct(int $bytes, int $entries, int $scannedAt, ?int $pendingEntries = null)
     {
         $this->bytes = max(0, $bytes);
         $this->entries = max(0, $entries);
         $this->scannedAt = max(0, $scannedAt);
+        $this->pendingEntries = $pendingEntries === null ? null : max(0, $pendingEntries);
     }
 
     /**
@@ -57,7 +64,9 @@ final class CacheUsage
             return null;
         }
 
-        return new self($data['bytes'], $data['entries'], $data['scanned_at']);
+        $pending = $data['pending_entries'] ?? null;
+
+        return new self($data['bytes'], $data['entries'], $data['scanned_at'], is_int($pending) ? $pending : null);
     }
 
     /**
@@ -65,7 +74,11 @@ final class CacheUsage
      */
     public function write(CacheStorage $storage, string $file): bool
     {
-        $json = json_encode(['bytes' => $this->bytes, 'entries' => $this->entries, 'scanned_at' => $this->scannedAt]);
+        $data = ['bytes' => $this->bytes, 'entries' => $this->entries, 'scanned_at' => $this->scannedAt];
+        if ($this->pendingEntries !== null) {
+            $data['pending_entries'] = $this->pendingEntries;
+        }
+        $json = json_encode($data);
 
         return is_string($json) && $storage->write($file, $json, 0600);
     }
@@ -83,5 +96,14 @@ final class CacheUsage
     public function getScannedAt(): int
     {
         return $this->scannedAt;
+    }
+
+    /**
+     * The entries waiting for their variants; null when the scan did not
+     * count them.
+     */
+    public function getPendingEntries(): ?int
+    {
+        return $this->pendingEntries;
     }
 }

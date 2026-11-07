@@ -107,7 +107,7 @@ final class CacheEvictCommand extends Command
         }
 
         if (!$dryRun) {
-            $usage = new CacheUsage($report->getRemainingBytes(), $report->getRemainingEntries(), time());
+            $usage = new CacheUsage($report->getRemainingBytes(), $report->getRemainingEntries(), time(), $report->getRemainingPendingEntries());
             if (!$usage->write(new FilesystemStorage(), $this->installation->getStateDirectory() . '/' . CacheUsage::FILE_NAME)) {
                 $output->writeln('<comment>The cache size could not be written to var/ for /metrics.</comment>');
             }

@@ -15,7 +15,12 @@ namespace Mfonte\ProxyCdn\Observability;
  * every miss fails. It never
  * contacts the origin, whose outage the circuit breaker already handles
  * (taking every instance out of a load balancer because the origin is
- * down would also stop the hits). The report names the checks by fixed
+ * down would also stop the hits). For the same reason the states of the
+ * image conversions do not count: an image waiting for its variants, a
+ * failed conversion or an open circuit breaker of the conversion API
+ * leave the original served, and Metrics reports them; the pending tier
+ * and the work directory of the conversions live in the cache directory
+ * and the conversion state in the state directory, which are checked. The report names the checks by fixed
  * words only: no path, no version, no configuration value.
  */
 final class HealthCheck
