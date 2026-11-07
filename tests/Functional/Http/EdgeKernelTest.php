@@ -304,6 +304,48 @@ final class EdgeKernelTest extends TestCase
     }
 
     /**
+     * The cache files of the edge and of the single box may be written on
+     * either side of the end of a second (a loaded machine): the answers
+     * still compare equal, their validators aside, which differ.
+     */
+    public function testTheComparisonOfTheAnswersIgnoresOnlyTheTimeOfTheFiles(): void
+    {
+        $config = TestConfig::create();
+        $singleOrigin = new FakeOriginFetcher();
+        $singleOrigin->serve(self::ORIGIN . '/js/app.js', 'console.log(1);', ['content-type' => 'text/javascript']);
+        $edge = EdgeKernelFactory::create(
+            $config,
+            $this->directory->path('edge/public'),
+            $this->directory->path('edge/var'),
+            $this->origin,
+            null,
+            $this->logger,
+            Metrics::fromConfig($config, $this->directory->path('edge/var'))
+        );
+        $single = ProxyKernelFactory::create($config, $this->directory->path('single/public'), $this->directory->path('single/var'), $singleOrigin, null, $this->logger);
+        $edge->handle(self::request('https://cdn.example.test/js/app.js'));
+        // The edge wrote its file in the previous second.
+        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->directory->path('edge/public'), \FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $file) {
+            if ($file instanceof \SplFileInfo && $file->isFile()) {
+                touch($file->getPathname(), time() - 1);
+            }
+        }
+        $single->handle(self::request('https://cdn.example.test/js/app.js'));
+        clearstatcache();
+
+        $edgeHit = $edge->handle(self::request('https://cdn.example.test/js/app.js'));
+        $singleHit = $single->handle(self::request('https://cdn.example.test/js/app.js'));
+
+        self::assertNotSame($singleHit->headers->get('ETag'), $edgeHit->headers->get('ETag'));
+        self::assertNotSame($singleHit->headers->get('Last-Modified'), $edgeHit->headers->get('Last-Modified'));
+        self::assertSame(self::comparable($singleHit), self::comparable($edgeHit));
+        self::assertSame(['"<mtime>-f"'], self::comparable($edgeHit)[2]['etag']);
+        $edgeHit->headers->set('ETag', '"1-10"');
+        self::assertNotSame(self::comparable($singleHit), self::comparable($edgeHit));
+    }
+
+    /**
      * An accepted purge reaches every peer once the response is sent
      * (terminate()); a refused purge and a purge that came from a peer are
      * not sent on, so purges cannot loop.
@@ -428,6 +470,17 @@ final class EdgeKernelTest extends TestCase
     {
         $headers = $response->headers->all();
         unset($headers['date'], $headers['x-request-id']);
+        // The validators of a cache file carry its time, which two stores
+        // written a moment apart do not share when a second ends between
+        // them: compare their form and the size, not the time.
+        $etag = $response->headers->get('ETag');
+        if (is_string($etag)) {
+            $headers['etag'] = [(string) preg_replace('/^"[0-9a-f]+-/', '"<mtime>-', $etag)];
+        }
+        $lastModified = $response->headers->get('Last-Modified');
+        if (is_string($lastModified)) {
+            $headers['last-modified'] = [\DateTime::createFromFormat('D, d M Y H:i:s \G\M\T', $lastModified) !== false ? '<mtime>' : $lastModified];
+        }
         ksort($headers);
         $body = self::body($response);
         // The Ray ID of an error without path is random.
