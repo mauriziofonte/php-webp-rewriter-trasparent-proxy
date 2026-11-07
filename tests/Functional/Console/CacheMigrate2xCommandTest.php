@@ -7,9 +7,14 @@ namespace Mfonte\ProxyCdn\Tests\Functional\Console;
 use Mfonte\ProxyCdn\Config\ConfigLoader;
 use Mfonte\ProxyCdn\Console\CacheMigrate2xCommand;
 use Mfonte\ProxyCdn\Console\Installation;
+use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
 use Mfonte\ProxyCdn\Tests\Fixtures\Filesystem\TemporaryDirectory;
+use Mfonte\ProxyCdn\Tests\Fixtures\Image\FakeImageConverter;
+use Mfonte\ProxyCdn\Tests\Fixtures\Log\MemoryLogger;
+use Mfonte\ProxyCdn\Tests\Fixtures\Origin\FakeOriginFetcher;
 use PHPUnit\Framework\Attributes\CoversClass;
 use Symfony\Component\Console\Tester\CommandTester;
+use Symfony\Component\HttpFoundation\Request;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
 
 /**
@@ -101,6 +106,104 @@ final class CacheMigrate2xCommandTest extends TestCase
         self::assertFileDoesNotExist($this->directory->path(self::HOST . '/css/site.css'));
         self::assertSame(['.htaccess', '_cache', 'index.php', 'robots.txt'], array_values(array_diff((array) scandir($this->directory->path('public')), ['.', '..'])));
         self::assertSame('new', file_get_contents($this->directory->path(self::HOST . '/js/app.js')));
+    }
+
+    /**
+     * With variants enabled, a raster entry moves to the pending tier of
+     * PRX-8, its X.webp staged as its WEBP variant, so that PHP makes its
+     * other variants and publishes it; it waits for them from now on.
+     * Other entries are published at once.
+     */
+    public function testWithVariantsARasterMovesToThePendingTier(): void
+    {
+        $this->directory->write('.env', self::ENV . "IMAGE_CONVERTER=\"local\"\nIMAGE_FORMATS=\"avif,webp\"\n");
+        touch($this->directory->path('public/images/hero.jpg'), 1000000);
+
+        list($exitCode, $display) = $this->migrate(['--force' => true]);
+
+        self::assertSame(0, $exitCode, $display);
+        self::assertSame('jpg', file_get_contents($this->directory->path(self::HOST . '/.pending/images/hero.jpg')));
+        self::assertSame('webp of jpg', file_get_contents($this->directory->path(self::HOST . '/.pending/.webp/images/hero.jpg.webp')));
+        self::assertFileDoesNotExist($this->directory->path(self::HOST . '/images/hero.jpg'));
+        self::assertFileDoesNotExist($this->directory->path(self::HOST . '/.webp/images/hero.jpg.webp'));
+        self::assertGreaterThan(time() - 60, (int) filemtime($this->directory->path(self::HOST . '/.pending/images/hero.jpg')));
+        self::assertSame('css', file_get_contents($this->directory->path(self::HOST . '/css/site.css')));
+    }
+
+    /**
+     * The first request PHP answers for a migrated raster serves it from
+     * the pending tier, without asking the origin, then makes its missing
+     * variants and publishes it with the staged WEBP one, as for a miss.
+     */
+    public function testAMigratedRasterIsPublishedByTheKernel(): void
+    {
+        $this->directory->write('.env', self::ENV . "IMAGE_CONVERTER=\"local\"\nIMAGE_FORMATS=\"avif,webp\"\n");
+        list($exitCode, $display) = $this->migrate(['--force' => true]);
+        self::assertSame(0, $exitCode, $display);
+        $installation = new Installation(new ConfigLoader($this->directory->path('.env'), null, static function (string $name): ?string {
+            return null;
+        }), $this->directory->path());
+        $origin = new FakeOriginFetcher();
+        $kernel = ProxyKernelFactory::create($installation->loadConfig(), $this->directory->path('public'), $this->directory->path('var'), $origin, new FakeImageConverter(), new MemoryLogger());
+
+        $response = $kernel->handle(Request::create('https://cdn.example.test/images/hero.jpg', 'GET', [], [], [], ['HTTP_ACCEPT' => 'image/webp,*/*']));
+        $kernel->terminate();
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame([], $origin->getRequestedUrls());
+        self::assertSame('jpg', file_get_contents($this->directory->path(self::HOST . '/images/hero.jpg')), 'published');
+        self::assertSame('webp of jpg', file_get_contents($this->directory->path(self::HOST . '/.webp/images/hero.jpg.webp')));
+        self::assertFileDoesNotExist($this->directory->path(self::HOST . '/.pending/images/hero.jpg'));
+    }
+
+    /**
+     * Without WEBP among the variants, the X.webp of a raster that moves
+     * to the pending tier is deleted: 3.x would never serve it.
+     */
+    public function testAnXWebpIsNotStagedWhenWebpIsNotMade(): void
+    {
+        $this->directory->write('.env', self::ENV . "IMAGE_CONVERTER=\"local\"\nIMAGE_FORMATS=\"avif\"\n");
+
+        list($exitCode, $display) = $this->migrate(['--force' => true]);
+
+        self::assertSame(0, $exitCode, $display);
+        self::assertFileExists($this->directory->path(self::HOST . '/.pending/images/hero.jpg'));
+        self::assertFileDoesNotExist($this->directory->path(self::HOST . '/.pending/.webp/images/hero.jpg.webp'));
+        self::assertFileDoesNotExist($this->directory->path('public/images/hero.webp'));
+    }
+
+    /**
+     * An entry 3.x holds pending, waiting for its variants, is held: the
+     * 2.x copy and its X.webp are deleted, never moved over it. Neither
+     * mode touches the pending tier, the staged variants or the work
+     * directory of the conversions, which live in public/_cache.
+     */
+    public function testThePendingTierOf3xIsLeftAlone(): void
+    {
+        $this->directory->write('.env', self::ENV . "IMAGE_CONVERTER=\"local\"\n");
+        $kept = [
+            self::HOST . '/.pending/images/hero.jpg' => '3.x pending',
+            self::HOST . '/.pending/.webp/images/hero.jpg.webp' => '3.x staged',
+            self::HOST . '/.pending/.avif/images/other.png.avif' => '3.x staged',
+            'public/_cache/.work/0123abcd/output' => 'in progress',
+        ];
+        foreach ($kept as $relative => $contents) {
+            $this->directory->write($relative, $contents);
+        }
+
+        list(, $dryRun) = $this->migrate([]);
+        list($exitCode, $display) = $this->migrate(['--force' => true]);
+
+        self::assertStringContainsString('delete: ' . $this->directory->path('public/images/hero.jpg') . "\n", $dryRun);
+        self::assertStringContainsString('delete: ' . $this->directory->path('public/images/hero.webp') . "\n", $dryRun);
+        self::assertSame(0, $exitCode, $display);
+        list($exitCode, $display) = $this->migrate(['--wipe' => true, '--force' => true]);
+        self::assertSame(0, $exitCode, $display);
+        foreach ($kept as $relative => $contents) {
+            self::assertSame($contents, file_get_contents($this->directory->path($relative)), $relative);
+            self::assertStringNotContainsString($this->directory->path($relative), $dryRun . $display);
+        }
+        self::assertFileDoesNotExist($this->directory->path(self::HOST . '/images/hero.jpg'));
     }
 
     /**

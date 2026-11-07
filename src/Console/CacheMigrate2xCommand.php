@@ -7,6 +7,7 @@ namespace Mfonte\ProxyCdn\Console;
 use Mfonte\ProxyCdn\Cache\CacheLocation;
 use Mfonte\ProxyCdn\Exception\InvalidConfigurationException;
 use Mfonte\ProxyCdn\Http\RequestId;
+use Mfonte\ProxyCdn\Image\FormatNegotiator;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Input\InputInterface;
@@ -28,14 +29,25 @@ use Symfony\Component\Console\Output\OutputInterface;
  * server serves it until it is purged, as 2.x did; an X.webp next to
  * exactly one moved raster X.jpg (jpeg, png, gif, bmp) becomes its WEBP
  * variant, any other one is deleted (3.x converts again). An entry 3.x
- * already holds is deleted, and a file that is no cache entry (a path
- * refused, an extension that is not cacheable) is left in place and
- * listed. Links are never followed or moved.
+ * already holds, published or pending, is deleted, and a file that is no
+ * cache entry (a path refused, an extension that is not cacheable) is
+ * left in place and listed. Links are never followed or moved.
+ *
+ * When IMAGE_CONVERTER makes variants, a raster entry is moved to the
+ * pending tier of PRX-8 instead (CacheLocation::getPendingFile(), as a
+ * miss stores it), with its X.webp staged as its WEBP variant when WEBP
+ * is enabled (deleted otherwise): the web server does not serve it yet,
+ * and the first request PHP answers makes its other variants and
+ * publishes it with them. Its time is the time of the migration, from
+ * which the entry waits for its variants (ProxyKernel::
+ * PENDING_HOLD_SECONDS).
  *
  * Without --force nothing changes: the plan is printed, every path it
  * would move or delete and every path it leaves. --wipe deletes the 2.x
  * cache instead of moving it (the documented alternative: 3.x fills its
- * cache again from the origin): what is taken as 2.x cache only, that
+ * cache again from the origin): what is taken as 2.x cache only, never a
+ * file of public/_cache, its pending tier and staged variants included,
+ * that
  * is _qs/, the markers of entries, .cached.env.php, the entries and
  * their X.webp. An entry is told by its name alone: any file with a
  * cacheable extension and a path the rules of live traffic accept
@@ -115,7 +127,8 @@ final class CacheMigrate2xCommand extends Command
             return 1;
         }
 
-        $plan = $this->plan(new ProxyUrls($config, $this->installation->getCacheDirectory()), $host, $wipe);
+        $staged = FormatNegotiator::fromConfig($config)->getEnabledFormats();
+        $plan = $this->plan(new ProxyUrls($config, $this->installation->getCacheDirectory()), $host, $wipe, $staged);
         $this->report($plan, $output, $force);
         if (!$force) {
             $output->writeln('Nothing changed. Run again with --force to apply.');
@@ -145,9 +158,11 @@ final class CacheMigrate2xCommand extends Command
      * variant (to the WEBP variant of a moved entry), delete, leave (with
      * the reason). With $wipe, what would move is deleted instead.
      *
+     * @param list<string> $staged the formats of the variants 3.x makes; a raster entry moves to the pending tier when there is one
+     *
      * @return array{move: array<string, string>, variant: array<string, string>, delete: list<string>, leave: array<string, string>}
      */
-    private function plan(ProxyUrls $proxyUrls, string $host, bool $wipe): array
+    private function plan(ProxyUrls $proxyUrls, string $host, bool $wipe, array $staged): array
     {
         $root = $this->installation->getRoot();
         $public = $this->installation->getPublicDirectory();
@@ -201,10 +216,10 @@ final class CacheMigrate2xCommand extends Command
                 continue;
             }
             $entries[$relative] = true;
-            if ($wipe || CacheTree::stat($target->getFile()) !== null) {
+            if ($wipe || self::isHeld($target)) {
                 $plan['delete'][] = $file;
             } else {
-                $plan['move'][$file] = $target->getFile();
+                $plan['move'][$file] = self::isStaged($relative, $staged) ? $target->getPendingFile() : $target->getFile();
             }
         }
         foreach ($webps as $relative) {
@@ -223,8 +238,13 @@ final class CacheMigrate2xCommand extends Command
                 }
             }
             $target = count($moved) === 1 ? self::target($proxyUrls, $host, $moved[0]) : null;
-            if ($target !== null) {
+            if ($target !== null && !self::isStaged($moved[0], $staged)) {
                 $plan['variant'][$file] = $target->getVariantFile(CacheLocation::FORMAT_WEBP);
+                continue;
+            }
+            if ($target !== null && in_array(CacheLocation::FORMAT_WEBP, $staged, true)) {
+                // Staged with its pending raster, published with it.
+                $plan['variant'][$file] = $target->getPendingVariantFile(CacheLocation::FORMAT_WEBP);
                 continue;
             }
             if ($rasters !== []) {
@@ -235,7 +255,7 @@ final class CacheMigrate2xCommand extends Command
             $own = self::target($proxyUrls, $host, $relative);
             if ($own === null) {
                 $plan['leave'][$file] = 'not a cache entry of 3.x';
-            } elseif ($wipe || CacheTree::stat($own->getFile()) !== null) {
+            } elseif ($wipe || self::isHeld($own)) {
                 $plan['delete'][] = $file;
             } else {
                 // An X.webp of the origin itself, with no entry raster next to it.
@@ -256,6 +276,26 @@ final class CacheMigrate2xCommand extends Command
         $located = $proxyUrls->locate('https://' . $host . $path);
 
         return is_string($located) ? null : $located[2];
+    }
+
+    /**
+     * Whether 3.x holds the entry of $location already: published, or
+     * pending (waiting for its variants).
+     */
+    private static function isHeld(CacheLocation $location): bool
+    {
+        return CacheTree::stat($location->getFile()) !== null || CacheTree::stat($location->getPendingFile()) !== null;
+    }
+
+    /**
+     * Whether the 2.x entry public/$relative moves to the pending tier: a
+     * raster image, when 3.x makes variants ($staged is not empty).
+     *
+     * @param list<string> $staged
+     */
+    private static function isStaged(string $relative, array $staged): bool
+    {
+        return $staged !== [] && in_array(strtolower(pathinfo($relative, PATHINFO_EXTENSION)), self::RASTER_EXTENSIONS, true);
     }
 
     /**
@@ -313,6 +353,9 @@ final class CacheMigrate2xCommand extends Command
                 $directory = dirname($target);
                 if ((!is_dir($directory) && !@mkdir($directory, 0755, true) && !is_dir($directory)) || !@rename($source, $target)) {
                     ++$failed;
+                } elseif (strpos($target, DIRECTORY_SEPARATOR . '.pending' . DIRECTORY_SEPARATOR) !== false) {
+                    // A pending entry waits for its variants from now.
+                    @touch($target);
                 }
             }
         }
