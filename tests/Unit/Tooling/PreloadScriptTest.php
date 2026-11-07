@@ -50,6 +50,13 @@ final class PreloadScriptTest extends TestCase
         $classes = json_decode($output, true);
         self::assertIsArray($classes, $output);
         foreach ([
+            'Mfonte\\ProxyCdn\\Http\\EdgeKernel',
+            'Mfonte\\ProxyCdn\\Http\\RequestId',
+            'Mfonte\\ProxyCdn\\Http\\MissRateLimit',
+            'Mfonte\\ProxyCdn\\Observability\\Metrics',
+            'Mfonte\\ProxyCdn\\Observability\\FileMetricsStore',
+            'Mfonte\\ProxyCdn\\Cache\\RequestCoalescer',
+            'Mfonte\\ProxyCdn\\Image\\ImageConverterFactory',
             'Mfonte\\ProxyCdn\\Http\\ProxyKernel',
             'Mfonte\\ProxyCdn\\Config\\ConfigLoader',
             'Mfonte\\ProxyCdn\\Origin\\CurlTransport',
@@ -61,6 +68,22 @@ final class PreloadScriptTest extends TestCase
             self::assertContains($class, $classes);
         }
         self::assertNotContains('Mfonte\\ProxyCdn\\Console\\CheckEnvCommand', $classes);
+        // Every class of src/ but the console commands: the classes of a
+        // request, whichever middleware and converter the configuration
+        // selects, and although no conversion library is loaded here.
+        $missing = [];
+        $source = (string) realpath(__DIR__ . '/../../../src');
+        $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($source, \FilesystemIterator::SKIP_DOTS));
+        foreach ($files as $file) {
+            if (!$file instanceof \SplFileInfo || $file->getExtension() !== 'php') {
+                continue;
+            }
+            $class = 'Mfonte\\ProxyCdn\\' . str_replace('/', '\\', substr($file->getPathname(), strlen($source) + 1, -4));
+            if (strpos($class, 'Mfonte\\ProxyCdn\\Console\\') !== 0 && !in_array($class, $classes, true)) {
+                $missing[] = $class;
+            }
+        }
+        self::assertSame([], $missing);
     }
 
     /**
