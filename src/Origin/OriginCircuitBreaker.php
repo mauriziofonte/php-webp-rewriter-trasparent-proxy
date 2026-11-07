@@ -11,7 +11,11 @@ namespace Mfonte\ProxyCdn\Origin;
  *
  * - Closed: fetches go through. Each failure that means the origin is
  *   unavailable is counted; a success, or a pause longer than the open
- *   time since the last failure, starts the count again.
+ *   time since the last failure, starts the count again. The requests of
+ *   one URL share a failure for the outcome window of RequestCoalescer,
+ *   so one URL counts one failure per window; ProxyKernelFactory keeps
+ *   the window within the open time, else one failing URL could never
+ *   open the breaker.
  * - Open: after CIRCUIT_BREAKER_THRESHOLD consecutive failures, fetches
  *   are refused for NETWORK_ERROR_TTL seconds, for every path of the
  *   origin.

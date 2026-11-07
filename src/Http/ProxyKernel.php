@@ -658,8 +658,9 @@ final class ProxyKernel
                 $this->storage->delete($file);
             }
         } elseif ($mayServeStale && (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429)) {
-            $this->circuitBreaker->recordFailure($breakerKey);
+            // The outcome first, then the breaker: see failure().
             $this->coalescer->recordFailure($web->getKey(), ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+            $this->circuitBreaker->recordFailure($breakerKey);
             $this->logger->warning('stale entry served, origin unavailable', ['path' => $path, 'reason' => $reason]);
 
             return $request === null ? null : $this->serve($request, $managed, $extension, ResponseFactory::CACHE_STALE, 0);
@@ -1075,9 +1076,15 @@ final class ProxyKernel
         $reason = $fetched->getFailureReason();
         $breakerKey = RedirectTarget::originOf($origin);
         if (in_array($reason, self::UNAVAILABLE, true) || $fetched->getStatus() === 429) {
+            // The outcome is recorded before the failure is counted: the
+            // next fetch of the entry comes once the outcome expired, so
+            // the breaker sees the failures of one URL at most the window
+            // apart, which ProxyKernelFactory keeps within
+            // NETWORK_ERROR_TTL (the pause that starts the count again).
+            $response = $this->sharedError($shared, $path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
             $this->circuitBreaker->recordFailure($breakerKey);
 
-            return $this->sharedError($shared, $path, ResponseFactory::ERROR_UPSTREAM_UNAVAILABLE);
+            return $response;
         }
         if ($fetched->getStatus() > 0 && $fetched->getTransportErrorCode() === 0) {
             $this->circuitBreaker->reset($breakerKey);

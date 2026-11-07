@@ -7,6 +7,7 @@ namespace Mfonte\ProxyCdn\Tests\Functional\Http;
 use Mfonte\ProxyCdn\Cache\FilesystemStorage;
 use Mfonte\ProxyCdn\Cache\RequestCoalescer;
 use Mfonte\ProxyCdn\Http\ProxyKernel;
+use Mfonte\ProxyCdn\Http\ProxyKernelFactory;
 use Mfonte\ProxyCdn\Origin\OriginFetcher;
 use Mfonte\ProxyCdn\Origin\OriginRequest;
 use Mfonte\ProxyCdn\Origin\OriginResponse;
@@ -494,6 +495,48 @@ final class ProxyKernelTest extends TestCase
 
         self::assertSame(12, $looks, 'three entries');
         self::assertCount(1, $this->origin->getRequests(), 'no fetch without the lock');
+    }
+
+    /**
+     * One URL that keeps failing opens the breaker also with a
+     * NETWORK_ERROR_TTL below RequestCoalescer::OUTCOME_WINDOW: its
+     * requests share each failure for the window, which
+     * ProxyKernelFactory keeps within NETWORK_ERROR_TTL, so its fetches
+     * are never further apart than the pause that starts the count again.
+     * A request comes every second; the times of the breaker and of the
+     * outcomes move back by one second between requests.
+     *
+     * @dataProvider provideShortNetworkErrorTtls
+     */
+    #[DataProvider('provideShortNetworkErrorTtls')]
+    public function testOneFailingUrlOpensTheBreakerWithAShortNetworkErrorTtl(int $ttl): void
+    {
+        $this->origin->respond(self::ORIGIN . '/js/app.js', OriginResponse::failure(OriginResponse::FAILURE_SERVER_ERROR, 500));
+        $config = TestConfig::create(['SOURCE_ORIGIN' => self::ORIGIN . '/', 'CIRCUIT_BREAKER_THRESHOLD' => '3', 'NETWORK_ERROR_TTL' => (string) $ttl]);
+        $kernel = TestKernel::create($config, $this->directory->path(), $this->origin, null, $this->logger);
+        self::assertSame($ttl, ProxyKernelFactory::outcomeWindow($config));
+
+        for ($second = 0; $second < 30; ++$second) {
+            self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+            if ($this->isBreakerOpen()) {
+                break;
+            }
+            $this->oneSecondPasses();
+        }
+
+        self::assertTrue($this->isBreakerOpen(), 'open after ' . count($this->origin->getRequests()) . ' fetches');
+        self::assertLessThan(30, $second);
+        $fetches = count($this->origin->getRequests());
+        self::assertSame(503, $kernel->handle(Request::create('https://cdn.example.test/js/app.js'))->getStatusCode());
+        self::assertCount($fetches, $this->origin->getRequests(), 'refused by the breaker');
+    }
+
+    /**
+     * @return array<string, array{int}>
+     */
+    public static function provideShortNetworkErrorTtls(): array
+    {
+        return ['1 second' => [1], '2 seconds' => [2], '4 seconds' => [4]];
     }
 
     public function testTheBreakerOpensAfterTheThreshold(): void
@@ -1005,11 +1048,13 @@ final class ProxyKernelTest extends TestCase
     /**
      * Moves the times kept by every breaker by $seconds, and ages the
      * outcomes the coalescer shares past their window (OUTCOME_WINDOW is
-     * shorter than any shift of the tests).
+     * shorter than any other shift of the tests) unless $outcomes is false.
      */
-    private function shiftBreakerTimes(int $seconds): void
+    private function shiftBreakerTimes(int $seconds, bool $outcomes = true): void
     {
-        $this->afterTheOutcomeWindow();
+        if ($outcomes) {
+            $this->afterTheOutcomeWindow();
+        }
         foreach (glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/breaker/*.breaker')) ?: [] as $file) {
             $state = json_decode((string) file_get_contents($file), true);
             self::assertIsArray($state);
@@ -1020,6 +1065,31 @@ final class ProxyKernelTest extends TestCase
             }
             file_put_contents($file, json_encode($state));
         }
+    }
+
+    /**
+     * As if a second had passed for the breaker and for the outcomes the
+     * coalescer shares.
+     */
+    private function oneSecondPasses(): void
+    {
+        foreach (glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/coalescing/*.outcome')) ?: [] as $file) {
+            touch($file, (int) filemtime($file) - 1);
+        }
+        clearstatcache();
+        $this->shiftBreakerTimes(-1, false);
+    }
+
+    private function isBreakerOpen(): bool
+    {
+        foreach (glob($this->directory->path(TestKernel::STATE_DIRECTORY . '/breaker/*.breaker')) ?: [] as $file) {
+            $state = json_decode((string) file_get_contents($file), true);
+            if (is_array($state) && ($state['opened_at'] ?? 0) !== 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

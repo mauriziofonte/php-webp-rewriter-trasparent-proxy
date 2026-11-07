@@ -56,7 +56,7 @@ final class ProxyKernelFactory
         $negativeCache = new NegativeCache($storage, $stateDirectory . '/negative', $config->getNegativeCacheTtl());
         $responses = ResponseFactory::fromConfig($config);
         $cacheDirectory = rtrim($publicDirectory, '/') . '/' . CacheKeyResolver::CACHE_DIRECTORY;
-        $coalescer = new RequestCoalescer(self::lock($stateDirectory . '/locks', $logger), $config->getUpstreamTimeout() + self::COALESCING_MARGIN, $logger, $storage, $stateDirectory . '/coalescing');
+        $coalescer = new RequestCoalescer(self::lock($stateDirectory . '/locks', $logger), $config->getUpstreamTimeout() + self::COALESCING_MARGIN, $logger, $storage, $stateDirectory . '/coalescing', self::outcomeWindow($config));
 
         return new ProxyKernel(
             $config,
@@ -77,6 +77,22 @@ final class ProxyKernelFactory
             $coalescer,
             $logger
         );
+    }
+
+    /**
+     * Seconds during which the coalescer shares an outcome:
+     * RequestCoalescer::OUTCOME_WINDOW, or NETWORK_ERROR_TTL when it is
+     * shorter. The requests of a URL that keeps failing fetch it once per
+     * window, so the circuit breaker counts one failure per window, and
+     * it starts the count again after a pause longer than
+     * NETWORK_ERROR_TTL: a longer window would keep one failing URL from
+     * ever opening it.
+     */
+    public static function outcomeWindow(Config $config): int
+    {
+        $ttl = $config->getNetworkErrorTtl();
+
+        return $ttl > 0 ? min(RequestCoalescer::OUTCOME_WINDOW, $ttl) : RequestCoalescer::OUTCOME_WINDOW;
     }
 
     /**
