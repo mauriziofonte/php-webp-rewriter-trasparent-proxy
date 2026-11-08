@@ -4,7 +4,9 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions are numbered major.minor.patch.
 
-## 3.0.0 - Unreleased
+## [Unreleased]
+
+The changes below make up the 3.0.0 release.
 
 A rewrite of the proxy. It changes the cache layout, the configuration and the purge mechanism: read [UPGRADING.md](UPGRADING.md) before upgrading from 2.x.
 
@@ -49,12 +51,9 @@ A rewrite of the proxy. It changes the cache layout, the configuration and the p
 - Stylesheets are stored and served as the origin sent them.
 - PHP 7.2.5 or later is required.
 
-### Deprecated
-
-- `IMAGE_CONVERSION_MODE`, `WEBP_API_SERVER` and `WEBP_API_KEY` are no longer read; `check-env` warns while they are set and explains how to move them to `IMAGE_CONVERTER`, `IMAGE_API_URL` and `IMAGE_API_KEY`.
-
 ### Removed
 
+- The 2.x configuration keys `IMAGE_CONVERSION_MODE`, `WEBP_API_SERVER` and `WEBP_API_KEY`, which are no longer read; `check-env` warns while they are set and explains how to move them to `IMAGE_CONVERTER`, `IMAGE_API_URL` and `IMAGE_API_KEY`.
 - The anonymous `?purge=1` and `?purge_all=1`, which now answer `401`.
 - The `301` redirect of raster URLs to `X.webp`; the `X.webp` URLs keep working through `LEGACY_WEBP_URLS`.
 - `bootstrap.php`, `helpers/functions.php` and `scripts/check-env.php`.
@@ -66,3 +65,5 @@ A rewrite of the proxy. It changes the cache layout, the configuration and the p
 - SVG responses carry a restrictive `Content-Security-Policy`, and every asset carries `X-Content-Type-Options: nosniff`.
 - The compiled configuration is written with mode `0600`.
 - Redirects to other hosts are followed only to public addresses, with the connection pinned to the checked address.
+
+[Unreleased]: https://github.com/mauriziofonte/php-webp-rewriter-trasparent-proxy/commits/HEAD
