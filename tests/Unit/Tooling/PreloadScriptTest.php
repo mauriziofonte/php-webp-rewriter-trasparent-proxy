@@ -47,7 +47,7 @@ final class PreloadScriptTest extends TestCase
 
         self::assertSame(0, $exitCode, $errors);
         self::assertSame('', self::withoutPolyfillRedeclarations($errors));
-        $classes = json_decode($output, true);
+        $classes = json_decode(self::withoutPolyfillRedeclarations($output), true);
         self::assertIsArray($classes, $output);
         foreach ([
             'Mfonte\\ProxyCdn\\Http\\EdgeKernel',
@@ -105,9 +105,9 @@ final class PreloadScriptTest extends TestCase
     /**
      * Removes the warnings OPcache 8.0 prints when it preloads a Symfony
      * polyfill bootstrap that declares a built-in class (ValueError and the
-     * like) behind a class_exists() check. Composer includes these files
-     * itself; PHP 8.1 and later do not warn about them. Any other warning is
-     * kept.
+     * like) behind a class_exists() check, on stderr and, where errors are
+     * displayed, on stdout. Composer includes these files itself; PHP 8.1
+     * and later do not warn about them. Any other warning is kept.
      */
     private static function withoutPolyfillRedeclarations(string $errors): string
     {
@@ -116,7 +116,7 @@ final class PreloadScriptTest extends TestCase
         }
 
         return (string) preg_replace(
-            '~^PHP Warning:  Can\'t preload already declared class [A-Za-z]+ in \S+/vendor/symfony/polyfill-[a-z0-9-]+/bootstrap\.php on line \d+\R~m',
+            '~^(?:PHP )?Warning: +Can\'t preload already declared class [A-Za-z]+ in \S+/vendor/symfony/polyfill-[a-z0-9-]+/bootstrap\.php on line \d+\R~m',
             '',
             $errors
         );
