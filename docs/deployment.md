@@ -40,7 +40,7 @@ sudo a2enmod rewrite headers setenvif env mime ssl proxy_fcgi
 Start from [`config/apache/proxy-cdn.conf`](../config/apache/proxy-cdn.conf) and adjust the values marked `# adjust`. It defines two virtual hosts:
 
 - **`*:443`** serves the proxy over TLS. It includes `public/.htaccess` once, at startup, with `AllowOverride None`; with `AllowOverride All` instead, Apache parses the file on every request, which about doubles the cost of a hit (see [Performance](performance.md)). `UseCanonicalName Off` (the default) keeps the cache directory named after the `Host` header. `ProxyTimeout 300` gives PHP longer than the coalescing timeout to answer.
-- **`*:80`** includes the same rules, which redirect plain HTTP to https. A load balancer that terminates TLS usually forwards to this port: list it there for `X-Forwarded-Proto` as well (see [Trusted proxies](#trusted-proxies-and-the-https-redirect)). The example `:80` host has no PHP handler of its own; when the misses reach it, give it the same `FilesMatch` handler and `ProxyTimeout` as the `:443` host, unless a server-wide PHP handler applies.
+- **`*:80`** includes the same rules, which redirect plain HTTP to https. A load balancer that terminates TLS usually forwards to this port: list it there for `X-Forwarded-Proto` as well (see [Trusted proxies](#trusted-proxies-and-the-https-redirect)). If a TLS-terminating proxy forwards to `:80` (`PROXYCDN_HTTPS` set there), give this host the same `FilesMatch` handler and `ProxyTimeout 300` as `:443`, unless a server-wide PHP handler applies.
 
 `public/.htaccess` holds the routing and the headers. It serves a hit when the cache file exists for the request's host, query string and negotiated variant or encoding, hands everything else to `index.php`, and denies:
 

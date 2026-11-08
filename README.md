@@ -81,7 +81,7 @@ The proxy state (negative cache, locks, circuit breakers, rate-limit buckets, me
 - **PHP 7.2.5 to 8.5**, with ext-filter, ext-hash and ext-json.
 - **ext-curl**, which `check-env` requires. It gives HTTP/2 and connection reuse to the origin, and is needed for the conversion API and for parallel warm-up and purge fan-out. Without it the proxy falls back to PHP streams, which need ext-openssl for https origins.
 - Optional: ext-zlib (gzip encodings, gzip origin bodies), ext-brotli (Brotli encodings), ext-posix (process isolation of local conversions), and for `IMAGE_CONVERTER=local` a conversion backend: the gd or imagick extension, or `cwebp`, `avifenc` or `vips` in `PATH`.
-- **Apache 2.4** with `mod_rewrite`, `mod_headers`, `mod_setenvif`, `mod_env`, `mod_mime` and `mod_proxy_fcgi` (or mod_php), or **nginx** (1.25.1 or later for the shipped `http2 on`), with PHP-FPM.
+- **Apache 2.4** with `mod_rewrite`, `mod_headers`, `mod_setenvif`, `mod_env`, `mod_mime`, `mod_ssl` and `mod_proxy_fcgi` (or mod_php), or **nginx** (1.25.1 or later for the shipped `http2 on`), with PHP-FPM.
 - Composer 2. The proxy is not published on Packagist: Composer resolves its image library, `mfonte/secure-image-converter`, from the GitHub repository declared in `composer.json`.
 
 ## Installation
@@ -178,7 +178,7 @@ IMAGE_API_URL = "https://images-api.example.com"
 IMAGE_API_KEY = "the key the API gave you"
 ```
 
-A conversion that fails never fails the request: the original is served, the failure is logged with its error code, and the variant is not tried again for a day (for `NETWORK_ERROR_TTL` seconds when the converter could not convert now). The request that stores a new image answers with the original and `Cache-Control: public, max-age=0, must-revalidate`; PHP serves the image from the pending tier until its variants are settled, and then the web server serves it and its variants. The variants are made after the response, each within `IMAGE_CONVERSION_TIMEOUT`. [Image variants and the pending tier](docs/caching.md#image-variants-and-the-pending-tier) gives the details.
+A conversion that fails never fails the request: the original is served, the failure is logged with its error code, and the variant is not tried again for a day when the image itself failed, for 300 seconds when the converter does not support the format, and for `NETWORK_ERROR_TTL` seconds when the converter could not convert now. The request that stores a new image answers with the original and `Cache-Control: public, max-age=0, must-revalidate`; PHP serves the image from the pending tier until its variants are settled, and then the web server serves it and its variants. The variants are made after the response, each within `IMAGE_CONVERSION_TIMEOUT`. [Image variants and the pending tier](docs/caching.md#image-variants-and-the-pending-tier) gives the details.
 
 ### Signed resize URLs
 
@@ -209,7 +209,7 @@ A resized image is stored at the path of its resize URL, where the web server se
 A purge is a `PURGE` request for the asset URL that proves a key of `PURGE_KEYS`. Each key is a `scope=secret` pair: the scope is the host name of an origin (the host of `SOURCE_ORIGIN`, or of an origin in `PROXY_HOSTS`) or `*` for every origin, and the secret has 16 or more printable ASCII characters without spaces or commas. Without keys, every purge is refused.
 
 ```dotenv
-PURGE_KEYS = "origin.example.com=0f6c2e7d9a1b4c58e3f2a7d6b9c0e1f2"
+PURGE_KEYS = "www.example.com=0f6c2e7d9a1b4c58e3f2a7d6b9c0e1f2"
 ```
 
 A request proves a key in one of two ways:
@@ -352,7 +352,7 @@ See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 - **Apache frames PHP responses itself.** Since Apache 2.4.59 (CVE-2024-24795), `mod_proxy_fcgi` does not trust the `Content-Length` PHP sends: responses that PHP serves through Apache may be chunked, and a `HEAD` answered by PHP has no `Content-Length`. Hits that Apache serves itself are not affected.
 - **HSTS on Apache** is sent only when the `HTTPS` variable is set, that is, on connections Apache terminates with TLS itself. Behind a TLS-terminating proxy, let that proxy send `Strict-Transport-Security`.
 - **A legacy `X.webp` 404 outlives a purge of its raster.** When neither `X.webp` nor a raster sibling existed, the `404` is remembered for `X.webp` itself. A later `PURGE` of `/X.png` does not forget it: `/X.webp` keeps answering `404` until `NEGATIVE_CACHE_TTL` expires, or until `/X.webp` is purged.
-- **Signatures can be reused.** A resize signature has no expiry: a published resize URL stays valid until `RESIZE_KEY` changes. A purge HMAC can be replayed within its 300-second window; a purge is idempotent, so a replay only repeats the same removal.
+- **Signatures do not expire.** A resize signature has no expiry: a published resize URL stays valid until `RESIZE_KEY` changes. A purge HMAC can be replayed within its 300-second window; a purge is idempotent, so a replay only repeats the same removal.
 - **Shared hosting of PHP-FPM.** The compiled configuration, the lock directories and OPcache preloading all assume that the proxy has a PHP-FPM pool and a user of its own. Running it in the pool of another application is not supported.
 - **Web-server hits are invisible to `/metrics`**; count them from the access log.
 - **Early Hints** need FrankenPHP; PHP-FPM and mod_php cannot send a `103`.
@@ -366,13 +366,13 @@ Measured with the repository's own suite (`tests/Performance/run.sh`, the option
 | Hit served by the web server | p50 / static file | at most 1.10 | 1.22 | 1.16 | 1.21 | 1.11 |
 | | requests per second / static file | at least 0.90 | 0.82 | 0.86 | 0.81 | 0.86 |
 | Hit served by PHP | server-side p50 | under 2 ms | 1.35 ms | 1.31 ms | 1.07 ms | 1.03 ms |
-| Cold miss | p50 minus origin delay | under 5 ms | 4.29 ms | 3.48 ms | 3.13 ms | 2.28 ms |
+| Cold miss | p50 minus origin p50 | under 5 ms | 4.29 ms | 3.48 ms | 3.13 ms | 2.28 ms |
 | Thundering herd (500 requests) | origin fetches | exactly 1 | 1 | 1 | 1 | 1 |
 
 - Web-server hits miss the 10% target: 1.11 to 1.22 times a static file at p50, and 0.81 to 0.86 times its requests per second. In absolute terms, the best p50 at 1000 requests per second was 0.304 ms against 0.251 ms for the static file on Apache, and 0.187 ms against 0.169 ms on nginx (PHP 8.5).
 - The cold-miss overhead varies by a few milliseconds between runs, and on Apache it is sometimes above 5 ms (up to 7.1 ms with PHP 7.2).
 - With `AllowOverride All` instead of including `public/.htaccess`, Apache hits measured 2.01 times a static file at p50: keep the `Include`.
-- The default `METRICS_STORE=file` does not change the latency a client sees, but it costs PHP-served hits at saturation: on nginx about 15% to 30% fewer per second across runs, on Apache 2% to 7%. `METRICS_STORE=off` removes that cost, without `/metrics`.
+- The default `METRICS_STORE=file` does not change the latency a client sees, but it costs PHP-served hits at saturation: on nginx the cost varied from about 15% to 30% fewer per second across four on/off runs (for example 2918 against 3713 with PHP 8.5), on Apache 2% to 7%. `METRICS_STORE=off` removes that cost, without `/metrics`.
 
 The CI gate runs the same suite on shared runners with wide margins, so it catches large regressions (about +50% at p50), not a 10% one. [docs/performance.md](docs/performance.md) gives the method, the p99 figures, the gate and the caveats.
 

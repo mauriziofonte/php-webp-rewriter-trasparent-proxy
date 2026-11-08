@@ -210,7 +210,7 @@ With `SENDFILE=x-accel-redirect`, nginx passes the `X-Request-Id` of PHP on (`pr
 | `404` for an asset that exists on the origin | The negative cache still remembers a `404`: wait `NEGATIVE_CACHE_TTL` seconds, or `PURGE` the URL. Or the extension is not in `CACHEABLE_EXTENSIONS`. |
 | `503` with `Retry-After` for every miss of an origin | Its circuit breaker is open: wait `NETWORK_ERROR_TTL` seconds for the probe, or delete `var/breaker/` once the origin is fixed. |
 | `503` after the upgrade, on an https origin | `UPSTREAM_VERIFY_TLS` is `true` by default since 3.0, and the origin certificate is self-signed or does not match. |
-| Images never served as AVIF or WEBP | The conversions fail: look for `image conversion failed, the original is served` in the log, with its `error_code` or `conversion_error_code`. A variant that failed for good is tried again after a day, or after a `PURGE`. |
+| Images never served as AVIF or WEBP | The conversions fail: look for `image conversion failed, the original is served` in the log, with its `error_code` or `conversion_error_code`. A variant that failed because of the image is tried again after a day, a format the converter does not support after 300 seconds, and either after a `PURGE`. |
 | A new build is served from the old entry | The build tool's version parameter is not in `QUERY_STRING_ALLOWLIST`, so it is dropped from the cache key. |
 | Redirect loop behind a load balancer | The TLS-terminating proxy is not trusted by the web server (see [Trusted proxies](deployment.md#trusted-proxies-and-the-https-redirect)), so its `X-Forwarded-Proto: https` is ignored. |
 | No HTTPS redirect at all | `mod_rewrite` is off, or `public/.htaccess` is not included in the virtual host. |

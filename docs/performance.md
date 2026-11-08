@@ -27,7 +27,7 @@ The suite needs Docker, and `vendor/` installed for the PHP version under test a
 
 1. **A hit served by the web server**, against the same file served as a plain static file by the same server: p50 and p99 at a fixed rate (1000 requests per second), and requests per second at saturation (16 clients), in alternating rounds.
 2. **A hit served by PHP**: server-side latency, from the PHP-FPM access log, at 200 requests per second.
-3. **A cold miss**, against a stand-in origin that answers after a fixed delay: total latency minus that delay, without image conversion.
+3. **A cold miss**, against a stand-in origin that answers after a fixed delay: the p50 of the misses minus the p50 of the same requests sent directly to the origin, without image conversion.
 4. **The thundering herd**: concurrent requests on one cold entry, whose origin answers after a second, must cause exactly one origin fetch.
 
 By default the middleware a production installation runs is on: the metrics store (`METRICS_STORE=file`, `METRICS_KEYS` set), the miss rate limit (set high enough never to refuse) and the request ID. `--middleware off` measures without the metrics store and the rate limit.
@@ -47,7 +47,7 @@ Run of `tests/Performance/run.sh` with the options of CI: 5 rounds of 10 seconds
 | | requests per second / static file | at least 0.90 | 0.82 | 0.86 | 0.81 | 0.86 |
 | Hit served by PHP | server-side p50 | under 2 ms | 1.35 ms | 1.31 ms | 1.07 ms | 1.03 ms |
 | | server-side p99 | under 10 ms | 2.80 ms | 2.37 ms | 2.12 ms | 2.43 ms |
-| Cold miss | p50 minus origin delay | under 5 ms | 4.29 ms | 3.48 ms | 3.13 ms | 2.28 ms |
+| Cold miss | p50 minus origin p50 | under 5 ms | 4.29 ms | 3.48 ms | 3.13 ms | 2.28 ms |
 | Thundering herd | origin fetches | exactly 1 | 1 | 1 | 1 | 1 |
 
 The ratios are those the suite gates on: the best value of each side over the rounds.
@@ -65,7 +65,7 @@ With `METRICS_STORE=file`, the default, each request PHP serves adds its counter
 
 - The latency a client sees does not change: 1.04 ms against 1.06 ms at p50 at 200 requests per second (nginx, PHP 8.5).
 - The PHP-FPM worker stays busy 0.32 to 0.43 ms longer per request. The server-side times of the table include it.
-- At saturation, PHP serves fewer hits per second. On nginx, where hits through PHP are the cheapest, the cost spread between about 15% and 30% across the suite's runs (2918 against 3713 hits per second, PHP 8.5, in the run of the table). On Apache it was 2% to 7%.
+- At saturation, PHP serves fewer hits per second. On nginx, where hits through PHP are the cheapest, the cost varied from about 15% to 30% across four on/off runs at saturation with PHP 8.5: the run of the table gave 2918 against 3713 hits per second (21% fewer), and three more back-to-back on/off pairs gave 16%, 24% and 31% fewer. On Apache it was 2% to 7%.
 
 `METRICS_STORE=off` removes this cost, together with the counters of `/metrics`. The hits the web server serves never reach PHP and are not affected either way.
 

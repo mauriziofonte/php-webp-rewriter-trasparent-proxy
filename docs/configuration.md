@@ -115,7 +115,7 @@ Run the proxy and every command that loads the configuration as the same user (t
 | `DEBUG` | `false` | boolean | Turns on `display_errors`, `E_ALL` and the `debug` log level. Keep it `false` in production: PHP warnings would become part of asset bodies. `check-env` warns while it is on. |
 | `LOG_FILE` | `logs/proxy.log` | absolute path, `stderr` or `error_log` | Where the JSON log lines go. `stderr` suits containers (PHP-FPM with `catch_workers_output`); `error_log` uses PHP's `error_log()`. |
 | `LOG_LEVEL` | `notice` (`debug` with `DEBUG=true`) | `debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency` | The least severe level written. |
-| `METRICS_KEYS` | not set | keys of 16 or more printable characters, or `sha256:` and the 64 hex digits of a key | The keys a scraper sends as `Authorization: Bearer <key>` on `GET /metrics`. Not set: `/metrics` is not served. They are separate from the purge keys. |
+| `METRICS_KEYS` | not set | keys of 16 or more printable ASCII characters without spaces or commas, or `sha256:` and the 64 hex digits of a key | The keys a scraper sends as `Authorization: Bearer <key>` on `GET /metrics`. Not set: `/metrics` is not served. They are separate from the purge keys. |
 | `METRICS_STORE` | `file` | `file` or `off` | `file` keeps the counters in `var/metrics/`, shared by every PHP process of the host. `off` counts nothing and saves its cost: see [Metrics store cost](performance.md#metrics-store-cost). |
 
 ## Miss rate limit and Early Hints
