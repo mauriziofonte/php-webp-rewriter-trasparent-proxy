@@ -73,6 +73,30 @@ final class ConversionFailuresTest extends TestCase
         self::assertFalse($this->failures->isFinal('/cache/.avif/a.png.avif'), 'an expired marker is no longer final');
     }
 
+    /**
+     * The two variants of one entry are each remembered, even when their
+     * hashes share the digits that name a slot ("079" for these two): one
+     * marker replacing the other would keep the entry from ever being
+     * settled.
+     */
+    public function testTheVariantsOfOneEntryNeverShareASlot(): void
+    {
+        $avif = '/cache/.avif/3150.png.avif';
+        $webp = '/cache/.webp/3150.png.webp';
+        self::assertSame(substr(hash('sha256', $avif), 0, 3), substr(hash('sha256', $webp), 0, 3), 'the hashes share their first digits');
+
+        $this->failures->remember($avif, 60, true);
+        $this->failures->remember($webp, 60, true);
+
+        self::assertTrue($this->failures->isFinal($avif));
+        self::assertTrue($this->failures->isFinal($webp));
+
+        $this->failures->forget($webp);
+
+        self::assertTrue($this->failures->isFinal($avif));
+        self::assertFalse($this->failures->isRemembered($webp));
+    }
+
     public function testAZeroTtlRemembersNothing(): void
     {
         $this->failures->remember('/cache/.webp/a.png.webp', 0);

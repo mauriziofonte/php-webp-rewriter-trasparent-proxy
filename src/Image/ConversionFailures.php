@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mfonte\ProxyCdn\Image;
 
+use Mfonte\ProxyCdn\Cache\CacheLocation;
 use Mfonte\ProxyCdn\Cache\CacheStorage;
 
 /**
@@ -14,12 +15,17 @@ use Mfonte\ProxyCdn\Cache\CacheStorage;
  * The markers live in a flat directory of the state directory, outside
  * public/, in a bounded number of slots, as NegativeCache keeps its
  * markers: the first SLOT_HEX_DIGITS hexadecimal digits of the SHA-256 of
- * the variant file name the slot, so at most 4096 marker files exist
- * whatever the clients ask. A slot holds the time the marker expires and
- * the full hash of its variant, and whether the failure is final (the
- * image or the converter will fail the same way whenever asked: see
- * isFinal()); two variants that share a slot replace each other's
- * marker, which only costs one more conversion attempt.
+ * the variant file name the slot, within the format of the variant, so
+ * at most 4096 marker files per format exist whatever the clients ask.
+ * A slot holds the time the marker expires and the full hash of its
+ * variant, and whether the failure is final (the image or the converter
+ * will fail the same way whenever asked: see isFinal()); two variants
+ * that share a slot replace each other's marker, which only costs one
+ * more conversion attempt. The variants of one entry never share one:
+ * an entry is settled (VariantConverter::isSettled()) once every one of
+ * them is made or failed for good, which two variants replacing each
+ * other's final marker would never let it be, keeping it pending for
+ * ProxyKernel::PENDING_HOLD_SECONDS and converting it again on every hit.
  *
  * A marker does not stop the conversion of a newly stored entry: the
  * origin may have sent another image (VariantConverter forgets it then).
@@ -119,8 +125,15 @@ final class ConversionFailures
         return [(int) $match[1], isset($match[3])];
     }
 
+    /**
+     * The slot of $variantFile: one of the slots of its format (the
+     * extension of a variant file, CacheLocation::getVariantFile()).
+     */
     private function slotOf(string $variantFile): string
     {
-        return $this->directory . '/' . substr(hash('sha256', $variantFile), 0, self::SLOT_HEX_DIGITS) . self::SLOT_SUFFIX;
+        $extension = pathinfo($variantFile, PATHINFO_EXTENSION);
+        $format = in_array($extension, CacheLocation::FORMATS, true) ? '.' . $extension : '';
+
+        return $this->directory . '/' . substr(hash('sha256', $variantFile), 0, self::SLOT_HEX_DIGITS) . $format . self::SLOT_SUFFIX;
     }
 }

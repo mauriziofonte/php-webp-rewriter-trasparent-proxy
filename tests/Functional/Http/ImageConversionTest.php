@@ -278,6 +278,35 @@ final class ImageConversionTest extends TestCase
         self::assertCount(1, $this->logger->recordsWithMessage('image entry published without all its variants'));
     }
 
+    /**
+     * An entry refused by the converter is published at once even when
+     * the hashes of its AVIF and WEBP variant files share the digits that
+     * name a slot of the failure markers (about one entry in 4096): the
+     * final marker of one variant does not replace that of the other.
+     */
+    public function testAnEntryIsSettledWhenItsVariantHashesShareASlotPrefix(): void
+    {
+        $path = null;
+        for ($i = 0; $path === null; ++$i) {
+            $avif = hash('sha256', $this->cachePath('.avif/images/broken-' . $i . '.png.avif'));
+            $webp = hash('sha256', $this->cachePath('.webp/images/broken-' . $i . '.png.webp'));
+            if (substr($avif, 0, 3) === substr($webp, 0, 3)) {
+                $path = 'images/broken-' . $i . '.png';
+            }
+        }
+        $this->origin->serve(self::ORIGIN . '/' . $path, 'broken PNG', ['content-type' => 'image/png']);
+
+        $this->respond(self::request('/' . $path, self::ACCEPT_ALL));
+
+        self::assertFileExists($this->cachePath($path), 'settled by final failures');
+        self::assertFileDoesNotExist($this->cachePath('.pending/' . $path));
+        self::assertCount(0, $this->logger->recordsWithMessage('image entry published without all its variants'));
+
+        $this->respond(self::request('/' . $path, self::ACCEPT_ALL));
+
+        self::assertSame(['avif', 'webp'], $this->converter->getFormats(), 'neither refusal is tried again');
+    }
+
     public function testABucketHitIsConvertedOnce(): void
     {
         $this->origin->serve(self::ORIGIN . '/images/logo.png?v=2', 'PNG-V2', ['content-type' => 'image/png']);
