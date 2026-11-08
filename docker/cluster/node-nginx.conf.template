@@ -1,0 +1,27 @@
+# One node: the official configuration of config/nginx/, with the values it
+# leaves to the including file. ${NODE_NAME} is filled in by the nginx image.
+
+include /etc/nginx/proxy-cdn/proxy-cdn-maps.conf;
+
+# The load balancer: its X-Forwarded-Proto is believed (TRUSTED_PROXIES).
+geo $proxycdn_trusted_proxy {
+    default 0;
+    172.30.99.10 1;
+}
+
+upstream proxycdn_php {
+    server ${NODE_NAME}-php:9000;
+}
+
+server {
+    # From the load balancer.
+    listen 80 default_server;
+    # From the peers: the PURGE fan-out, over TLS (CLUSTER_PEERS).
+    listen 8443 ssl default_server;
+    ssl_certificate     /etc/proxy-cdn/tls/${NODE_NAME}.pem;
+    ssl_certificate_key /etc/proxy-cdn/tls/${NODE_NAME}.key;
+    server_name _;
+    root /app/public;
+
+    include /etc/nginx/proxy-cdn/proxy-cdn-locations.conf;
+}

@@ -1,0 +1,17 @@
+<?php
+
+/*
+ * The PHP 8.5 function that CurlTransport calls behind function_exists(),
+ * declared for the PHP 7.2 run (phpstan.neon.dist) only: PHPStan does not
+ * know it there. phpstan-php85.neon.dist leaves this file out, so that the
+ * real signature applies.
+ */
+
+/**
+ * @param list<int> $share_options
+ *
+ * @return CurlShareHandleOrResource
+ */
+function curl_share_init_persistent(array $share_options)
+{
+}

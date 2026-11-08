@@ -1,0 +1,355 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  # Nightly as well: with no lock file, a new release of a dependency can
+  # break the matrix or the latency suite without any push.
+  schedule:
+    - cron: '23 3 * * *'
+
+# The event is part of the group: a push to the default branch and the
+# nightly run of the same ref do not cancel each other.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  COMPOSER_NO_INTERACTION: '1'
+
+# Dependencies are resolved by each job for its own PHP version: no lock file
+# is committed. setup-php hands the job token to Composer, so VCS repositories
+# hosted on GitHub resolve without hitting the anonymous API rate limit.
+
+jobs:
+  validate:
+    name: Composer validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+          tools: composer:v2
+
+      # The manifests of the development tools are held to the same standard
+      # as the root one.
+      - name: Validate the Composer manifests
+        run: |
+          composer validate --strict
+          for tool in tools/*/; do
+            composer validate --strict "${tool}composer.json"
+          done
+
+  tests:
+    name: Tests (PHP ${{ matrix.php }}, ${{ matrix.deps }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']
+        deps: [lowest, highest]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The development php.ini reports every error and enables assertions.
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          ini-file: development
+          tools: composer:v2
+
+      # PHPStan's PHP 7.2 run does not report every construct that older PHP
+      # versions reject (typed properties, trailing commas in calls), so each
+      # job first lints the code with its own PHP.
+      - name: Lint PHP files
+        run: |
+          count=0
+          status=0
+          while IFS= read -r -d '' file; do
+            count=$((count + 1))
+            output="$(php -l "$file" 2>&1)" || { printf '%s\n' "$output"; status=1; }
+          done < <(find src tests bin public config/php tools/require-tool.php -type f \( -name '*.php' -o -path 'bin/*' \) -print0 | sort -z)
+          echo "Linted $count PHP files with PHP $(php -r 'echo PHP_VERSION;')"
+          exit "$status"
+
+      # Lowest versions of the runtime dependencies; test tooling (PHPUnit and
+      # the polyfills) always takes the highest version for the running PHP.
+      # Composer 2.9+ would silently skip a floor that has an advisory and
+      # resolve the next release instead, so security blocking is turned off
+      # here (COMPOSER_NO_SECURITY_BLOCKING is its name before Composer 2.10)
+      # and the audit below fails when a floor needs raising.
+      - name: Install dependencies (lowest)
+        if: matrix.deps == 'lowest'
+        env:
+          COMPOSER_NO_BLOCKING: '1'
+          COMPOSER_NO_SECURITY_BLOCKING: '1'
+        run: |
+          composer update --prefer-lowest --prefer-stable --no-progress
+          composer update phpunit/phpunit yoast/phpunit-polyfills --with-all-dependencies --no-progress
+
+      - name: Audit dependencies (lowest)
+        if: matrix.deps == 'lowest'
+        run: composer audit
+
+      - name: Install dependencies (highest)
+        if: matrix.deps == 'highest'
+        run: composer update --no-progress
+
+      - name: Show installed packages
+        run: composer show
+
+      - name: Run the test suite
+        run: composer test
+
+  static:
+    name: Static analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+          tools: composer:v2
+
+      - name: Install dependencies (highest)
+        run: composer update --no-progress
+
+      # Any advisory on the resolved dependencies, or an abandoned package,
+      # fails the job. The runtime floors in composer.json are chosen so that
+      # a lowest install is advisory-free as well (see the tests job).
+      - name: Audit dependencies
+        run: composer audit
+
+      - name: Install development tools
+        run: |
+          for tool in tools/*/; do
+            composer install --working-dir="$tool" --no-progress
+          done
+
+      - name: Coding style (php-cs-fixer)
+        run: composer cs:check
+
+      - name: PHPStan (as PHP 7.2.5 and as PHP 8.5)
+        run: composer analyse
+
+      - name: Taint analysis (Psalm)
+        run: composer taint
+
+  integration:
+    name: Integration (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.2', '8.1', '8.5']
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+
+      # The harness mounts vendor/ into the PHP-FPM containers, so it is
+      # resolved here for the PHP version under test, with the authoritative
+      # class map of production installs.
+      - name: Install dependencies (highest, no dev, authoritative class map)
+        run: composer update --no-dev --classmap-authoritative --no-progress
+
+      - name: Smoke test on Apache and nginx with PHP-FPM
+        env:
+          HARNESS_PHP: ${{ matrix.php }}
+          HARNESS_WORKDIR: ${{ runner.temp }}/harness
+        run: tests/Integration/docker/run.sh --php "$HARNESS_PHP"
+
+      - name: Upload the harness logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: integration-logs-php-${{ matrix.php }}
+          path: |
+            ${{ runner.temp }}/harness/compose.log
+            ${{ runner.temp }}/harness/*/logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  laravel:
+    name: Laravel 13 (PHP 8.4)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+          tools: composer:v2
+
+      # A fresh Laravel 13 application requires this checkout through a path
+      # repository and mounts ProxyKernel::handle() on a catch-all route; the
+      # script then fetches an asset of a fake origin through it. The install
+      # step is also the check that the proxy resolves next to Laravel 13.
+      - name: Mount the kernel in a Laravel 13 route
+        env:
+          LARAVEL_CONSTRAINT: ^13.0
+          LARAVEL_WORKDIR: ${{ runner.temp }}/laravel
+        run: tests/Integration/laravel/run.sh
+
+      - name: Upload the Laravel logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: laravel-logs
+          path: |
+            ${{ runner.temp }}/laravel/*.log
+            ${{ runner.temp }}/laravel/app/storage/logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # PRX-8: the proxy against the real conversion API v2 (its hardened image
+  # behind nginx, over TLS). The API is checked out at a pinned commit;
+  # at the release gate the pin moves to the API's v2.0.0 tag.
+  contract:
+    name: Contract with the conversion API (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.2', '8.5']
+    env:
+      CONVERSION_API_REPOSITORY: mauriziofonte/php-image-to-webp-conversion-api
+      CONVERSION_API_REF: 97571a0060132bdf706df6991e14e24af28e0399
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the conversion API
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.CONVERSION_API_REPOSITORY }}
+          ref: ${{ env.CONVERSION_API_REF }}
+          path: conversion-api
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+
+      # PHPUnit runs in a php:<version>-cli container with this vendor/.
+      - name: Install dependencies (highest)
+        run: composer update --no-progress
+
+      # The API image is built from its docker/Dockerfile; the job token
+      # reaches Composer in the build as a BuildKit secret only.
+      - name: Contract tests against the API behind nginx
+        env:
+          CONTRACT_PHP: ${{ matrix.php }}
+          CONTRACT_WORKDIR: ${{ runner.temp }}/contract
+          COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ github.token }}"}}'
+        run: tests/Contract/run.sh --api conversion-api --php "$CONTRACT_PHP"
+
+      - name: Upload the contract logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: contract-logs-php-${{ matrix.php }}
+          path: |
+            ${{ runner.temp }}/contract/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Latency suite of plan section 10 (tests/Performance/run.sh): hits served
+  # by Apache and nginx against static files of the same server, hits served
+  # by PHP, cold misses against an origin with a fixed latency, and the
+  # thundering herd, on the lowest and the highest PHP. Runners are noisy, so
+  # the gate compares each hit with the static file measured in the same
+  # job, best value of each side over 5 rounds. The margins are far above
+  # the 10% target, set between the runs of the current rules and two known
+  # regressions (Apache reading .htaccess on every request, nginx without
+  # keep-alive): the gate catches about +50% p50, -45% requests per second
+  # or 3x p99, not 10% (see the README).
+  # The absolute targets are reported in the job summary.
+  performance:
+    name: Performance (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.2', '8.5']
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+
+      # As in production: no development dependencies, and an authoritative
+      # class map (the suite records which autoloader it measured).
+      - name: Install dependencies (highest, no dev, authoritative class map)
+        run: composer update --no-dev --classmap-authoritative --no-progress
+
+      - name: Latency suite and regression gate
+        env:
+          BENCH_PHP: ${{ matrix.php }}
+          BENCH_RESULTS: ${{ runner.temp }}/performance
+          HARNESS_WORKDIR: ${{ runner.temp }}/harness
+        run: >-
+          tests/Performance/run.sh --php "$BENCH_PHP" --results "$BENCH_RESULTS"
+          --rounds 5 --max-ratio 1.50 --max-p99-ratio 3.00 --min-rps-ratio 0.55
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: performance-php-${{ matrix.php }}
+          path: ${{ runner.temp }}/performance/
+          if-no-files-found: ignore
+          retention-days: 30

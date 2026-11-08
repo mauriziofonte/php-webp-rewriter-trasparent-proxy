@@ -1,22 +1,31 @@
-# Ignore everything, including sub-directories...
-*
-!*/
-
-# ...but keep these specific files (rooted paths so the whitelist does not
-# match homonymous files under vendor/, e.g. vendor/*/composer.json).
-!/.gitignore
-!/.env.example
-!/LICENSE
-!/README.md
-!/bootstrap.php
-!/composer.json
-!/public/.htaccess
-!/public/index.php
-!/helpers/functions.php
-!/scripts/check-env.php
-
-# Re-ignore vendor (it gets re-created by composer install).
+# Composer: no lock file is committed (one lock cannot serve PHP 7.2 and 8.5)
 /vendor/
+/tools/*/vendor/
+composer.lock
 
-# Runtime artifact: the rendered config cache. Never commit it.
+# Tool caches
+/.phpunit.cache/
+/.phpunit.result.cache
+/.php-cs-fixer.cache
+
+# Runtime configuration: .env holds deployment secrets, .config.cache.php is
+# the compiled configuration (.cached.env.php is the one of 2.x).
+/.env
+/.config.cache.php
 /.cached.env.php
+
+# Runtime logs, and the state of the proxy (negative cache)
+/logs/
+/var/
+
+# Temporary files of FilesystemStorage::write(), left behind when a write is
+# interrupted between tempnam() and rename(), for example next to
+# .config.cache.php in the project root.
+.mftpcdn.*
+
+# Cache entries: the proxy stores fetched assets inside public/ so that the
+# web server can serve hits directly. Only the front controller and the
+# server configuration are part of the repository.
+/public/*
+!/public/index.php
+!/public/.htaccess
