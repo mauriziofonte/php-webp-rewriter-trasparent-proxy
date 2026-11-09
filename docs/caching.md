@@ -72,7 +72,7 @@ The proxy state lives in `var/` of the project, outside the document root:
 | `var/converter-cache/` | What the conversion library detected (isolation level, backend capabilities); needs ext-posix. |
 | `var/convert/` | The private directories of the conversion processes. |
 | `var/conversion-api/` | The capabilities of the conversion API and its circuit breaker. |
-| `var/conversion-failures/` | The markers of failed conversions. |
+| `var/conversion-failures/` | The markers of failed conversions, `<3 hex digits>.<format>.failed`. Files named `<3 hex digits>.failed`, without the format, were written by pre-release builds of 3.0: they are no longer read and can be deleted. |
 | `var/cache-usage.json` | The size measured by the last `cache:evict`. |
 
 None of these needs cleaning: their number of files is bounded by design. The lock, metrics and rate-limit directories must not be writable by other users; the conversion library refuses them otherwise, and `check-env` reports it.
@@ -147,7 +147,7 @@ Every output is verified (format, dimensions, frame count) before it is moved in
 
 A `404` or `410` of the origin is remembered in `var/negative/` for `NEGATIVE_CACHE_TTL` seconds and answered without asking the origin again. The markers live in one flat directory of at most 4096 slot files, named after the first three hex digits of the SHA-256 of the entry, so a flood of random paths creates no file below `public/`. Two entries that share a slot replace each other's marker, which costs one more origin request.
 
-A successful fetch forgets the marker of its entry, and so does a purge of the entry.
+A successful fetch forgets the marker of its entry, and so does a purge of the entry. A purge of a URL without query string forgets the markers of its query-string entries only for the query strings that have a bucket directory in the cache of the host: the `404` of `/a.png?v=2`, when no entry was ever stored with `v=2`, is answered until `NEGATIVE_CACHE_TTL` expires, or until `/a.png?v=2` itself is purged.
 
 ## Circuit breaker
 
@@ -170,7 +170,7 @@ The guarantee holds when the leader stores nothing, too:
 - When the origin forbids storing the response (`no-store`, `private`), the requests of that URL fetch in parallel for the window: each needs its own response.
 - A purge, or a stored response, forgets the outcome.
 
-A waiter gives up after the coalescing timeout and answers `503`. The timeout is `UPSTREAM_TIMEOUT` plus 30 seconds (60 seconds with the defaults), plus, when resize URLs and a converter are configured, the time a resize may take before the answer: one `IMAGE_CONVERSION_TIMEOUT`, and for `remote` twice the connect timeout and 30 seconds of discovery, and one more `IMAGE_CONVERSION_TIMEOUT` with `IMAGE_API_FALLBACK` (210 seconds with the defaults). The web server must give PHP longer than that to answer: the configurations in `config/` set 300 seconds (nginx `fastcgi_read_timeout`, Apache `ProxyTimeout`; both default to 60 seconds).
+A waiter gives up after the coalescing timeout and answers `503`. A waiter that finds the entry and the outcome gone when it looks (purged, or expired, in between) waits again, at most three times, and then for the lock: in that worst case it waits up to four times the coalescing timeout. The timeout is `UPSTREAM_TIMEOUT` plus 30 seconds (60 seconds with the defaults), plus, when resize URLs and a converter are configured, the time a resize may take before the answer: one `IMAGE_CONVERSION_TIMEOUT`, and for `remote` twice the connect timeout and 30 seconds of discovery, and one more `IMAGE_CONVERSION_TIMEOUT` with `IMAGE_API_FALLBACK` (210 seconds with the defaults). The web server must give PHP longer than that to answer: the configurations in `config/` set 300 seconds (nginx `fastcgi_read_timeout`, Apache `ProxyTimeout`; both default to 60 seconds).
 
 The lock is a file of `var/locks/`, which must not be writable by other users. If the lock directory cannot be used safely, the proxy logs a warning and every request fetches by itself.
 

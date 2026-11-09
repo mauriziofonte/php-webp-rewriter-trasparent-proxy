@@ -351,7 +351,7 @@ See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 - **Legacy `X.webp` URLs go through PHP.** With `LEGACY_WEBP_URLS=true` (the default), the `X.webp` URLs that 2.x redirected clients to are answered with the WEBP variant of `X.jpg`, `X.png` and so on. The web server cannot make that mapping, so PHP answers these URLs on every request, hits included. Turn the key off once no client asks for them.
 - **Apache frames PHP responses itself.** Since Apache 2.4.59 (CVE-2024-24795), `mod_proxy_fcgi` does not trust the `Content-Length` PHP sends: responses that PHP serves through Apache may be chunked, and a `HEAD` answered by PHP has no `Content-Length`. Hits that Apache serves itself are not affected.
 - **HSTS on Apache** is sent only when the `HTTPS` variable is set, that is, on connections Apache terminates with TLS itself. Behind a TLS-terminating proxy, let that proxy send `Strict-Transport-Security`.
-- **A legacy `X.webp` 404 outlives a purge of its raster.** When neither `X.webp` nor a raster sibling existed, the `404` is remembered for `X.webp` itself. A later `PURGE` of `/X.png` does not forget it: `/X.webp` keeps answering `404` until `NEGATIVE_CACHE_TTL` expires, or until `/X.webp` is purged.
+- **A legacy `X.webp` 404 outlives a purge of its raster.** When neither `X.webp` nor a raster sibling existed, the `404` is remembered for `X.webp` itself. A later `PURGE` of `/X.png` does not forget it: `/X.webp` keeps answering `404` until `NEGATIVE_CACHE_TTL` expires, or until `/X.webp` is purged. Likewise, a purge of `/a.png` forgets the `404` of `/a.png?v=2` only when some entry of the host was stored with that query string.
 - **Signatures do not expire.** A resize signature has no expiry: a published resize URL stays valid until `RESIZE_KEY` changes. A purge HMAC can be replayed within its 300-second window; a purge is idempotent, so a replay only repeats the same removal.
 - **Shared hosting of PHP-FPM.** The compiled configuration, the lock directories and OPcache preloading all assume that the proxy has a PHP-FPM pool and a user of its own. Running it in the pool of another application is not supported.
 - **Web-server hits are invisible to `/metrics`**; count them from the access log.
@@ -370,7 +370,7 @@ Measured with the repository's own suite (`tests/Performance/run.sh`, the option
 | Thundering herd (500 requests) | origin fetches | exactly 1 | 1 | 1 | 1 | 1 |
 
 - Web-server hits miss the 10% target: 1.11 to 1.22 times a static file at p50, and 0.81 to 0.86 times its requests per second. In absolute terms, the best p50 at 1000 requests per second was 0.304 ms against 0.251 ms for the static file on Apache, and 0.187 ms against 0.169 ms on nginx (PHP 8.5).
-- The cold-miss overhead varies by a few milliseconds between runs, and on Apache it is sometimes above 5 ms (up to 7.1 ms with PHP 7.2).
+- The cold-miss overhead varies by a few milliseconds between runs, and on Apache it missed the 5 ms target in 4 of 8 runs (5.3 to 7.1 ms).
 - With `AllowOverride All` instead of including `public/.htaccess`, Apache hits measured 2.01 times a static file at p50: keep the `Include`.
 - The default `METRICS_STORE=file` does not change the latency a client sees, but it costs PHP-served hits at saturation: on nginx the cost varied from about 15% to 30% fewer per second across four on/off runs (for example 2918 against 3713 with PHP 8.5), on Apache 2% to 7%. `METRICS_STORE=off` removes that cost, without `/metrics`.
 

@@ -55,7 +55,7 @@ The ratios are those the suite gates on: the best value of each side over the ro
 ## Targets that are not met
 
 - **Web-server hits against a static file.** The target is a hit within 10% of a static file of the same server. Measured, a hit is 1.11 to 1.22 times the static file at p50 and reaches 0.81 to 0.86 times its requests per second; at p99 it is 1.08 to 1.27 times, within the target on PHP 8.5 only. In absolute terms the gap is small: at 1000 requests per second, the best p50 of a hit was 0.304 ms against 0.251 ms for the static file (Apache, PHP 8.5) and 0.187 ms against 0.169 ms (nginx, PHP 8.5). The difference is the rewrite rules and the negotiation lookups that run before the file is served.
-- **Cold miss on Apache.** The overhead of a cold miss moves by a few milliseconds from one run to the next, and on Apache it is sometimes above the 5 ms target: up to 7.1 ms with PHP 7.2.
+- **Cold miss on Apache.** The overhead of a cold miss moves by a few milliseconds from one run to the next, and on Apache it missed the 5 ms target in 4 of 8 runs, at 5.3 to 7.1 ms.
 
 The PHP-hit targets and the herd guarantee were met on every stack.
 

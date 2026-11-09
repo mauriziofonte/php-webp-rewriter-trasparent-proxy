@@ -30,7 +30,7 @@
 - **PHP 7.2.5 or later** (up to 8.5), because of the minimum versions of the Symfony components.
 - **New Composer dependencies**: `symfony/console`, `psr/log` and `mfonte/secure-image-converter`, which Composer resolves from its GitHub repository (declared in `composer.json`). Run `composer install` again.
 - **A missing `vendor/`** is no longer answered with a plain-text message. `public/index.php` requires the Composer autoloader, so without it every request ends in a PHP fatal error, which PHP-FPM reports as `500`.
-- **ext-curl** is still what `check-env` requires, and its absence is reported as an error there. At runtime, 2.x refused every request without it; 3.0 fetches from the origin with PHP streams instead (ext-openssl for https origins), while the conversion API client and the parallel warm-up and purge fan-out need ext-curl.
+- **ext-curl** is still what `check-env` requires, and its absence is reported as an error there. At runtime, 2.x answered every request with a plain-text message without it; 3.0 fetches from the origin with PHP streams instead (ext-openssl for https origins), while the conversion API client and the parallel warm-up and purge fan-out need ext-curl.
 
 ## Configuration
 
@@ -39,7 +39,8 @@
 **Validation.** Every value is validated before a request is answered. An invalid configuration answers every request with `503` and the error code `ENV_FILE_LOAD_ERR` (2.x answered `404`). Some values that 2.x accepted are now errors, for example:
 
 - `TIMEZONE` must be a valid time zone identifier. 2.x passed any value to `date_default_timezone_set()`, which fell back to UTC with a warning; an unknown identifier is now a configuration error.
-- Integers must be in range (`UPSTREAM_TIMEOUT` from 1 to 300, for example), booleans must be `true`, `false`, `1` or `0`, and `SOURCE_ORIGIN` must be an `http://` or `https://` URL.
+- `DEBUG=TRUE` (or any other case of `true`) now turns debug on; 2.x matched `true` and `1` exactly and left it off. Check `DEBUG` before you upgrade.
+- Integers must be in range (`UPSTREAM_TIMEOUT` from 1 to 300, for example), booleans must be `true`, `false`, `1` or `0` in any case, and `SOURCE_ORIGIN` must be an `http://` or `https://` URL.
 
 **The compiled configuration** is `.config.cache.php` (mode `0600`), recompiled automatically when `.env` or the environment changes. The 2.x file `.cached.env.php` is never read: delete it, since it holds the 2.x configuration in clear.
 
@@ -73,7 +74,7 @@ The new keys are listed in [docs/configuration.md](docs/configuration.md).
 
 Replace the 2.x `public/.htaccess` with the one of 3.0, and include it in the virtual host as [`config/apache/proxy-cdn.conf`](config/apache/proxy-cdn.conf) does, in both the `:443` and the `:80` virtual hosts. nginx is now supported with [`config/nginx/`](config/nginx/). Both serve every hit without PHP, including the entries of canonical query strings, the variants and the encodings.
 
-**HTTPS redirect.** 2.x believed `X-Forwarded-Proto: https` from any client. 3.0 believes it only from the addresses you list: `PROXYCDN_HTTPS` in both Apache virtual hosts, the `geo` block in nginx, and `TRUSTED_PROXIES` for PHP. Behind a TLS-terminating load balancer, list it, or the redirect loops (see [Trusted proxies](docs/deployment.md#trusted-proxies-and-the-https-redirect)).
+**HTTPS redirect.** 2.x believed `X-Forwarded-Proto: https` from any client. 3.0 believes it only from the addresses you list: `PROXYCDN_HTTPS` in both Apache virtual hosts, the `geo` block in nginx, and `TRUSTED_PROXIES` for PHP. Behind a TLS-terminating load balancer, list it, or the redirect loops (see [Trusted proxies](docs/deployment.md#trusted-proxies-and-the-https-redirect)). Only the hosts of `PROXY_HOSTS` are redirected, and the web server must list them too: `PROXYCDN_HOST` in the Apache `:80` virtual host, the `$proxycdn_known_host` map in nginx. 2.x redirected any `Host`.
 
 **New deny rules.** Both configurations now refuse:
 

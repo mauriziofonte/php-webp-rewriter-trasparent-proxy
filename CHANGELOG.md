@@ -27,7 +27,7 @@ A rewrite of the proxy. It changes the cache layout, the configuration and the p
 - `SENDFILE` (`x-accel-redirect`, `x-sendfile`), `UPSTREAM_MAX_SIZE` and `UPSTREAM_USER_AGENT`.
 - Range requests, conditional requests and streaming of origin bodies to disk.
 - `bin/proxy-cdn` with `check-env`, `cache:purge`, `cache:warmup`, `cache:evict` and `cache:migrate-2x`.
-- `GET /healthz`, Prometheus `GET /metrics` (`METRICS_KEYS`, `METRICS_STORE`), JSON logs with a request ID (`LOG_FILE`, `LOG_LEVEL`, `X-Request-Id`).
+- `GET /healthz`, Prometheus `GET /metrics` (`METRICS_KEYS`, `METRICS_STORE`, with counters in `var/metrics/` that a full disk or a killed worker never lowers), JSON logs with a request ID (`LOG_FILE`, `LOG_LEVEL`, `X-Request-Id`).
 - A miss rate limit per client (`MISS_RATE_LIMIT`, `MISS_RATE_LIMIT_BURST`) and `103 Early Hints` where the server API supports them (`EARLY_HINTS`).
 - Purge fan-out to the other instances of a cluster (`CLUSTER_PEERS`, `CLUSTER_CA_FILE`, `CLUSTER_TIMEOUT`), with the example in `docker/cluster/`.
 - LRU eviction to a size cap (`CACHE_MAX_SIZE`).
@@ -46,9 +46,10 @@ A rewrite of the proxy. It changes the cache layout, the configuration and the p
 - `OPTIONS` answers a valid CORS preflight for anonymous requests; methods other than `GET`, `HEAD`, `OPTIONS` and `PURGE` get `405`.
 - Media types follow the registered types (`text/javascript`, `font/*`, `image/vnd.microsoft.icon`), the same in PHP, Apache and nginx.
 - `X-Cache-Status` reports what happened (`HIT`, `MISS`, `REVALIDATED`, `STALE`, `BYPASS`) and is sent on assets only.
-- The HTTPS redirect believes `X-Forwarded-Proto` only from trusted proxies.
+- The HTTPS redirect believes `X-Forwarded-Proto` only from trusted proxies, redirects only the hosts of `PROXY_HOSTS` that the web server lists (`PROXYCDN_HOST` on Apache, `$proxycdn_known_host` on nginx), and is sent with `Cache-Control: no-store`.
 - Request paths are decoded once, and paths that could name another file are refused.
 - Stylesheets are stored and served as the origin sent them.
+- Boolean values are read in any case: `DEBUG=TRUE`, which 2.x left off, turns debug on.
 - PHP 7.2.5 or later is required.
 
 ### Removed
