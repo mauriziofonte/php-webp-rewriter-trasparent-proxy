@@ -184,7 +184,11 @@ final class MetricsTest extends TestCase
         self::assertNull($store->read());
     }
 
-    public function testADamagedFileStartsAgainFromZero(): void
+    /**
+     * A shard whose slots cannot be decoded is read as empty and starts
+     * again from zero: it stays in use.
+     */
+    public function testADamagedShardStartsAgainFromZero(): void
     {
         $store = $this->store();
         self::assertTrue($store->add(['a' => 1]));
@@ -195,10 +199,163 @@ final class MetricsTest extends TestCase
         self::assertSame([], $store->read());
         self::assertTrue($store->add(['a' => 2, 'b' => 1]));
         self::assertSame(['a' => 2, 'b' => 1], $store->read());
+        self::assertTrue($store->add(['a' => 1]));
+        self::assertSame(['a' => 3, 'b' => 1], $store->read());
+        self::assertCount(2, $this->shardFiles());
+        self::assertStringEndsWith(' {"seq":2,"counters":{"a":3,"b":1}}', (string) file_get_contents($this->ownShard(true)));
     }
 
     /**
-     * The counters are split over files, one per writer at a time, and
+     * The first write of a shard cut by a full disk leaves its only slot
+     * damaged: the shard is not lost for the updates that follow.
+     */
+    public function testAShardWhoseFirstWriteWasCutIsUsedAgain(): void
+    {
+        $store = $this->store();
+        self::assertSame([], $store->read());
+        file_put_contents($this->ownShard(), '0123abcd {"seq":1,"coun');
+
+        self::assertSame([], $store->read());
+        self::assertTrue($store->add(['a' => 1]));
+        self::assertTrue($store->add(['a' => 1]));
+        self::assertSame(['a' => 2], $store->read());
+        self::assertCount(2, $this->shardFiles());
+    }
+
+    /**
+     * Counters that cannot be encoded fail the update and write nothing.
+     */
+    public function testAnUpdateThatCannotBeEncodedWritesNothing(): void
+    {
+        $store = $this->store();
+        self::assertTrue($store->add(['a' => 1]));
+        $before = (string) file_get_contents($this->ownShard());
+
+        self::assertFalse($store->add(["\xff" => 1]));
+        self::assertSame(['a' => 1], $store->read());
+        self::assertSame($before, file_get_contents($this->ownShard()));
+        self::assertFalse(is_file($this->ownShard(true)) && filesize($this->ownShard(true)) > 0);
+    }
+
+    /**
+     * Each update writes the slot that does not hold the newer counters.
+     */
+    public function testTheUpdatesAlternateBetweenTheSlotsOfAShard(): void
+    {
+        $store = $this->store();
+        for ($i = 1; $i <= 3; ++$i) {
+            self::assertTrue($store->add(['a' => 1]));
+            self::assertSame(['a' => $i], $store->read());
+        }
+
+        self::assertStringEndsWith(' {"seq":3,"counters":{"a":3}}', (string) file_get_contents($this->ownShard()));
+        self::assertStringEndsWith(' {"seq":2,"counters":{"a":2}}', (string) file_get_contents($this->ownShard(true)));
+        self::assertSame(0644, fileperms($this->ownShard()) & 0777);
+        self::assertSame(0644, fileperms($this->ownShard(true)) & 0777);
+    }
+
+    /**
+     * A write that fails leaves the counters as they were: the sum never
+     * falls, which Prometheus would count as a reset of every counter.
+     */
+    public function testAFailedWriteNeverLowersTheCounters(): void
+    {
+        $store = $this->store();
+        self::assertTrue($store->add(['a' => 5, 'b' => 1]));
+        // The slot to write next cannot be opened: a directory is in its place.
+        mkdir($this->ownShard(true));
+
+        try {
+            self::assertFalse($store->add(['a' => 1]));
+            self::assertSame(['a' => 5, 'b' => 1], $store->read());
+        } finally {
+            rmdir($this->ownShard(true));
+        }
+
+        self::assertTrue($store->add(['a' => 1]));
+        self::assertSame(['a' => 6, 'b' => 1], $store->read());
+    }
+
+    /**
+     * A writer that dies half way, or runs out of disk, leaves a part of
+     * the slot it writes: the other slot still holds the counters, and the
+     * next writer of the shard writes the spoilt slot again. (Two writes
+     * mixed in one slot are covered by the checksum, below.)
+     */
+    public function testAWriterThatDiesHalfWayLosesNothing(): void
+    {
+        $store = $this->store();
+        self::assertTrue($store->add(['a' => 5]));
+        self::assertTrue($store->add(['a' => 1, 'b' => 2]));
+        $json = '{"seq":3,"counters":{"a":7,"b":2}}';
+        $next = sprintf('%08x', crc32($json)) . ' ' . $json;
+
+        // The next update writes over the first slot: every part of it.
+        for ($length = 1; $length < strlen($next); ++$length) {
+            file_put_contents($this->ownShard(), substr($next, 0, $length));
+            self::assertSame(['a' => 6, 'b' => 2], $store->read(), 'cut after ' . $length . ' bytes');
+        }
+
+        self::assertTrue($store->add(['a' => 1]));
+        self::assertSame(['a' => 7, 'b' => 2], $store->read());
+        self::assertStringEndsWith(' {"seq":3,"counters":{"a":7,"b":2}}', (string) file_get_contents($this->ownShard()));
+    }
+
+    /**
+     * A slot that decodes, with a newer sequence number, but whose
+     * checksum does not match is never read: the parts of two writes
+     * can make valid JSON with counters older than the other slot's.
+     */
+    public function testASlotWhoseChecksumDoesNotMatchIsIgnored(): void
+    {
+        $store = $this->store();
+        self::assertTrue($store->add(['a' => 50]));
+        self::assertTrue($store->add(['a' => 50]));
+        $slot = (string) file_get_contents($this->ownShard(true));
+        file_put_contents($this->ownShard(), substr($slot, 0, 9) . '{"seq":9,"counters":{"a":1}}');
+
+        self::assertSame(['a' => 100], $store->read());
+        self::assertTrue($store->add(['a' => 1]));
+        self::assertSame(['a' => 101], $store->read());
+    }
+
+    /**
+     * The files of the store before the slots, the counters alone, are
+     * read and added to.
+     */
+    public function testTheFormerFilesAreAddedTo(): void
+    {
+        $store = $this->store();
+        self::assertSame([], $store->read());
+        file_put_contents($this->ownShard(), '{"a":40}');
+
+        self::assertSame(['a' => 40], $store->read());
+        self::assertTrue($store->add(['a' => 2]));
+        self::assertSame(['a' => 42], $store->read());
+        self::assertSame('{"a":40}', file_get_contents($this->ownShard()));
+    }
+
+    /**
+     * No slot is written through a symbolic link, and a store with one is
+     * reported as unreadable.
+     */
+    public function testASlotIsNeverWrittenThroughALink(): void
+    {
+        $store = $this->store();
+        self::assertTrue($store->add(['a' => 1]));
+        $target = $this->directory->path('target');
+        file_put_contents($target, 'untouched');
+        symlink($target, $this->ownShard(true));
+
+        self::assertTrue($store->add(['a' => 1]));
+        self::assertSame('untouched', file_get_contents($target));
+        self::assertNull($store->read());
+        unlink($this->ownShard(true));
+        self::assertSame(['a' => 2], $store->read());
+    }
+
+    /**
+     * The counters are split over shards, one per writer at a time, and
      * summed when read; the first file is the one of the single-file store.
      */
     public function testTheCountersOfEveryShardAreSummed(): void
@@ -212,13 +369,13 @@ final class MetricsTest extends TestCase
     }
 
     /**
-     * A writer never waits for a busy file while another one is free.
+     * A writer never waits for a busy shard while another one is free.
      */
     public function testAnUpdateSkipsABusyShard(): void
     {
         $store = $this->store();
         self::assertTrue($store->add(['a' => 1]));
-        $own = $this->directory->path('var/metrics/' . FileMetricsStore::fileName((int) getmypid() % FileMetricsStore::SHARDS));
+        $own = $this->directory->path('var/metrics/' . FileMetricsStore::lockName((int) getmypid() % FileMetricsStore::SHARDS));
         self::assertFileExists($own);
         $other = fopen($own, 'c+b');
         self::assertIsResource($other);
@@ -236,8 +393,9 @@ final class MetricsTest extends TestCase
     }
 
     /**
-     * However many writers, the files are the SHARDS of fixed names, and
-     * a writer holding every one of them only makes the next one wait.
+     * However many writers, the files are the slots and lock files of the
+     * SHARDS, of fixed names, and a writer holding every lock but one only
+     * makes the next ones take the last.
      */
     public function testTheNumberOfFilesIsBounded(): void
     {
@@ -245,7 +403,7 @@ final class MetricsTest extends TestCase
         self::assertSame([], $store->read());
         $held = [];
         for ($shard = 0; $shard < FileMetricsStore::SHARDS - 1; ++$shard) {
-            $handle = fopen($this->directory->path('var/metrics/' . FileMetricsStore::fileName($shard)), 'c+b');
+            $handle = fopen($this->directory->path('var/metrics/' . FileMetricsStore::lockName($shard)), 'c+b');
             self::assertIsResource($handle);
             self::assertTrue(flock($handle, LOCK_EX));
             $held[] = $handle;
@@ -258,9 +416,13 @@ final class MetricsTest extends TestCase
             fclose($handle);
         }
 
-        self::assertCount(FileMetricsStore::SHARDS, $this->shardFiles());
+        $last = FileMetricsStore::SHARDS - 1;
+        self::assertSame(
+            [FileMetricsStore::alternateName($last), FileMetricsStore::fileName($last)],
+            array_map('basename', $this->shardFiles())
+        );
+        self::assertCount(FileMetricsStore::SHARDS + 2, array_diff(scandir($this->directory->path('var/metrics')) ?: [], ['.', '..']));
         self::assertSame(['a' => 20], $store->read());
-        self::assertSame('{"a":20}', file_get_contents($this->directory->path('var/metrics/' . FileMetricsStore::fileName(FileMetricsStore::SHARDS - 1))));
     }
 
     public function testFromConfig(): void
@@ -271,6 +433,8 @@ final class MetricsTest extends TestCase
         $metrics->flush();
 
         self::assertCount(1, $this->shardFiles());
+        self::assertSame(0644, fileperms($this->shardFiles()[0]) & 0777);
+        self::assertSame(0644, fileperms($this->directory->path('var/metrics/' . FileMetricsStore::lockName((int) getmypid() % FileMetricsStore::SHARDS))) & 0777);
         self::assertSame(0700, fileperms($this->directory->path('var/metrics')) & 0777);
     }
 
@@ -282,6 +446,16 @@ final class MetricsTest extends TestCase
         $files = glob($this->directory->path('var/metrics') . '/metrics*.json');
 
         return $files === false ? [] : $files;
+    }
+
+    /**
+     * A slot of the shard that an update of this process takes first.
+     */
+    private function ownShard(bool $alternate = false): string
+    {
+        $shard = (int) getmypid() % FileMetricsStore::SHARDS;
+
+        return $this->directory->path('var/metrics/' . ($alternate ? FileMetricsStore::alternateName($shard) : FileMetricsStore::fileName($shard)));
     }
 
     private function store(): MetricsStore

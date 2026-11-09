@@ -42,13 +42,10 @@ final class ComposerManifestTest extends TestCase
     {
         $require = self::section(self::readManifest('composer.json'), 'require');
 
-        // The conversion library is required from git: the integration branch
-        // aliased to 1.0.0 until the library is released, ^1.0 from then on
-        // (plan section 9).
-        self::assertContains(
-            $require['mfonte/secure-image-converter'] ?? null,
-            ['dev-claude/project-thread-79fchb as 1.0.0', '^1.0']
-        );
+        // The conversion library is required from its GitHub repository (the
+        // vcs entry of composer.json), at its released 1.x line (plan
+        // section 9).
+        self::assertSame('^1.0', $require['mfonte/secure-image-converter'] ?? null);
         unset($require['mfonte/secure-image-converter']);
 
         // Any further runtime dependency needs explicit approval (plan section 4).

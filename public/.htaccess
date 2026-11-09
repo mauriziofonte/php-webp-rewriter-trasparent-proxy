@@ -13,7 +13,9 @@
 #   - UseCanonicalName Off (the default): the cache directory is named
 #     after the Host header;
 #   - behind a TLS-terminating proxy, the virtual host sets PROXYCDN_HTTPS
-#     for the addresses of TRUSTED_PROXIES only (see section 2).
+#     for the addresses of TRUSTED_PROXIES only (see section 2);
+#   - the plain-HTTP virtual host sets PROXYCDN_HOST for the hosts of
+#     PROXY_HOSTS, the only ones redirected to https (see section 2).
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -73,10 +75,17 @@ ErrorDocument 403 "Access Forbidden"
     # The target names the host without the port of the plain-HTTP
     # request (SERVER_NAME is the Host header without its port, with
     # UseCanonicalName Off): HTTPS is served on 443, and the shipped nginx
-    # configuration redirects the same way.
+    # configuration redirects the same way. Only the hosts of PROXY_HOSTS
+    # are redirected, never to a name the proxy does not serve (PHP answers
+    # those with 421): the virtual host lists them, in PROXYCDN_HOST,
+    #   SetEnvIfNoCase Host "^(cdn\.example\.com|static\.example\.org)(:[0-9]+)?$" PROXYCDN_HOST=on
+    # and so may this file, above this section, where the virtual host
+    # cannot be changed. Browsers and shared caches do not store the
+    # redirect (no-store, section 3).
     RewriteCond %{HTTPS} !=on
     RewriteCond %{ENV:PROXYCDN_HTTPS} !=on
-    RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [L,R=301]
+    RewriteCond %{ENV:PROXYCDN_HOST} =on
+    RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [L,R=301,E=PROXYCDN_REDIRECT:1]
 
     # Entry point must always reach PHP.
     RewriteRule ^index\.php$ - [L]
@@ -195,6 +204,9 @@ ErrorDocument 403 "Access Forbidden"
     Header merge Vary "Accept-Encoding" env=PCDN_TEXT
 
     Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+    # The redirect to https of section 2 is never stored.
+    Header always set Cache-Control "no-store" env=PROXYCDN_REDIRECT
 
     # HSTS. Default: host-only (no includeSubDomains / no preload) because
     # enabling them changes behavior of sibling hostnames. Uncomment the
