@@ -136,6 +136,13 @@ final class ProxyKernel
      * gone each time it looks; then it waits for the lock and leads
      * (RequestCoalescer::lead()), and answers 503 (the entry stale, on a
      * revalidation) only when that wait times out.
+     *
+     * Each enter() and the lead() wait up to the coalescing timeout of
+     * RequestCoalescer, so the longest wait of a request before it fetches
+     * or answers is (MAX_ENTRIES + 1) times that timeout: 4 x 60 s with
+     * the defaults, 4 x 210 s with resize URLs, the conversion API and its
+     * fallback. It takes an entry or an outcome that is gone every time the
+     * request looks; one wait is the usual case.
      */
     private const MAX_ENTRIES = 3;
 
