@@ -386,7 +386,7 @@ hit_headers() {
 untrusted_https() {
     compose exec -T "fpm-$1" php -r '
         $context = stream_context_create(["http" => ["follow_location" => 0, "ignore_errors" => true,
-            "header" => "X-Forwarded-Proto: https\r\n"]]);
+            "header" => "Host: 127.0.0.1\r\nX-Forwarded-Proto: https\r\n"]]);
         @file_get_contents($argv[1], false, $context);
         echo explode(" ", $http_response_header[0] ?? "x 000")[1];' "http://$1/images/gradient.png"
 }
@@ -467,12 +467,15 @@ smoke() {
     log "Smoke test: $s + PHP-FPM $php_version"
     origin_reset
 
-    # Both redirect to the host without the port of the plain-HTTP request.
-    redirect="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$base$asset")"
+    # Both redirect to the host without the port of the plain-HTTP request,
+    # for a host of PROXY_HOSTS only, and the redirect is never stored.
+    redirect="$(curl -sS -D "$workdir/$s/redirect.headers" -o /dev/null -w '%{http_code} %{redirect_url}' "$base$asset")"
     case "$redirect" in
         "301 https://127.0.0.1$asset") pass "$s: plain HTTP is redirected to https, without the port" ;;
         *) die "$s: plain HTTP is redirected to https: got '$redirect'" ;;
     esac
+    expect "$s: the redirect to https is not stored" "$(header_of Cache-Control "$workdir/$s/redirect.headers")" no-store
+    expect "$s: plain HTTP for an unlisted host is not redirected" "$(status_of -H 'Host: other.example' "$base$asset")" 421
     expect "$s: X-Forwarded-Proto of an untrusted client is ignored" "$(untrusted_https "$s")" 301
     # The names of the project directories are paths like any other: the
     # document root is public/, where none of them exists.

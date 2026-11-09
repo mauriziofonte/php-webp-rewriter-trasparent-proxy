@@ -9,6 +9,12 @@ geo $proxycdn_trusted_proxy {
     172.30.99.10 1;
 }
 
+# The PROXY_HOSTS of the nodes.
+map $host $proxycdn_known_host {
+    default 0;
+    cdn.example.test 1;
+}
+
 upstream proxycdn_php {
     server ${NODE_NAME}-php:9000;
 }

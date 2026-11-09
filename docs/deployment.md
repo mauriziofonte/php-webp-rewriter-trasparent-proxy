@@ -40,7 +40,7 @@ sudo a2enmod rewrite headers setenvif env mime ssl proxy_fcgi
 Start from [`config/apache/proxy-cdn.conf`](../config/apache/proxy-cdn.conf) and adjust the values marked `# adjust`. It defines two virtual hosts:
 
 - **`*:443`** serves the proxy over TLS. It includes `public/.htaccess` once, at startup, with `AllowOverride None`; with `AllowOverride All` instead, Apache parses the file on every request, which about doubles the cost of a hit (see [Performance](performance.md)). `UseCanonicalName Off` (the default) keeps the cache directory named after the `Host` header. `ProxyTimeout 300` gives PHP longer than the coalescing timeout to answer.
-- **`*:80`** includes the same rules, which redirect plain HTTP to https. A load balancer that terminates TLS usually forwards to this port: list it there for `X-Forwarded-Proto` as well (see [Trusted proxies](#trusted-proxies-and-the-https-redirect)). If a TLS-terminating proxy forwards to `:80` (`PROXYCDN_HTTPS` set there), give this host the same `FilesMatch` handler and `ProxyTimeout 300` as `:443`, unless a server-wide PHP handler applies.
+- **`*:80`** includes the same rules, which redirect plain HTTP to https for the hosts listed in `PROXYCDN_HOST` (see [the HTTPS redirect](#trusted-proxies-and-the-https-redirect)). A load balancer that terminates TLS usually forwards to this port: list it there for `X-Forwarded-Proto` as well. It has the same `FilesMatch` handler and `ProxyTimeout 300` as `:443`, for the requests that are not redirected.
 
 `public/.htaccess` holds the routing and the headers. It serves a hit when the cache file exists for the request's host, query string and negotiated variant or encoding, hands everything else to `index.php`, and denies:
 
@@ -113,6 +113,26 @@ Both web server configurations redirect plain-HTTP requests to https with a `301
    ```
 
 Without them `X-Forwarded-Proto` is ignored. That is the safe default, but a TLS-terminating proxy then gets a redirect loop until it is listed.
+
+Only the hosts of `PROXY_HOSTS` are redirected, to `https://` and the same host without its port, with `Cache-Control: no-store`; a plain-HTTP request for any other host is not redirected to a name the proxy does not serve, and PHP answers it with `421`. List the hosts in the web server:
+
+- Apache: the `:80` virtual host of `config/apache/proxy-cdn.conf` (or `public/.htaccess`, above its section 2, where the virtual host cannot be changed):
+
+   ```apache
+   SetEnvIfNoCase Host "^(cdn\.example\.com|static\.example\.org)(:[0-9]+)?$" PROXYCDN_HOST=on
+   ```
+
+- nginx: the `map $host $proxycdn_known_host` block of `proxy-cdn.conf`:
+
+   ```nginx
+   map $host $proxycdn_known_host {
+       default 0;
+       cdn.example.com 1;
+       static.example.org 1;
+   }
+   ```
+
+A host missing from that list is served over plain HTTP instead of redirected.
 
 When the direct peer is a trusted proxy, the client address is the nearest `X-Forwarded-For` entry, read from right to left, that is not itself a trusted proxy. `X-Forwarded-Host` is never read.
 
