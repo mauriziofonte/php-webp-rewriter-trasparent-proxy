@@ -143,7 +143,7 @@ It names no path, version or setting, and never contacts the origin: an origin o
 - The cache gauges come from the last `cache:evict` run, and are missing until one has run.
 - `proxy_cdn_metrics_available` is `0` when the store cannot be read: the counters are then missing from the scrape, not reset.
 
-The counters live in `var/metrics/`, spread over up to eight files that are summed on read, and are updated once per request after the response. Only the requests that reach PHP are counted. `METRICS_STORE=off` counts nothing, saves the cost measured in [Performance](performance.md#metrics-store-cost), and leaves only the gauges.
+The counters live in `var/metrics/`, spread over eight shards that are summed on read (each a lock file and two checksummed slots, so that a write cut by a full disk or a killed worker never lowers them), and are updated once per request after the response. Only the requests that reach PHP are counted. `METRICS_STORE=off` counts nothing, saves the cost measured in [Performance](performance.md#metrics-store-cost), and leaves only the gauges.
 
 ## Counting the hits of the web server
 

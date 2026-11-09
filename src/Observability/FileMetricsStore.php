@@ -31,9 +31,12 @@ use Mfonte\SecureImageConverter\Contract\Exception\ExceptionInterface as Library
  * file truncated or renamed over another costs ext4 a write-back of the
  * data on each update (auto_da_alloc), and took up to a third of the hits
  * PHP serves per second. A shard whose two slots cannot be decoded
- * (changed by hand, a damaged disk) is read as empty and kept as it is
- * for whoever looks into it: no update writes to it. A slot of the format
- * before the checksum (counters alone) is read with the sequence 0.
+ * (changed by hand, a damaged disk, the first write of a slot cut by a
+ * full disk) is read as empty and starts again from zero at its next
+ * update: its counters are already missing from the sum, which the
+ * update can only raise, and the shard stays in use. A slot of the
+ * format before the checksum (counters alone) is read with the
+ * sequence 0.
  *
  * The label sets of Metrics are bounded, so are the files, of a few
  * kilobytes, and so is their number: their names are fixed, three per
@@ -142,8 +145,8 @@ final class FileMetricsStore implements MetricsStore
      * @param array<string, int> $increments
      *
      * @return bool|null whether the shard was written; null when it is busy
-     *                   under LOCK_NB, or refused (a link, two damaged
-     *                   slots), so that another shard is tried
+     *                   under LOCK_NB, or refused (a link), so that another
+     *                   shard is tried
      */
     private function update(string $directory, int $shard, int $operation, array $increments): ?bool
     {
@@ -157,17 +160,18 @@ final class FileMetricsStore implements MetricsStore
                 return ($operation & LOCK_NB) !== 0 ? null : false;
             }
             $latest = $this->latest($directory, $shard);
-            if ($latest === null || ($latest[2] === null && $latest[0] < 0)) {
+            if ($latest === null) {
                 return null;
             }
             [$sequence, $counters, $slot] = $latest;
             foreach ($increments as $name => $amount) {
                 $counters[$name] = ($counters[$name] ?? 0) + $amount;
             }
+            $content = self::encode($sequence + 1, $counters);
 
-            return $this->write(
+            return $content !== null && $this->write(
                 $directory . '/' . ($slot === 0 ? self::alternateName($shard) : self::fileName($shard)),
-                self::encode(max($sequence, 0) + 1, $counters)
+                $content
             );
         } finally {
             @flock($lock, LOCK_UN);
@@ -177,29 +181,22 @@ final class FileMetricsStore implements MetricsStore
 
     /**
      * The newer valid slot of a shard: its sequence number, its counters
-     * and which slot it is (0 or 1). The sequence is 0 and the slot null
-     * when neither is valid; the sequence is -1 when one of them is
-     * damaged, so that it is not written over.
+     * and which slot it is (0 or 1). The sequence is 0, the counters empty
+     * and the slot null when neither is valid.
      *
      * @return array{int, array<string, int>, int|null}|null null when a slot is refused
      */
     private function latest(string $directory, int $shard): ?array
     {
         $latest = [0, [], null];
-        $damaged = false;
         foreach ([self::fileName($shard), self::alternateName($shard)] as $slot => $name) {
             $content = $this->readSlot($directory . '/' . $name);
             if ($content === self::REFUSED) {
                 return null;
             }
-            if ($content === self::DAMAGED) {
-                $damaged = true;
-            } elseif (is_array($content) && ($latest[2] === null || $content[0] > $latest[0])) {
+            if (is_array($content) && ($latest[2] === null || $content[0] > $latest[0])) {
                 $latest = [$content[0], $content[1], $slot];
             }
-        }
-        if ($latest[2] === null && $damaged) {
-            $latest[0] = -1;
         }
 
         return $latest;
@@ -319,10 +316,15 @@ final class FileMetricsStore implements MetricsStore
      * of the sequence number and the counters.
      *
      * @param array<string, int> $counters
+     *
+     * @return string|null null when the counters cannot be encoded (a name that is not UTF-8)
      */
-    private static function encode(int $sequence, array $counters): string
+    private static function encode(int $sequence, array $counters): ?string
     {
-        $json = (string) json_encode(['seq' => $sequence, 'counters' => $counters], JSON_UNESCAPED_SLASHES);
+        $json = json_encode(['seq' => $sequence, 'counters' => $counters], JSON_UNESCAPED_SLASHES);
+        if (!is_string($json)) {
+            return null;
+        }
 
         return sprintf('%08x', crc32($json)) . ' ' . $json;
     }

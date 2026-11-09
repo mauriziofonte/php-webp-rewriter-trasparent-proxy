@@ -185,10 +185,10 @@ final class MetricsTest extends TestCase
     }
 
     /**
-     * A shard whose slots cannot be decoded is read as empty and kept as
-     * it is: the updates go to another shard.
+     * A shard whose slots cannot be decoded is read as empty and starts
+     * again from zero: it stays in use.
      */
-    public function testADamagedShardIsKeptAndSkipped(): void
+    public function testADamagedShardStartsAgainFromZero(): void
     {
         $store = $this->store();
         self::assertTrue($store->add(['a' => 1]));
@@ -199,9 +199,42 @@ final class MetricsTest extends TestCase
         self::assertSame([], $store->read());
         self::assertTrue($store->add(['a' => 2, 'b' => 1]));
         self::assertSame(['a' => 2, 'b' => 1], $store->read());
-        self::assertSame('{not json', file_get_contents($files[0]));
-        self::assertFileDoesNotExist($this->ownShard(true));
+        self::assertTrue($store->add(['a' => 1]));
+        self::assertSame(['a' => 3, 'b' => 1], $store->read());
         self::assertCount(2, $this->shardFiles());
+        self::assertStringEndsWith(' {"seq":2,"counters":{"a":3,"b":1}}', (string) file_get_contents($this->ownShard(true)));
+    }
+
+    /**
+     * The first write of a shard cut by a full disk leaves its only slot
+     * damaged: the shard is not lost for the updates that follow.
+     */
+    public function testAShardWhoseFirstWriteWasCutIsUsedAgain(): void
+    {
+        $store = $this->store();
+        self::assertSame([], $store->read());
+        file_put_contents($this->ownShard(), '0123abcd {"seq":1,"coun');
+
+        self::assertSame([], $store->read());
+        self::assertTrue($store->add(['a' => 1]));
+        self::assertTrue($store->add(['a' => 1]));
+        self::assertSame(['a' => 2], $store->read());
+        self::assertCount(2, $this->shardFiles());
+    }
+
+    /**
+     * Counters that cannot be encoded fail the update and write nothing.
+     */
+    public function testAnUpdateThatCannotBeEncodedWritesNothing(): void
+    {
+        $store = $this->store();
+        self::assertTrue($store->add(['a' => 1]));
+        $before = (string) file_get_contents($this->ownShard());
+
+        self::assertFalse($store->add(["\xff" => 1]));
+        self::assertSame(['a' => 1], $store->read());
+        self::assertSame($before, file_get_contents($this->ownShard()));
+        self::assertFalse(is_file($this->ownShard(true)) && filesize($this->ownShard(true)) > 0);
     }
 
     /**
